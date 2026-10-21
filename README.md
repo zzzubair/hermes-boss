@@ -1,6 +1,6 @@
-# hermes-firstmate
+# boss
 
-Hermes plugin that turns JigglyPuff (Zubair's Hermes default profile on ser5ver) into his dev lead, replacing the separate Firstmate agent.
+Hermes plugin (`boss`, repo `hermes-boss`) that turns JigglyPuff (Zubair's Hermes default profile on ser5ver) into his dev lead, replacing the separate Firstmate agent.
 
 Goal: one assistant for everything. JigglyPuff already has the memory (OptMem), skills and Discord control room; this adds Firstmate's dev loop on top.
 
