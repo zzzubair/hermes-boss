@@ -112,7 +112,7 @@ class Store:
         path = steers_path(self.home, name)
         if not path.exists():
             return []
-        records, seen, replaced = [], set(), set()
+        records, seen, replaced, dropped = [], {}, set(), set()
         try:
             with path.open(encoding="utf-8") as stream:
                 for line in stream:
@@ -120,23 +120,41 @@ class Store:
                         raise ValueError("incomplete append")
                     record = json.loads(line)
                     steer_id = identifier(record["id"])
-                    require_text(record["text"], "captain steer", BRIEF_LIMIT)
                     if steer_id in seen:
                         raise ValueError("duplicate steer id")
                     if not datetime.fromisoformat(record["created_at"]).tzinfo:
                         raise ValueError("timestamp has no timezone")
-                    if record.get("task"):
-                        identifier(record["task"])
+                    if "drops" in record:
+                        if set(record) != {"id", "drops", "created_at"}:
+                            raise ValueError("tombstone must contain only id, drops and created_at")
+                        target = identifier(record["drops"])
+                        if target not in seen:
+                            raise ValueError("unknown dropped steer")
+                        if "drops" in seen[target]:
+                            raise ValueError("cannot drop a tombstone")
+                        if target in dropped:
+                            raise ValueError("duplicate drop")
+                        if target in replaced:
+                            raise ValueError("cannot drop a superseded steer")
+                        dropped.add(target)
+                    else:
+                        require_text(record["text"], "captain steer", BRIEF_LIMIT)
+                        if record.get("task"):
+                            identifier(record["task"])
                     if record.get("replaces"):
-                        if record["replaces"] not in seen:
+                        target = record["replaces"]
+                        if target not in seen:
                             raise ValueError("unknown replaced steer")
-                        replaced.add(record["replaces"])
-                    seen.add(steer_id)
+                        if "drops" in seen[target] or target in dropped:
+                            raise ValueError("cannot replace a dropped steer or tombstone")
+                        replaced.add(target)
+                    seen[steer_id] = record
                     records.append(record)
         except (ValueError, KeyError, TypeError, BossError) as exc:
             raise BossError("ledger", f"invalid steer log for {name}: {exc}",
                             f"inspect {path}; preserve existing history") from None
-        return [{**r, "superseded": r["id"] in replaced} for r in records if all or r["id"] not in replaced]
+        return [{**r, "superseded": r["id"] in replaced, "dropped": r["id"] in dropped}
+                for r in records if all or ("drops" not in r and r["id"] not in replaced and r["id"] not in dropped)]
 
     def add_steer(self, name, text, task=None, replaces=None):
         project_name(name)
@@ -146,10 +164,34 @@ class Store:
         records = self.steers(name, all=True)
         if task is not None and self.load(task)["project"] != name:
             refuse("related task belongs to another project", "use a task from this project")
-        if replaces is not None and not any(r["id"] == replaces for r in records):
-            raise BossError("usage", "unknown steer to replace in this project", f"boss steer list {name} --all", 1)
+        if replaces is not None:
+            target = next((r for r in records if r["id"] == replaces), None)
+            if target is None:
+                raise BossError("usage", "unknown steer to replace in this project", f"boss steer list {name} --all", 1)
+            if "drops" in target or target["dropped"]:
+                refuse("cannot replace a dropped steer or tombstone", f"boss steer list {name} --all")
         record = {"id": self.new_id(), "text": text.strip(), "task": task, "replaces": replaces,
                   "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+        return self._append_steer(name, record)
+
+    def drop_steer(self, name, steer_id):
+        identifier(steer_id)
+        records = self.steers(name, all=True)
+        target = next((r for r in records if r["id"] == steer_id), None)
+        hint = f"boss steer list {name} --all"
+        if target is None:
+            raise BossError("usage", "unknown steer to drop in this project", hint, 1)
+        if "drops" in target:
+            refuse("cannot drop a tombstone", hint)
+        if target["dropped"]:
+            refuse("steer is already dropped", hint)
+        if target["superseded"]:
+            refuse("steer is already superseded", hint)
+        record = {"id": self.new_id(), "drops": steer_id,
+                  "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+        return self._append_steer(name, record)
+
+    def _append_steer(self, name, record):
         path = steers_path(self.home, name)
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         # The CLI holds the ledger lock. Append one record and fsync it without

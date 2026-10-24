@@ -63,6 +63,185 @@ class SteeringTest(unittest.TestCase):
         self.assertIn(third + ": active", history)
         self.assertFalse(self.fake.calls)
 
+    def test_drop_appends_tombstone_and_lists_distinct_history(self):
+        superseded = self.steer("Old direction")
+        dropped = self.steer("Forget this", "--replaces", superseded)
+        active = self.steer("Keep this")
+        path = steers_path(self.home, "repo")
+        original, inode = path.read_bytes(), path.stat().st_ino
+        code, output = self.cli("steer", "drop", "repo", dropped)
+        self.assertEqual(code, 0, output)
+        tombstone = output.split(":", 1)[0]
+        self.assertIn(f"steer dropped project=repo drops={dropped}", output)
+        self.assertIn("next: boss steer list repo --all", output)
+        self.assertTrue(path.read_bytes().startswith(original))
+        self.assertEqual(path.stat().st_ino, inode)
+        records = [json.loads(line) for line in path.read_text().splitlines()]
+        self.assertEqual(len(records), 4)
+        self.assertEqual(set(records[-1]), {"id", "drops", "created_at"})
+        self.assertEqual(records[-1]["drops"], dropped)
+        self.assertIsNotNone(datetime.fromisoformat(records[-1]["created_at"]).utcoffset())
+        self.assertEqual([r["id"] for r in self.store.steers("repo")], [active])
+        listed = self.cli("steer", "list", "repo")[1]
+        self.assertIn("1 active steers", listed)
+        self.assertNotIn("Forget this", listed)
+        self.assertNotIn(tombstone, listed)
+        history = self.cli("steer", "list", "repo", "--all")[1]
+        self.assertIn(superseded + ": superseded", history)
+        self.assertIn(dropped + ": dropped", history)
+        self.assertIn(active + ": active", history)
+        self.assertIn(tombstone + ": tombstone", history)
+        self.assertIn("drops=" + dropped, history)
+        self.assertFalse(self.fake.calls)
+
+    def test_drop_refusals_have_exact_errors_and_leave_history_unchanged(self):
+        superseded = self.steer("Old steer")
+        dropped = self.steer("Retract this", "--replaces", superseded)
+        code, output = self.cli("steer", "drop", "repo", dropped)
+        self.assertEqual(code, 0, output)
+        tombstone = output.split(":", 1)[0]
+        foreign = self.steer("Other project steer", project="other")
+        paths = [steers_path(self.home, name) for name in ("repo", "other")]
+        original = [path.read_bytes() for path in paths]
+        cases = [("unknown", 1, "usage", "unknown steer to drop in this project"),
+                 (foreign, 1, "usage", "unknown steer to drop in this project"),
+                 (dropped, 2, "refused", "steer is already dropped"),
+                 (superseded, 2, "refused", "steer is already superseded"),
+                 (tombstone, 2, "refused", "cannot drop a tombstone")]
+        for steer_id, expected, error, message in cases:
+            with self.subTest(target=steer_id):
+                code, output = self.cli("steer", "drop", "repo", steer_id)
+                self.assertEqual((code, output), (expected,
+                    f"error: {error}\nmessage: {message}\nnext: boss steer list repo --all\n"))
+                self.assertEqual([path.read_bytes() for path in paths], original)
+        code, output = self.cli("steer", "drop", "missing", dropped)
+        self.assertEqual(code, 1, output)
+        self.assertFalse(steers_path(self.home, "missing").exists())
+        self.assertFalse(self.fake.calls)
+
+    def test_legacy_log_without_tombstones_still_loads_without_migration(self):
+        path = steers_path(self.home, "repo")
+        path.parent.mkdir()
+        records = [{"id": "old1", "text": "Original", "task": None, "replaces": None,
+                    "created_at": "2026-01-01T00:00:00+00:00"},
+                   {"id": "old2", "text": "Replacement", "task": None, "replaces": "old1",
+                    "created_at": "2026-01-02T00:00:00+00:00"}]
+        original = "".join(json.dumps(r) + "\n" for r in records).encode()
+        path.write_bytes(original)
+        self.assertEqual([r["id"] for r in self.store.steers("repo")], ["old2"])
+        self.assertEqual([r["superseded"] for r in self.store.steers("repo", all=True)], [True, False])
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_malformed_tombstones_refuse_reads_and_writes_without_changing_bytes(self):
+        first = self.steer("Original")
+        active = self.steer("Replacement", "--replaces", first)
+        path = steers_path(self.home, "repo")
+        original = path.read_text()
+        drop = {"id": "tombstone", "drops": active, "created_at": "2026-01-01T00:00:00+00:00"}
+        cases = [([drop], ""),
+                 ([{**drop, "drops": "unknown"}], "unknown dropped steer"),
+                 ([drop, {**drop, "id": "duplicate"}], "duplicate drop"),
+                 ([drop, {**drop, "id": "nested", "drops": "tombstone"}], "cannot drop a tombstone"),
+                 ([{**drop, "drops": first}], "cannot drop a superseded steer"),
+                 ([{**drop, "text": "ambiguous"}], "tombstone must contain only"),
+                 ([{**drop, "replaces": first}], "tombstone must contain only"),
+                 ([{**drop, "task": None}], "tombstone must contain only"),
+                 ([{**drop, "drops": None}], "invalid steer log"),
+                 ([{**drop, "drops": []}], "invalid steer log"),
+                 ([{**drop, "id": active}], "duplicate steer id"),
+                 ([{**drop, "created_at": "2026-01-01T00:00:00"}], "timestamp has no timezone"),
+                 ([{k: v for k, v in drop.items() if k != "created_at"}], "invalid steer log"),
+                 ([drop, {"id": "new", "text": "Revive", "replaces": active,
+                          "created_at": drop["created_at"]}], "cannot replace a dropped steer or tombstone")]
+        # A valid tombstone is accepted first, then every malformed log is rejected.
+        for records, message in cases:
+            with self.subTest(records=records):
+                damaged = original + "".join(json.dumps(r) + "\n" for r in records)
+                path.write_text(damaged)
+                if not message:
+                    self.assertEqual(self.store.steers("repo"), [])
+                    continue
+                for all_records in (False, True):
+                    with self.assertRaises(BossError) as caught:
+                        self.store.steers("repo", all=all_records)
+                    self.assertEqual(caught.exception.code, "ledger")
+                    self.assertIn(message, caught.exception.message)
+                for args in (("list", "repo"), ("repo", "New steer"), ("drop", "repo", active)):
+                    code, output = self.cli("steer", *args)
+                    self.assertEqual(code, 3, output)
+                    self.assertIn("error: ledger", output)
+                self.assertEqual(path.read_text(), damaged)
+
+    def test_replacing_dropped_steer_or_tombstone_is_refused(self):
+        dropped = self.steer("Retract this")
+        tombstone = self.cli("steer", "drop", "repo", dropped)[1].split(":", 1)[0]
+        path = steers_path(self.home, "repo")
+        original = path.read_bytes()
+        for target in (dropped, tombstone):
+            code, output = self.cli("steer", "repo", "Replacement", "--replaces", target)
+            self.assertEqual(code, 2, output)
+            self.assertIn("cannot replace a dropped steer or tombstone", output)
+            self.assertEqual(path.read_bytes(), original)
+
+    def test_drop_parsing_preserves_normal_text_and_refuses_extra_arguments(self):
+        for text in ("list", "drop", "drop this instruction"):
+            self.steer(text)
+        path = steers_path(self.home, "repo")
+        original = path.read_bytes()
+        for args in (("drop",), ("drop", "repo"), ("drop", "repo", "unknown", "extra"),
+                     ("drop", "repo", "unknown", "--all"),
+                     ("drop", "repo", "unknown", "--task", "unknown"),
+                     ("drop", "repo", "unknown", "--replaces", "unknown"),
+                     ("repo", "Text", "extra"), ("list", "repo", "extra"),
+                     ("drop", "../outside", "unknown"), ("drop", "repo", "../outside")):
+            with self.subTest(args=args):
+                code, output = self.cli("steer", *args)
+                self.assertEqual(code, 1, output)
+                self.assertIn("error: usage", output)
+                self.assertIn("next:", output)
+                self.assertEqual(path.read_bytes(), original)
+
+    def test_reserved_t3_project_titles_work_with_a_configured_local_alias(self):
+        for key, value in (("host", "test"), ("project_id", "p1"), ("repository", "example/repo")):
+            self.assertEqual(self.cli("config", "set", "projects.alias." + key, value)[0], 0)
+        for title in ("list", "drop"):
+            with self.subTest(title=title):
+                self.fake.projects[0]["title"] = title
+                steer_id = self.steer("Alias steer", project="alias")
+                self.assertIn(steer_id, self.cli("steer", "list", "alias")[1])
+                self.assertEqual(self.cli("steer", "drop", "alias", steer_id)[0], 0)
+                code, output = self.cli("spawn", "alias", "--title", "Use alias")
+                self.assertEqual(code, 0, output)
+                task = self.store.load(output.split(":", 1)[0])
+                self.assertEqual((task["project"], task["project_id"]), ("alias", "p1"))
+
+    def test_drop_removes_context_from_gate_and_dispatched_worker_briefs(self):
+        dropped = self.steer("Forget this instruction")
+        active = self.steer("Keep this instruction")
+        self.assertEqual(self.cli("steer", "drop", "repo", dropped)[0], 0)
+        code, output = self.cli("spawn", "repo", "--title", "T")
+        self.assertEqual(code, 2, output)
+        self.assertIn(active + ": Keep this instruction", output)
+        self.assertNotIn("Forget this instruction", output)
+        self.assertFalse(self.fake.calls)
+        task = self.spawn("--fits", "Follow the remaining steer")
+        message = (self.store.directory(task["id"]) / "brief.md").read_text()
+        sent = next(a["message"] for n, a in self.fake.calls if n == "t3_thread_launch")
+        self.assertEqual(message, sent)
+        self.assertIn("Keep this instruction", sent)
+        self.assertNotIn("Forget this instruction", sent)
+        self.assertEqual(self.cli("steer", "drop", "repo", active)[0], 0)
+        self.assertIn("active_steers: 0", self.cli("project", "show", "repo")[1])
+        task = self.spawn()
+        message = (self.store.directory(task["id"]) / "brief.md").read_text()
+        self.assertNotIn("## Captain steers", message)
+        # A project goal still requires reconciliation when every steer is dropped.
+        self.cli("goal", "repo", "Keep the goal")
+        code, output = self.cli("spawn", "repo", "--title", "T")
+        self.assertEqual(code, 2, output)
+        self.assertIn("Keep the goal", output)
+        self.assertNotIn("## Captain steers", output)
+
     def test_empty_and_separate_project_ledgers_need_no_registry(self):
         self.assertIn("0 active steers", self.cli("steer", "list", "repo")[1])
         self.cli("goal", "unregistered", "Independent goal")

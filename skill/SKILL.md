@@ -26,6 +26,7 @@ boss goal <project> "<project goal>"
 boss goal <project>
 boss steer <project> "<captain steer>" --task <id>
 boss steer <project> "<replacement steer>" --replaces <steer-id>
+boss steer drop <project> <steer-id>
 boss steer list <project>
 boss steer list <project> --all
 boss spawn <project> --title "<task>" --brief-file <file>
@@ -64,6 +65,16 @@ task. Boss does not judge conflicts; resolve unclear choices with the captain.
 Use `--replaces` when the captain changes an earlier steer. History stays
 append-only; `--all` shows superseded records. Goals and steers are local and
 can be recorded without registering a project or contacting T3.
+
+### Retracting a steer
+
+Use `boss steer drop <project> <steer-id>` to retract an active steer without
+replacement text. It appends a tombstone and removes the steer from future
+worker briefs and the dispatch gate. `--all` shows dropped and superseded
+steers distinctly, plus tombstones. Inactive, unknown, other-project and
+tombstone IDs are refused. `list` and `drop` are reserved verbs; for a T3
+project with either title, set `boss config set projects.alias.project_id '<T3 project ID>'`
+and use `alias` for all boss commands, including goals and steers.
 
 ## Guards
 

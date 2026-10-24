@@ -109,12 +109,13 @@ def parser():
     goal = commands.add_parser("goal", help="show or set a project's goal")
     goal.add_argument("project")
     goal.add_argument("text", nargs="?", help="new goal; omit to show the current goal")
-    steer = commands.add_parser("steer", help="append a captain steer, or list a project's steers")
-    steer.add_argument("project", help="project name, or 'list'")
-    steer.add_argument("text", help="steer text, or the project name after 'list'")
+    steer = commands.add_parser("steer", help="append, list or drop a project's captain steers")
+    steer.add_argument("project", help="project name, or 'list' / 'drop'")
+    steer.add_argument("text", help="steer text, or the project name after 'list' / 'drop'")
+    steer.add_argument("steer_id", nargs="?", help="with 'drop', the active steer to retract")
     steer.add_argument("--task", help="related task from this project")
     steer.add_argument("--replaces", metavar="STEER_ID", help="supersede an earlier steer in this project")
-    steer.add_argument("--all", action="store_true", help="with 'list', include superseded steers")
+    steer.add_argument("--all", action="store_true", help="with 'list', include superseded/dropped steers and tombstones")
     decide = commands.add_parser("decide", help="record decisions that need the captain")
     decisions = decide.add_subparsers(dest="decision_command", required=True)
     add = decisions.add_parser("add", help="open a durable decision")
@@ -237,13 +238,25 @@ def dispatch(args, boss):
         goal = boss.store.goal(args.project)
         return [f"project: {compact(args.project)}", "goal: " + (goal or "unset")], 0
     if command == "steer":
+        if args.project == "drop":
+            if args.task is not None or args.replaces is not None or args.all or args.steer_id is None:
+                raise BossError("usage", "drop requires a project and steer id, without --task, --replaces or --all",
+                                "boss steer drop <project> <steer_id>", 1)
+            record = boss.store.drop_steer(args.text, args.steer_id)
+            return [f"{record['id']}: steer dropped project={compact(args.text)} drops={record['drops']}",
+                    f"next: boss steer list {compact(args.text)} --all"], 0
+        if args.steer_id is not None:
+            raise BossError("usage", "a third argument applies only to boss steer drop", "boss steer --help", 1)
         if args.project == "list":
             if args.task is not None or args.replaces is not None:
                 raise BossError("usage", "--task and --replaces apply only when adding a steer", "boss steer --help", 1)
             records = boss.store.steers(args.text, all=args.all)
             lines = [f"{len(records)} {'total' if args.all else 'active'} steers project={compact(args.text)}"]
             for record in records:
-                state = "superseded" if record["superseded"] else "active"
+                if "drops" in record:
+                    lines.append(f"{record['id']}: tombstone {record['created_at']} drops={record['drops']}")
+                    continue
+                state = "dropped" if record["dropped"] else "superseded" if record["superseded"] else "active"
                 lines.append(f"{record['id']}: {state} {record['created_at']} {record['text']}" +
                              (f" task={record['task']}" if record.get("task") else "") +
                              (f" replaces={record['replaces']}" if record.get("replaces") else ""))
