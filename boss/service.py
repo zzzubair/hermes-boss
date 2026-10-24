@@ -201,7 +201,8 @@ class Boss:
         self.store.save(meta, "launched")
         if selection:
             actual = launched.get("modelSelection") or {}
-            if any(actual.get(k) != selection.get(k) for k in ("model", "instanceId", "options")):
+            if any(actual.get(k) != selection.get(k) for k in ("model", "instanceId")) or \
+                    normalize_options(actual.get("options")) != normalize_options(selection.get("options")):
                 client.call("t3_thread_interrupt", threadId=meta["thread_id"])
                 raise BossError("model", f"task {task_id}: T3 returned different model settings; interruption requested",
                                 f"boss status {task_id}")
@@ -462,3 +463,10 @@ class Boss:
 
 def ci_text(ci):
     return f"{ci['state']} {ci['passed']} passed,{ci['failed']} failed,{ci['pending']} pending,{ci['skipped']} skipped"
+
+
+def normalize_options(options):
+    """T3 echoes options as [{"id", "value"}]; boss sends a {id: value} table."""
+    if isinstance(options, list):
+        return {o["id"]: o["value"] for o in options if isinstance(o, dict) and "id" in o}
+    return dict(options or {})

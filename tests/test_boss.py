@@ -240,6 +240,14 @@ delivery = "direct-PR"
             self.assertTrue((self.store.directory(meta["id"]) / name).exists())
         self.assertTrue(all(h.get("Mcp-Session-Id") == "fake-session" for h in self.fake.headers[1:]))
 
+    def test_spawn_accepts_t3_list_shaped_options(self):
+        # Live T3 echoes options as a list of {id, value} pairs.
+        self.fake.launch_selection = {"instanceId": "codex", "model": "gpt-test",
+                                      "options": [{"id": "reasoningEffort", "value": "max"}]}
+        meta = self.spawn("--model", "codex:gpt-test", "--effort", "max")
+        self.assertFalse(any(n == "t3_thread_interrupt" for n, _ in self.fake.calls))
+        self.assertTrue(meta["thread_id"])
+
     def test_brief_file_and_scout_contract(self):
         brief = self.home / "brief"
         brief.write_text("read-only question")
