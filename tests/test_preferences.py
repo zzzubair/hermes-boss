@@ -12,6 +12,7 @@ from boss.integrations import repository_from_origin, resolve_repository
 from boss.preferences import BRIEF_LIMIT, compose_brief
 from boss.service import footer
 from tests import test_boss as harness
+from tests.support import HermeticTestCase
 
 
 TOKEN = harness.TOKEN
@@ -298,7 +299,7 @@ class PreferenceTest(unittest.TestCase):
         self.assertFalse(self.fake.threads)
 
 
-class RepositoryResolutionTest(unittest.TestCase):
+class RepositoryResolutionTest(HermeticTestCase):
     def test_github_remote_forms(self):
         for url in ("https://github.com/example/repo.git", "git@github.com:example/repo.git",
                     "ssh://git@github.com/example/repo.git", "https://github.com/example/repo"):

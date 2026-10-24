@@ -1,0 +1,27 @@
+Machine: oracle-free (oracle), Python 3.12.3
+
+Before the fix, the exact stress command reproduced the reported failures:
+Ran 82 tests in 10.816s
+FAILED (failures=2, errors=1)
+
+Focused regression tests were also run before applying the filter fix:
+Ran 7 tests in 0.011s
+FAILED (failures=3)
+Example disagreement: '[REDACTED] false [REDACTED] [REDACTED]'
+instead of 'true false word abc'.
+
+boss-prefs after the fix:
+$ HERMES_REDACT_SECRETS=true SUDO_PASSWORD=abc python3 -m unittest discover -s tests
+...........................................................................
+----------------------------------------------------------------------
+Ran 75 tests in 8.319s
+
+OK
+
+Tests clear the inherited environment and use temporary HOME directories.
+They explicitly reintroduce flag/short-password/real-token fixtures to verify
+the filter. Generic discovery requires at least 12 characters, excludes
+boolean/number literals and flag keys, and is shared by CLI startup and Config.
+Explicit host token_env values remain unconditional, including overridden
+file credentials. The Git fixture uses existing repository author/committer
+headers and disposable Git objects, without relying on host Git configuration.

@@ -80,6 +80,10 @@ noninteractive SSH authorization and Python 3 on that host.
 Tokens come from the named environment variable, then `~/.hermes/.env`.
 The file accepts literal `KEY=value` lines, optionally with matching outer
 quotes. It is never sourced or evaluated. Environment values take precedence.
+Automatic secret discovery ignores values shorter than 12 characters,
+boolean/number literals and config flag keys such as `HERMES_REDACT*`,
+`*_SECRETS` and `*_ENABLED`. Explicit host `token_env` credentials are always
+protected, even when short, including a file credential overridden by the env.
 Never put tokens in TOML, command arguments, URLs or Git. Use T3's pairing and
 OAuth flow to grant MCP read/operate access. `boss` discovers tool schemas on
 every new MCP session, captures `mcp-session-id` from `initialize`, sends the

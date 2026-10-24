@@ -7,7 +7,7 @@ import sys
 
 from . import __version__
 from .common import BossError, Redactor, compact, require_text
-from .config import Config
+from .config import Config, DEFAULT_HOSTS
 from .preferences import notes_path
 from .service import Boss, ci_text
 from .state import Store
@@ -240,9 +240,7 @@ def dispatch(args, boss):
 
 def main(argv=None):
     redact = Redactor()
-    for key, value in os.environ.items():
-        if any(word in key for word in ("TOKEN", "SECRET", "PASSWORD", "API_KEY")):
-            redact.add(value)
+    redact.discover(os.environ, token_keys=(h["token_env"] for h in DEFAULT_HOSTS.values()))
     try:
         args = parser().parse_args(argv)
         home = Path(os.environ.get("BOSS_HOME", "~/.boss")).expanduser()

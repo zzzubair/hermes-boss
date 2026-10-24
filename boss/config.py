@@ -22,7 +22,7 @@ class Config:
     def __init__(self, home, redact):
         self.path = home / "config.toml"
         self.redact = redact
-        self.credentials = self._credentials()
+        self.credentials, file_credentials = self._credentials()
         try:
             data = tomllib.loads(self.path.read_text()) if self.path.exists() else {}
         except (OSError, ValueError) as exc:
@@ -51,6 +51,7 @@ class Config:
                     raise ValueError(f"host {name}: invalid ssh destination")
                 if host.get("ssh", "").startswith("-"):
                     raise ValueError(f"host {name}: invalid ssh destination")
+                self.redact.add(file_credentials.get(host["token_env"]))
                 self.redact.add(self.credentials.get(host["token_env"]))
         except (KeyError, TypeError, AttributeError, ValueError) as exc:
             raise BossError("config", str(exc), f"edit {self.path}", 1) from None
@@ -67,14 +68,10 @@ class Config:
                     if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
                         value = value[1:-1]
                     values[key] = value
-                    # Register secrets before any output, including config errors.
-                    if any(word in key for word in ("TOKEN", "SECRET", "PASSWORD", "API_KEY")):
-                        self.redact.add(value)
-        for key, value in os.environ.items():
-            if any(word in key for word in ("TOKEN", "SECRET", "PASSWORD", "API_KEY")):
-                self.redact.add(value)
-        values.update(os.environ)
-        return values
+        # Register candidates before any output, including config errors.
+        self.redact.discover(values)
+        self.redact.discover(os.environ)
+        return {**values, **os.environ}, values
 
     def host(self, name):
         if name not in self.hosts:
