@@ -1,0 +1,13 @@
+11 projects host=oracle
+59448623-afbf-4957-ae9f-dd68e91312d0: No project registry=false notes=false
+970c7039-71cb-494b-98f1-e80dd01ce796: agent-home registry=false notes=false
+d40452ff-2f36-480b-8bb6-69619a92324a: blog registry=false notes=false
+02fa3514-2391-4871-b5a2-c9a8c7bf7574: boss registry=false notes=false
+25205810-c1ea-4631-bdd3-67d9411d6dbd: clashlens registry=false notes=false
+b3744926-e065-46b8-a429-2a35765434b3: discord-bot registry=false notes=false
+00d5d7bc-652c-408c-be65-68228a3b7593: forge registry=false notes=false
+ee302737-4a30-4c50-92d0-9604f3b6a07d: forge-quartz registry=false notes=false
+de530fc7-45d2-4453-9235-067f29239a7d: hermes-optchat registry=false notes=false
+07256ece-b05c-46fc-bd25-c7376347973d: homepage registry=false notes=false
+ee3c4c5e-2613-4bdb-a123-2df45610e4d5: slate registry=false notes=false
+next: boss project add <name> --host oracle

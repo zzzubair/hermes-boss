@@ -1,0 +1,28 @@
+Machine: oracle-free (oracle)
+Base: origin/main at 0af7926
+Branch: boss-prefs
+Runtime: Python 3.12.3, standard library only
+
+$ python3 -m unittest -v
+Ran 68 tests in 8.382s
+OK
+
+Includes all original 41 tests plus exact title lookup across pages, host and
+registry precedence, GitHub origin parsing and local/SSH resolution, preference
+ordering and empty sections, final composed-size boundaries, credential
+refusals, settings visibility and config append/duplicate protection.
+
+$ python3 -m compileall -q boss scripts tests
+exit: 0
+$ sh -n install.sh
+exit: 0
+$ git diff --check
+exit: 0
+
+$ python3 -m boss project list --host oracle
+exit: 0; 11 projects
+Verbatim output: oracle-project-list.txt
+Target: oracle's real T3 at http://127.0.0.1:3773/mcp, with an isolated BOSS_HOME
+containing only the local host override. No project entries or notes were added.
+Used an ephemeral read-only pairing/OAuth session; revoked after the command.
+No workers launched, no PRs merged, and no persistent host config changed.

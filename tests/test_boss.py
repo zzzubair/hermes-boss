@@ -37,6 +37,9 @@ class FakeT3:
     def __init__(self):
         self.calls, self.headers = [], []
         self.threads, self.pending, self.prs = {}, {}, []
+        self.projects = [{"id": "p1", "title": "repo", "workspaceRoot": "/fake/repo",
+                          "defaultModelSelection": None,
+                          "repositoryIdentity": {"owner": "example", "name": "repo"}}]
         self.failure, self.drop_launch, self.sse, self.missing_session = None, False, False, False
         self.launch_selection = None
         self.catalog = {"providers": [{"providerInstanceId": "codex", "models": [
@@ -107,8 +110,7 @@ class FakeT3:
 
     def tool(self, name, args):
         if name == "t3_project_list":
-            return {"projects": [{"id": "p1", "title": "repo", "defaultModelSelection": None,
-                                  "repositoryIdentity": {"owner": "example", "name": "repo"}}], "nextCursor": None}
+            return {"projects": self.projects, "nextCursor": None}
         if name == "orchestrator_capabilities":
             return self.catalog
         if name == "t3_thread_launch":
@@ -590,7 +592,9 @@ class GitEvidenceTest(unittest.TestCase):
             for args in ([], ["--help"], ["spawn", "--help"], ["status", "--help"], ["send", "--help"],
                          ["answer", "--help"], ["stop", "--help"], ["land", "--help"], ["settle", "--help"],
                          ["poll", "--help"], ["decide", "--help"], ["decide", "add", "--help"],
-                         ["decide", "list", "--help"], ["decide", "close", "--help"]):
+                         ["decide", "list", "--help"], ["decide", "close", "--help"],
+                         ["project", "--help"], ["project", "list", "--help"],
+                         ["project", "add", "--help"], ["project", "show", "--help"]):
                 p = subprocess.run([str(executable), *args], env=env, capture_output=True, text=True)
                 self.assertEqual(p.returncode, 0, p.stderr)
                 self.assertTrue(p.stdout)

@@ -3,8 +3,9 @@ import json
 import re
 import shlex
 import subprocess
+from urllib.parse import urlsplit
 
-from .common import BossError
+from .common import BossError, refuse
 
 
 PR_PATTERN = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)\Z")
@@ -118,10 +119,44 @@ def inspect_worktree(host, path, branch, base):
         raise BossError("git", f"invalid worktree evidence: {exc}") from None
 
 
+def repository_from_origin(origin):
+    """Accept GitHub origin URLs, never a lookalike hostname or extra path."""
+    scp = re.fullmatch(r"(?:[^/@:]+@)?github\.com:([^\s]+)", origin)
+    try:
+        url = urlsplit(origin) if not scp else None
+        if scp:
+            path = scp[1]
+        elif (url.scheme in ("https", "http", "ssh", "git") and url.hostname == "github.com"
+              and not url.query and not url.fragment):
+            path = url.path.lstrip("/")
+        else:
+            return None
+    except ValueError:
+        return None
+    path = path.rstrip("/")
+    if path.endswith(".git"):
+        path = path[:-4]
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", path) or any(p in (".", "..") for p in path.split("/")):
+        return None
+    return path
+
+
+def resolve_repository(host, workspace_root):
+    if not isinstance(workspace_root, str) or not workspace_root:
+        refuse("T3 project has no workspaceRoot for origin lookup", "check the T3 project workspace")
+    argv = ["git", "-C", workspace_root, "remote", "get-url", "origin"]
+    if host.get("ssh"):
+        argv = ["ssh", "-oBatchMode=yes", "-oConnectTimeout=10", host["ssh"], shlex.join(argv)]
+    origin = run(argv).strip()
+    repository = repository_from_origin(origin)
+    if not repository:
+        refuse("project origin must identify a GitHub owner/repo", "check git remote get-url origin on the project host")
+    return repository
+
+
 def github_repository(project):
     identity = project.get("repositoryIdentity") or {}
     if identity.get("owner") and identity.get("name"):
         return identity["owner"] + "/" + identity["name"]
     url = (identity.get("locator") or {}).get("remoteUrl", "")
-    match = re.search(r"github\.com[:/]([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?$", url)
-    return match[1] if match else None
+    return repository_from_origin(url)

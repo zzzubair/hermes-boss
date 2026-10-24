@@ -1,12 +1,12 @@
 """Task lifecycle: durable intent first, live evidence before every guard."""
 import copy
 import json
-import re
 import uuid
 
 from .common import BossError, compact, refuse, require_text
-from .integrations import GitHub, PR_PATTERN, github_repository, inspect_worktree
+from .integrations import GitHub, PR_PATTERN, github_repository, inspect_worktree, resolve_repository
 from .mcp import MCP
+from .preferences import compose_brief, notes_path, project_name
 
 
 TERMINAL = {"completed", "failed", "interrupted", "cancelled", "rolled_back", "idle"}
@@ -82,43 +82,108 @@ class Boss:
                 raise BossError("model", f"unsupported {key}={value}", "choose an option from the live T3 catalog", 1)
         return selection
 
-    def project_info(self, client, project_id):
-        cursor = None
+    def project_catalog(self, host_name):
+        client = self.client(host_name)
+        projects, seen, cursor = [], set(), None
         while True:
             page = client.call("t3_project_list", limit=100, **({"cursor": cursor} if cursor is not None else {}))
-            for project in page["projects"]:
-                if project["id"] == project_id:
-                    return project
+            projects.extend(page["projects"])
             next_cursor = page.get("nextCursor")
             if next_cursor is None:
-                raise BossError("project", "configured project_id does not exist on selected host", "edit config.toml", 1)
-            if next_cursor == cursor:
+                return sorted(projects, key=lambda p: (p["title"], p["id"]))
+            if next_cursor in seen:
                 raise BossError("protocol", "t3_project_list repeated its cursor")
+            seen.add(next_cursor)
             cursor = next_cursor
+
+    def lookup_title(self, name, host_name):
+        projects = self.project_catalog(host_name)
+        matches = [p for p in projects if p["title"] == name]
+        if len(matches) != 1:
+            candidates = "; ".join(f"{p['title']} ({p['id']})" for p in (matches or projects)) or "0 projects"
+            refuse(f"{len(matches)} exact title matches for {name} on {host_name}; candidates: {candidates}",
+                   f"boss project list --host {host_name}")
+        return matches[0]
+
+    def resolve_project(self, name, host=None):
+        settings = self.config.project(name)
+        host_name = host or settings.get("host") or self.config.default_host
+        if settings.get("project_id"):
+            info = next((p for p in self.project_catalog(host_name) if p["id"] == settings["project_id"]), None)
+            if info is None:
+                refuse("configured project_id does not exist on selected host", f"boss project list --host {host_name}")
+            source = "registry"
+        else:
+            info = self.lookup_title(name, host_name)
+            source = "registry + T3 lookup" if name in self.config.projects else "T3 lookup"
+        # Registry values are authoritative. T3's nullable repositoryIdentity
+        # is not needed: discovery reads origin on the actual project host.
+        repository = settings.get("repository") or resolve_repository(self.config.hosts[host_name], info.get("workspaceRoot"))
+        effective = {"host": host_name, "project_id": info["id"], "repository": repository,
+                     "delivery": "direct-PR", "auto_merge": False, "no_mistakes": False, **settings}
+        effective["host"] = host_name
+        effective["model_selection"] = settings.get("model_selection") or info.get("defaultModelSelection")
+        return effective, info, source
+
+    def project_list(self, host=None):
+        host_name = host or self.config.default_host
+        rows = []
+        registry = {name: self.config.project(name) for name in self.config.projects}
+        for info in self.project_catalog(host_name):
+            registered = []
+            for name, settings in registry.items():
+                if (settings.get("host") or self.config.default_host) != host_name:
+                    continue
+                matches = settings["project_id"] == info["id"] if settings.get("project_id") else name == info["title"]
+                if matches:
+                    registered.append(name)
+            names = set(registered + [info["title"]])
+            has_notes = False
+            for name in names:
+                try:
+                    has_notes |= notes_path(self.store.home, name).is_file()
+                except BossError:
+                    # A title containing '/' can be listed, but cannot name a notes file.
+                    continue
+            rows.append({"id": info["id"], "name": info["title"], "registry": bool(registered), "notes": has_notes})
+        return host_name, rows
+
+    def project_add(self, name, host=None, **preferences):
+        project_name(name)
+        if name in self.config.projects:
+            refuse(f"project {name} already has a registry entry", f"boss project show {name}")
+        host_name = host or self.config.default_host
+        info = self.lookup_title(name, host_name)
+        repository = resolve_repository(self.config.hosts[host_name], info.get("workspaceRoot"))
+        settings = {"host": host_name, "project_id": info["id"], "repository": repository}
+        settings.update({k: v for k, v in preferences.items() if v is not None})
+        if "test_host" in settings:
+            require_text(settings["test_host"], "test_host", 200)
+        self.config.add_project(name, settings)
+        return settings
 
     def spawn(self, project_name, title, brief, kind="ship", host=None, model=None, effort=None):
         require_text(title, "title", 300)
-        require_text(brief, "brief", 115000)
-        project = self.config.project(project_name)
-        host_name = host or project["host"]
+        require_text(brief, "task brief", 115000)
+        project, info, source = self.resolve_project(project_name, host)
+        host_name = project["host"]
         client = self.client(host_name)
-        info = self.project_info(client, project["project_id"])
-        repo = project.get("repository") or github_repository(info)
-        if not repo:
-            raise BossError("config", "project needs repository = owner/repo to resolve origin's default branch", exit_code=1)
-        actual_repo = github_repository(info)
-        if actual_repo and actual_repo.lower() != repo.lower():
-            refuse("configured repository differs from the selected T3 project", "fix config.toml before spawning")
+        repo = project["repository"]
+        delivery = project["delivery"]
+        # Render only settings actually supplied, rather than injecting defaults
+        # into the worker's preference layer. auto_merge stays supervisor-only.
+        configured = self.config.project(project_name)
+        message = compose_brief(brief, self.store.home, project_name, configured, footer(kind, delivery), self.redact)
         base = self.github.default_branch(repo)
         selection = self.model_selection(client, info, project.get("model_selection"), model, effort)
         task_id = self.store.new_id()
-        delivery = project.get("delivery", "direct-PR")
         meta = {"id": task_id, "project": project_name, "project_id": project["project_id"],
                 "host": host_name, "repository": repo, "title": title, "kind": kind,
                 "delivery": delivery, "branch": "boss/" + task_id, "base": base,
                 "model_selection": selection, "thread_id": None, "settled": False,
-                "status": "launching"}
-        message = brief + footer(kind, delivery)
+                "status": "launching", "auto_merge": project["auto_merge"],
+                "no_mistakes": project["no_mistakes"], "test_host": project.get("test_host"),
+                "project_source": source}
         self.store.text(task_id, "brief.md", message)
         self.store.save(meta, "launch_intent")
         try:

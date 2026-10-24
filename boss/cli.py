@@ -8,6 +8,7 @@ import sys
 from . import __version__
 from .common import BossError, Redactor, compact, require_text
 from .config import Config
+from .preferences import notes_path
 from .service import Boss, ci_text
 from .state import Store
 
@@ -54,6 +55,19 @@ def parser():
     settle.add_argument("id")
     settle.add_argument("--discard-approved", metavar="QUOTE", help="captain's explicit authority to leave work unlanded")
     commands.add_parser("poll", help="one deterministic pass; only unresolved actionable items, otherwise silent")
+    project = commands.add_parser("project", help="discover T3 projects and inspect or save preferences")
+    projects = project.add_subparsers(dest="project_command", required=True)
+    project_list = projects.add_parser("list", help="list T3 projects with registry/notes markers")
+    project_list.add_argument("--host", help="override default_host")
+    project_add = projects.add_parser("add", help="append a discovered project to config.toml")
+    project_add.add_argument("name")
+    project_add.add_argument("--host", help="override default_host")
+    project_add.add_argument("--delivery", choices=("direct-PR", "local-only"))
+    project_add.add_argument("--auto-merge", action="store_true", default=None, help="supervisor preference only; workers never merge")
+    project_add.add_argument("--test-host", help="preferred host for tests; rendered in briefs")
+    project_add.add_argument("--no-mistakes", action="store_true", default=None, help="render no_mistakes: true in briefs")
+    project_show = projects.add_parser("show", help="show effective settings and preference sources")
+    project_show.add_argument("name")
     decide = commands.add_parser("decide", help="record decisions that need the captain")
     decisions = decide.add_subparsers(dest="decision_command", required=True)
     add = decisions.add_parser("add", help="open a durable decision")
@@ -93,7 +107,7 @@ def fleet(boss, full=False):
         except BossError as exc:
             state = "unavailable"
             errors.append(exc)
-        lines.append(f"{meta['id']}: {meta['project']} {state} {compact(meta['title'], None if full else 80)}")
+        lines.append(f"{meta['id']}: {meta['project']} {state} {compact(meta['title'], None if full else 80)} auto_merge={str(meta.get('auto_merge', False)).lower()}")
     if counts:
         lines.append("states: " + " ".join(f"{k}={v}" for k, v in sorted(counts.items())))
     lines.extend(decision_lines(boss.store, full))
@@ -115,6 +129,32 @@ def dispatch(args, boss):
     full = getattr(args, "full", False)
     if command is None or (command == "status" and not args.id):
         return fleet(boss, full)
+    if command == "project":
+        if args.project_command == "list":
+            host_name, rows = boss.project_list(args.host)
+            lines = [f"{len(rows)} projects host={host_name}"]
+            for row in rows:
+                lines.append(f"{row['id']}: {compact(row['name'], 120)} registry={str(row['registry']).lower()} notes={str(row['notes']).lower()}")
+            hint = f"boss project add <name> --host {args.host}" if args.host else "boss project show <name>"
+            return lines + [f"next: {hint}"], 0
+        if args.project_command == "add":
+            boss.project_add(args.name, args.host, delivery=args.delivery, auto_merge=args.auto_merge,
+                             test_host=args.test_host, no_mistakes=args.no_mistakes)
+            return [f"{compact(args.name)}: registered", f"next: boss project show {compact(args.name)}"], 0
+        settings, _, source = boss.resolve_project(args.name)
+        rules = boss.store.home / "rules.md"
+        notes = notes_path(boss.store.home, args.name)
+        lines = [f"project: {compact(args.name)}", f"source: {source}",
+                 f"host: {settings['host']}", f"project_id: {settings['project_id']}",
+                 f"repository: {settings['repository']}", f"delivery: {settings['delivery']}",
+                 f"auto_merge: {str(settings['auto_merge']).lower()}",
+                 f"test_host: {compact(settings.get('test_host', 'unset'))}",
+                 f"no_mistakes: {str(settings['no_mistakes']).lower()}",
+                 "model_selection: " + json.dumps(settings['model_selection'], sort_keys=True, separators=(',', ':'))]
+        lines.append(f"registry: {boss.config.path}" if args.name in boss.config.projects else "registry: absent")
+        lines.append(f"rules: {rules}" if rules.is_file() else "rules: absent")
+        lines.append(f"notes: {notes}" if notes.is_file() else "notes: absent")
+        return lines + [f'next: boss spawn {compact(args.name)} --title "<task>" --brief-file <file>'], 0
     if command == "spawn":
         if args.brief_file and args.brief_file != "-":
             brief = Path(args.brief_file).read_text(encoding="utf-8")
@@ -129,7 +169,12 @@ def dispatch(args, boss):
         meta = boss.store.load(args.id)
         view = boss.snapshot(meta)
         lines = [f"{meta['id']}: {meta['project']} {view['status']}" + (" settled" if meta.get("settled") else ""),
-                 f"thread: {meta['thread_id']}", f"host: {meta['host']}", f"{len(view['requests'])} pending input requests"]
+                 f"thread: {meta['thread_id']}", f"host: {meta['host']}",
+                 f"auto_merge: {str(meta.get('auto_merge', False)).lower()}",
+                 f"no_mistakes: {str(meta.get('no_mistakes', False)).lower()}"]
+        if meta.get("test_host"):
+            lines.append(f"test_host: {compact(meta['test_host'])}")
+        lines.append(f"{len(view['requests'])} pending input requests")
         client = boss.client(meta["host"])
         for request_id in view["requests"]:
             request = client.call("t3_pending_request_read", threadId=meta["thread_id"], requestId=request_id)

@@ -25,10 +25,20 @@ stays intact. No agent hooks or Hermes configuration are changed by installation
 ## Configuration
 
 Create `~/.boss/config.toml`, or set `BOSS_HOME` to another state directory.
-Get project IDs from T3's `t3_project_list` MCP tool. IDs belong to a particular
-T3 host; `--host` does not translate them between machines.
+Projects do not need a registry entry: `boss spawn <name>` looks for exactly
+one matching T3 project title on `default_host`, which defaults to `oracle`.
+`--host` overrides the selected host. No match or duplicate titles refuse with
+candidate names and IDs. Discovery reads `git remote get-url origin` from the
+project's `workspaceRoot` on that host, locally or over its configured SSH
+connection. Only GitHub owner/repo origins are accepted, including HTTPS and
+SSH Git remotes; T3's `repositoryIdentity` can be null.
+
+Registry values override discovery and defaults. Registry IDs belong to a
+particular T3 host; `--host` does not translate them between machines.
 
 ```toml
+default_host = "oracle"
+
 # These three hosts are built in, using loopback tunnels as seen from ser5ver.
 [hosts.ser5ver]
 url = "http://127.0.0.1:3773/mcp"
@@ -48,8 +58,11 @@ ssh = "wsl"
 [projects.clashlens]
 host = "ser5ver"
 project_id = "<T3 project ID on ser5ver>"
-repository = "zzzubair/clashlens"   # Optional if T3 reports GitHub identity
+repository = "zzzubair/clashlens"   # Optional; otherwise read origin on the host
 delivery = "direct-PR"            # Or "local-only"
+auto_merge = false                # Supervisor preference only; workers never merge
+test_host = "wsl"                 # Optional instruction for the worker
+no_mistakes = true                # Optional instruction for the worker
 
 [projects.clashlens.model_selection]
 instanceId = "codex"
@@ -81,10 +94,63 @@ Model defaults come from the registry, then the T3 project. `--model` and
 `--effort` are checked against T3's live catalog; unsupported settings fail
 before launch. Use `providerInstanceId:model` if a model ID is ambiguous.
 
+## Preference layers
+
+All preferences are optional. `~/.boss/rules.md` supplies global worker rules.
+`[projects.<name>]` supplies settings, and `~/.boss/projects/<name>.md` supplies
+project notes. Settings-only entries can omit host, project ID and repository
+and still use title discovery. `auto_merge` and `no_mistakes` default to false;
+`test_host` has no default. These values are stored with each spawned task.
+`auto_merge` appears in project details and task status for the supervisor;
+it grants no merge authority to the worker or the CLI.
+
+For example:
+
+```text
+~/.boss/rules.md: Work in small steps and include verification evidence.
+~/.boss/projects/clashlens.md: Run browser checks on wsl.
+```
+
+With `test_host = "wsl"` and `no_mistakes = true` in the project's config,
+the saved and sent brief contains, in order:
+
+```markdown
+<task brief>
+
+## Rules
+Work in small steps and include verification evidence.
+
+## Project settings
+test_host: wsl
+no_mistakes: true
+
+## Project notes
+Run browser checks on wsl.
+
+Project settings and project notes win over global rules when they conflict; the boss worker contract below always applies.
+
+## boss worker contract
+<existing kind/delivery instructions, including never merge and never deploy>
+```
+
+Empty sections are skipped. Only explicitly set `test_host` and `no_mistakes`
+values are rendered in the settings section; `auto_merge` stays out of worker
+instructions. The final composed brief, including the footer, is limited to
+115000 characters. A size error names the layer to shorten. Rules and notes
+are checked with the existing secret redactor before launch; a detected token
+or secret refuses the spawn without echoing its value or saving a task.
+
+Code conventions (package manager, folders not to touch) belong in the repo's AGENTS.md, not boss.
+
 ## Commands
 
 ```sh
 boss                                      # Live active fleet, counts, decisions, next step
+boss project list                         # T3 projects on default_host, with registry/notes markers
+boss project list --host oracle
+boss project add clashlens --host oracle  # Save discovery results; optional, not required to spawn
+boss project add homepage --delivery local-only --auto-merge --test-host wsl --no-mistakes
+boss project show clashlens               # Effective settings and contributing files
 boss spawn clashlens --title "Fix login" --brief-file brief.md
 cat brief.md | boss spawn clashlens --title "Inspect login" --kind scout
 boss spawn clashlens --title "Fix login" --brief-file brief.md \
@@ -104,7 +170,7 @@ boss decide close <decision-id> "Use the existing API."
 boss poll
 ```
 
-Every command and decision subcommand has `--help`. Omit `--brief-file` or
+Every command, project subcommand and decision subcommand has `--help`. Omit `--brief-file` or
 use `--brief-file -` to read piped stdin. Interactive missing input fails
 instead of prompting. Multi-question input requests take one JSON object:
 `boss answer <id> <request> '{"question_a":"yes","question_b":"existing"}'`.
@@ -112,6 +178,13 @@ Answers cannot approve permission requests. `--full` also works on the fleet
 view and decision list. Default messages include a total character count when
 truncated. Output uses terse key/value records with explicit totals such as
 `0 active tasks` and `0 open decisions`.
+
+`project add` appends a quoted `[projects.<name>]` block containing the host,
+project ID and resolved repository, plus any supplied preference flags. It
+preserves all existing config text and comments using an atomic write, and
+refuses an existing entry. `project show` reports registry versus T3 lookup,
+effective model/delivery/preferences, and whether `rules.md` and project notes
+are present. It reads settings; it does not launch a worker or change config.
 
 Delivery modes:
 
@@ -182,6 +255,8 @@ as `error`, `message`, `next`; no traceback or token is printed.
 ```text
 ~/.boss/
   config.toml
+  rules.md                  # Optional global worker rules
+  projects/<name>.md         # Optional project notes
   tasks/<id>/meta.json
   tasks/<id>/brief.md
   tasks/<id>/events.log
@@ -225,6 +300,10 @@ report capture, restart recovery, JSON/SSE sessions and token redaction.
 The live script launches only a trivial scratch worker, compares two polls,
 captures its report, settles it and reads T3 back. It does not merge anything.
 Oracle's verified smoke output is in [evidence/oracle-smoke.txt](evidence/oracle-smoke.txt).
+Project-discovery coverage also checks title matches, local/SSH origin lookup,
+ordered preference layers, size and secret refusals, and config append safety.
+The read-only oracle project-list smoke is recorded in
+[evidence/oracle-project-list.txt](evidence/oracle-project-list.txt).
 
 Design references only: [AXI's ten principles](https://axi.md/),
 [Firstmate vision](https://github.com/kunchenguid/firstmate/blob/main/VISION.md),
