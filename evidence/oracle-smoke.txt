@@ -1,0 +1,9 @@
+spawn: scratch thread=mcp:68d63001-5ab9-441e-ba56-46064e1c817b
+poll: e08d86ae9424: finished
+poll_repeat: byte-identical
+report: smoke-ok
+e08d86ae9424: settled
+next: boss
+verified: T3 settled=true
+poll_after_settle: empty
+fleet: 0 active tasks
