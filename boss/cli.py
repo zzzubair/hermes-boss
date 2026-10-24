@@ -1,13 +1,17 @@
 """Content-first command line with stable, terse records."""
 import argparse
+import copy
 import json
 import os
 from pathlib import Path
 import sys
+import tomllib
+
+from .setup import initialize, doctor
 
 from . import __version__
 from .common import BossError, Redactor, compact, require_text
-from .config import Config, DEFAULT_HOSTS
+from .config import Config, boss_home, flatten, display_key, key_parts, literal
 from .preferences import goal_path, notes_path
 from .service import Boss, ci_text
 from .state import Store
@@ -28,12 +32,42 @@ def parser():
     root.add_argument("--version", action="version", version="boss " + __version__)
     root.add_argument("--full", action="store_true", help="show complete text")
     commands = root.add_subparsers(dest="command")
+    init = commands.add_parser("init", help="detect local T3 and save a minimal config; non-interactive")
+    init.add_argument("--url", help="MCP URL; default http://127.0.0.1:3773/mcp")
+    init.add_argument("--name", default="local", help="host name to save")
+    init.add_argument("--token-env", default="T3_MCP_TOKEN")
+    init.add_argument("--force", action="store_true", help="update the named host and default in an existing config")
+    commands.add_parser("doctor", help="check local installation, host access and optional wake cron")
+    host = commands.add_parser("host", help="manage explicit MCP endpoints")
+    hosts = host.add_subparsers(dest="host_command", required=True)
+    host_add = hosts.add_parser("add")
+    host_add.add_argument("name")
+    host_add.add_argument("--url", required=True)
+    host_add.add_argument("--token-env", default="T3_MCP_TOKEN")
+    host_add.add_argument("--ssh")
+    hosts.add_parser("list")
+    for action in ("remove", "test"):
+        hosts.add_parser(action).add_argument("name")
+    config = commands.add_parser("config", help="inspect or edit strict TOML settings")
+    configs = config.add_subparsers(dest="config_command", required=True)
+    show = configs.add_parser("show")
+    show.add_argument("--origin", action="store_true")
+    show.add_argument("--project", help="apply this project's layer")
+    for flag in ("host", "worker", "model", "effort", "kind", "merge", "delivery"):
+        choices = {"kind": ("ship", "scout"), "merge": ("never", "approved", "auto"), "delivery": ("direct-PR", "local-only")}
+        show.add_argument("--" + flag, choices=choices.get(flag))
+    for action in ("get", "set", "unset"):
+        item = configs.add_parser(action)
+        item.add_argument("key")
+        if action == "set":
+            item.add_argument("value", help="TOML literal, or bare text for a string")
     spawn = commands.add_parser("spawn", help="launch one isolated coding worker")
     spawn.add_argument("project")
     spawn.add_argument("--title", required=True)
     spawn.add_argument("--brief-file", metavar="FILE", help="UTF-8 brief; omitted or '-' reads piped stdin")
-    spawn.add_argument("--kind", choices=("ship", "scout"), default="ship")
+    spawn.add_argument("--kind", choices=("ship", "scout"))
     spawn.add_argument("--host", help="registry host override; project_id must exist there")
+    spawn.add_argument("--worker", help="named worker preset")
     spawn.add_argument("--model", help="model id or providerInstanceId:model")
     spawn.add_argument("--effort", help="exact effort value supported by that model")
     spawn.add_argument("--fits", metavar="TEXT", help="one line reconciling this task with the project goal and active steers")
@@ -55,7 +89,8 @@ def parser():
     settle = commands.add_parser("settle", help="unwatch PRs and settle a terminal thread; preserve its worktree")
     settle.add_argument("id")
     settle.add_argument("--discard-approved", metavar="QUOTE", help="captain's explicit authority to leave work unlanded")
-    commands.add_parser("poll", help="one LLM-free pass; changed actionable items only, otherwise silent")
+    poll = commands.add_parser("poll", help="one LLM-free pass; changed actionable items only, otherwise silent")
+    poll.add_argument("--hermes-gate", action="store_true", help="Hermes wake script contract; log errors and stay silent")
     project = commands.add_parser("project", help="discover T3 projects and inspect or save preferences")
     projects = project.add_subparsers(dest="project_command", required=True)
     project_list = projects.add_parser("list", help="list T3 projects with registry/notes markers")
@@ -64,6 +99,8 @@ def parser():
     project_add.add_argument("name")
     project_add.add_argument("--host", help="override default_host")
     project_add.add_argument("--delivery", choices=("direct-PR", "local-only"))
+    project_add.add_argument("--merge", choices=("never", "approved", "auto"))
+    project_add.add_argument("--worker")
     project_add.add_argument("--auto-merge", action="store_true", default=None, help="supervisor preference only; workers never merge")
     project_add.add_argument("--test-host", help="preferred host for tests; rendered in briefs")
     project_add.add_argument("--no-mistakes", action="store_true", default=None, help="render no_mistakes: true in briefs")
@@ -129,6 +166,8 @@ def fleet(boss, full=False):
         lines.append("next: boss status <id>")
     elif any(not d.get("closed") for d in boss.store.decisions()):
         lines.append('next: boss decide close <id> "<captain resolution>"')
+    elif not boss.config.hosts:
+        lines.append("next: boss init")
     else:
         lines.append('next: boss spawn <project> --title "<task>" --brief-file <file>')
     return lines, max((e.exit_code for e in errors), default=0)
@@ -137,6 +176,59 @@ def fleet(boss, full=False):
 def dispatch(args, boss):
     command = args.command
     full = getattr(args, "full", False)
+    if command == "init":
+        return initialize(boss, args)
+    if command == "doctor":
+        return doctor(boss)
+    if command == "host":
+        config = boss.config
+        if args.host_command == "list":
+            return ([f"{name}: {host['url']} token_env={host.get('token_env', 'T3_MCP_TOKEN')}" +
+                     (f" ssh={host['ssh']}" if host.get("ssh") else "") for name, host in sorted(config.hosts.items())]
+                    or ["no hosts configured; next: boss init"]), 0
+        if args.host_command == "test":
+            rows = boss.project_catalog(args.name)
+            return [f"{args.name}: MCP handshake ok; {len(rows)} projects", *[f"{p['id']}: {p['title']}" for p in rows]], 0
+        if args.host_command == "add":
+            if args.name in config.hosts:
+                raise BossError("config", f"host {args.name} already exists", "use boss config set hosts.<name>.url <url>", 1)
+            config.change("hosts." + literal(args.name), {"url": args.url, "token_env": args.token_env,
+                          **({"ssh": args.ssh} if args.ssh else {})})
+        else:
+            if args.name not in config.hosts:
+                raise BossError("config", f"unknown host {args.name}", "boss host list", 1)
+            data = copy.deepcopy(config.data)
+            del data["hosts"][args.name]
+            if data.get("default_host") == args.name:
+                data.pop("default_host")
+            config.write(data)
+        return [f"{args.name}: {'added' if args.host_command == 'add' else 'removed'}"], 0
+    if command == "config":
+        config = boss.config
+        if args.config_command == "show":
+            overrides = {k: getattr(args, k) for k in ("host", "worker", "model", "effort", "kind", "merge", "delivery") if getattr(args, k) is not None}
+            values, origins = config.effective(args.project, overrides)
+            rows = [(path, value, origins[path]) for path, value in flatten(values)]
+            for section in ("hosts", "workers", "projects"):
+                rows.extend((path, value, str(config.path)) for path, value in flatten({section: config.data.get(section, {})}))
+            return [(f"{origin}\t" if args.origin else "") + f"{display_key(path)} = {literal(value)}"
+                    for path, value, origin in sorted(rows)], 0
+        if args.config_command == "get":
+            values, _ = config.effective()
+            node = {**values, **{k: config.data.get(k, {}) for k in ("hosts", "workers", "projects")}}
+            for part in key_parts(args.key):
+                if not isinstance(node, dict) or part not in node:
+                    raise BossError("config", f"unset key {args.key}", "boss config show --origin", 1)
+                node = node[part]
+            return [literal(node)], 0
+        value = None
+        if args.config_command == "set":
+            try:
+                value = tomllib.loads("value = " + args.value)["value"]
+            except ValueError:
+                value = args.value
+        config.change(args.key, value, unset=args.config_command == "unset")
+        return [f"{args.key}: {'unset' if args.config_command == 'unset' else 'set'}"], 0
     if command is None or (command == "status" and not args.id):
         return fleet(boss, full)
     if command == "goal":
@@ -170,7 +262,7 @@ def dispatch(args, boss):
             hint = f"boss project add <name> --host {args.host}" if args.host else "boss project show <name>"
             return lines + [f"next: {hint}"], 0
         if args.project_command == "add":
-            boss.project_add(args.name, args.host, delivery=args.delivery, auto_merge=args.auto_merge,
+            boss.project_add(args.name, args.host, delivery=args.delivery, auto_merge=args.auto_merge, merge=args.merge, worker=args.worker,
                              test_host=args.test_host, no_mistakes=args.no_mistakes)
             return [f"{compact(args.name)}: registered", f"next: boss project show {compact(args.name)}"], 0
         settings, _, source = boss.resolve_project(args.name)
@@ -179,10 +271,15 @@ def dispatch(args, boss):
         lines = [f"project: {compact(args.name)}", f"source: {source}",
                  f"host: {settings['host']}", f"project_id: {settings['project_id']}",
                  f"repository: {settings['repository']}", f"delivery: {settings['delivery']}",
+                 f"merge: {settings['merge']}",
                  f"auto_merge: {str(settings['auto_merge']).lower()}",
                  f"test_host: {compact(settings.get('test_host', 'unset'))}",
                  f"no_mistakes: {str(settings['no_mistakes']).lower()}",
                  "model_selection: " + json.dumps(settings['model_selection'], sort_keys=True, separators=(',', ':'))]
+        effective, origins = boss.config.effective(args.name)
+        for key in ("worker", "model", "effort", "host", "kind"):
+            if key in effective:
+                lines.append(f"{key}: {literal(effective[key])} origin={origins[(key,)]}")
         lines.append(f"registry: {boss.config.path}" if args.name in boss.config.projects else "registry: absent")
         lines.append(f"rules: {rules}" if rules.is_file() else "rules: absent")
         lines.append(f"notes: {notes}" if notes.is_file() else "notes: absent")
@@ -198,7 +295,7 @@ def dispatch(args, boss):
             brief = sys.stdin.read(115001)
         else:
             raise BossError("usage", "supply --brief-file or pipe a brief on stdin", "boss spawn --help", 1)
-        meta = boss.spawn(args.project, args.title, brief, args.kind, args.host, args.model, args.effort, args.fits)
+        meta = boss.spawn(args.project, args.title, brief, args.kind, args.host, args.model, args.effort, args.fits, args.worker)
         return [f"{meta['id']}: spawned {meta['host']} {meta['status']}",
                 f"thread: {meta['thread_id']}", f"next: boss status {meta['id']}"], 0
     if command == "status":
@@ -276,11 +373,37 @@ def dispatch(args, boss):
 
 
 def main(argv=None):
+    if argv is None:
+        argv = sys.argv[1:]
+    if "--hermes-gate" in argv and argv and argv[0] == "poll":
+        import contextlib
+        import io
+        from datetime import datetime, timezone
+        output, errors = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            try:
+                code = main([arg for arg in argv if arg != "--hermes-gate"])
+            except Exception as exc:
+                # A cron gate must also fail quiet on unexpected dependency errors.
+                # Never log raw exceptions here: they may contain unregistered secrets.
+                print(f"error: unexpected {type(exc).__name__}; run boss poll to investigate")
+                code = 3
+        text = output.getvalue().strip()
+        if code:
+            try:
+                log = boss_home() / "logs/poll.log"
+                log.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                with log.open("a") as stream:
+                    stream.write(datetime.now(timezone.utc).isoformat() + " " + text + errors.getvalue() + "\n")
+            except OSError:
+                pass
+        print(text if text and not code else '{"wakeAgent": false}')
+        return 0
     redact = Redactor()
-    redact.discover(os.environ, token_keys=(h["token_env"] for h in DEFAULT_HOSTS.values()))
+    redact.discover(os.environ)
     try:
         args = parser().parse_args(argv)
-        home = Path(os.environ.get("BOSS_HOME", "~/.boss")).expanduser()
+        home = boss_home()
         config = Config(home, redact)
         store = Store(home, redact)
         with store.locked():

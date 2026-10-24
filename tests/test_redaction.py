@@ -76,6 +76,7 @@ class SecretDiscoveryTest(HermeticTestCase):
         directory = self.user_home / ".hermes"
         directory.mkdir()
         (directory / ".env").write_text("T3_ORACLE_MCP_TOKEN=tiny\n")
+        (self.home / "config.toml").write_text('[hosts.explicit]\nurl="http://127.0.0.1:3773/mcp"\ntoken_env="T3_ORACLE_MCP_TOKEN"\n')
         with patch.dict(os.environ, {"T3_ORACLE_MCP_TOKEN": "replacement-host-token-value"}):
             redact = self.config()
         self.assertEqual(redact("tiny replacement-host-token-value"), "[REDACTED] [REDACTED]")

@@ -1,439 +1,355 @@
 # boss
 
-`boss` lets JigglyPuff, the Hermes agent on ser5ver, supervise coding workers as
-T3 Code threads. One CLI owns task briefs, live status, pending questions,
-PR checks and captain decisions. Workers never merge or deploy.
+`boss` is a stdlib Python CLI for an agent to supervise T3 Code workers. It can
+spawn, watch, steer and land workers while keeping a durable local ledger.
+It runs no daemon and makes no LLM calls. `poll` uses MCP and GitHub evidence;
+only a worker or a Hermes agent that wakes consumes model tokens.
 
-Python 3.12+, standard library only. Runtime commands also use authenticated
-`gh`, `git`, and `ssh` when inspecting remote worktrees. There is no daemon,
-Python package download, Firstmate dependency, or background watcher.
+## Install and first run
 
-## Install
+Requires Python 3.12+, Git, authenticated `gh`, Hermes, and T3 Code with its
+HTTP MCP endpoint enabled. Linux and macOS are supported.
 
 ```sh
 git clone https://github.com/zzzubair/hermes-boss.git
 cd hermes-boss
 ./install.sh
-boss --help
+export PATH="$HOME/.local/bin:$PATH"
+# Put the T3 MCP token in T3_MCP_TOKEN in your environment or $HERMES_HOME/.env.
+boss init
+hermes plugins enable boss
+boss doctor
+boss project list
+printf '%s\n' 'Inspect the project and report what you find.' |
+  boss spawn my-project --title 'First scout' --kind scout
 ```
 
-The installer symlinks `~/.local/bin/boss` to this checkout's `bin/boss`,
-`~/.agents/skills/boss` to `skill/`, and `~/.hermes/plugins/boss` to `plugin/`.
-Keep the checkout and put `~/.local/bin` on PATH. Existing real files or
-directories at these destinations refuse installation; existing symlinks can
-be updated. For development use `python3 -m boss` or `./bin/boss`.
-Remove those three symlinks to uninstall; the ledger stays intact.
-
-Installation does not enable the plugin or change any Hermes config. It
-prints the opt-in enable command:
+`init` probes `http://127.0.0.1:3773/mcp`, performs an MCP handshake and lists
+projects before saving a minimal config with a `local` host and `default_host`.
+There are **no built-in hosts**. To use another endpoint or token variable:
 
 ```sh
-hermes plugins enable boss
+boss init --url https://coding.example.com/mcp --name workstation --token-env MY_T3_TOKEN
 ```
 
-The `boss` skill provides the command/guard reference on demand. Its ambient
-plugin registers exactly one `pre_llm_call` callback and returns one line only
-when local records need attention. It never calls the CLI, T3, GitHub, a
-subprocess or an LLM. When nothing needs attention it returns `None`, adding
-zero context tokens. No Hermes core files are patched.
+All setup flags are non-interactive. Repeating `init` leaves an existing config
+unchanged. `--force` permits updating the named host and `default_host`, while
+preserving other hosts, projects and roles. Failed probes leave config unchanged.
+Existing configs can instead use `boss host add` followed by `boss config set default_host`.
 
-## Configuration
+The installer links this checkout into `~/.local/bin/boss`,
+`$HERMES_HOME/plugins/boss`, `$HERMES_HOME/skills/boss` and
+`~/.agents/skills/boss`. Keep the clone at its installed path.
+The default install changes no Hermes configuration and creates no cron.
+The plugin remains opt-in through `hermes plugins enable boss`.
 
-Create `~/.boss/config.toml`, or set `BOSS_HOME` to another state directory.
-Projects do not need a registry entry: `boss spawn <name>` looks for exactly
-one matching T3 project title on `default_host`, which defaults to `oracle`.
-`--host` overrides the selected host. No match or duplicate titles refuse with
-candidate names and IDs. Discovery reads `git remote get-url origin` from the
-project's `workspaceRoot` on that host, locally or over its configured SSH
-connection. Only GitHub owner/repo origins are accepted, including HTTPS and
-SSH Git remotes; T3's `repositoryIdentity` can be null.
+`HERMES_HOME` defaults to `~/.hermes`. To install into a profile or custom paths,
+export the corresponding variables when installing **and when running boss**:
 
-Registry values override discovery and defaults. Registry IDs belong to a
-particular T3 host; `--host` does not translate them between machines.
+| Environment variable | Installer flag | Default |
+| --- | --- | --- |
+| `HERMES_HOME` | `--hermes-home` | `~/.hermes` |
+| `BOSS_BIN_DIR` | `--bin-dir` | `~/.local/bin` |
+| `BOSS_PLUGINS_DIR` | `--plugins-dir` | `$HERMES_HOME/plugins` |
+| `BOSS_SKILLS_DIR` | `--skills-dir` | `$HERMES_HOME/skills` |
+| `BOSS_AGENT_SKILLS_DIR` | `--agent-skills-dir` | `~/.agents/skills` |
+| `BOSS_PYTHON` | none | `python3`, for installation |
+
+`boss doctor` prints one line per check with a fix hint on failures. Required
+checks cover Python, GitHub authentication, configured hosts and credentials,
+MCP project access, SSH destination resolution, plugin installation/enabling,
+and the Hermes skill. It exits nonzero if any required check fails. A wake cron
+is optional and is reported separately. SSH resolution does not prove remote
+Git access. Keep custom paths discoverable by Hermes as well as by boss.
+
+## Hosts and credentials
+
+```sh
+boss host add workstation --url http://127.0.0.1:3773/mcp --token-env MY_T3_TOKEN
+boss host add remote --url https://coding.example.com/mcp --ssh build-host
+boss host list
+boss host test workstation
+boss config set default_host workstation
+boss host remove remote
+```
+
+`host test` performs the MCP handshake and lists projects. `--token-env` defaults
+to `T3_MCP_TOKEN`; `--ssh` is an optional SSH destination for Git inspection on
+the worker machine. Without SSH, Git commands run locally. `host remove` clears
+a matching `default_host`; references in projects or roles must be removed first.
+Host additions refuse duplicates. Use `config set hosts.<name>.url` to edit one.
+
+Tokens come from the named environment variable, then `$HERMES_HOME/.env`.
+The dotenv reader accepts literal `KEY=value` lines and quoted values. It never
+sources a shell or evaluates commands. Tokens are never stored in config.
+Explicit host credentials, including overridden dotenv values, are registered
+with the secret redactor. URL credentials, queries and fragments are forbidden;
+plain HTTP is limited to loopback. Use HTTPS or an SSH tunnel for remote MCP.
+
+## Layered configuration
+
+The config file is selected in this order:
+
+1. If `BOSS_HOME` is set, `$BOSS_HOME/config.toml`.
+2. Otherwise `$XDG_CONFIG_HOME/boss/config.toml`, with XDG defaulting to `~/.config`.
+3. If the XDG file does not exist, an existing `~/.boss/config.toml`.
+
+A fresh install writes the XDG file. Config files are selected, not combined.
+The ledger stays at `$BOSS_HOME` or `~/.boss`, independently of XDG config.
+Tasks, decisions, rules, project notes, goals and append-only steers keep their
+existing locations and formats.
+
+Effective settings come from built-in defaults, the user file, a project's
+settings, the selected role, and explicit CLI flags. Defaults are
+`delivery = "direct-PR"`, `merge = "approved"`, `kind = "ship"`,
+`no_mistakes = false`, `extra_rules = []`, with no default host or role.
+Unknown keys and invalid types fail with the full key path, including settings
+for projects that are not currently being spawned.
 
 ```toml
-default_host = "oracle"
+default_host = "local"
+default_worker = "builder"
+merge = "approved"
 
-# These three hosts are built in, using loopback tunnels as seen from ser5ver.
-[hosts.ser5ver]
+[hosts.local]
 url = "http://127.0.0.1:3773/mcp"
-token_env = "T3_SER5VER_MCP_TOKEN"
-ssh = ""                          # Git runs locally on ser5ver
+token_env = "T3_MCP_TOKEN"
 
-[hosts.oracle]
-url = "http://127.0.0.1:13773/mcp"
-token_env = "T3_ORACLE_MCP_TOKEN"
-ssh = "oracle"                    # Inspect Git on oracle, not ser5ver
+[workers.builder]
+model = "codex:gpt-6.1-sol"
+effort = "high"
+kind = "ship"
 
-[hosts.wsl]
-url = "http://127.0.0.1:23773/mcp"
-token_env = "T3_WSL_MCP_TOKEN"
-ssh = "wsl"
+[workers.ui]
+model = "claude:opus-5.5"
+effort = "high"
 
-[projects.clashlens]
-host = "ser5ver"
-project_id = "<T3 project ID on ser5ver>"
-repository = "zzzubair/clashlens"   # Optional; otherwise read origin on the host
-delivery = "direct-PR"            # Or "local-only"
-auto_merge = false                # Supervisor preference only; workers never merge
-test_host = "wsl"                 # Optional instruction for the worker
-no_mistakes = true                # Optional instruction for the worker
+[workers.scout]
+model = "codex:gpt-6.1-sol"
+effort = "low"
+kind = "scout"
 
-[projects.clashlens.model_selection]
-instanceId = "codex"
-model = "gpt-6.1-sol"
+[projects.my-project]
+worker = "builder"
+# Optional project_id bypasses title matching. Repository bypasses Git origin lookup.
+# project_id = "<T3 project ID>"
+# repository = "owner/repo"
+merge = "never"
+delivery = "direct-PR"
+test_host = "workstation"
+no_mistakes = true
+extra_rules = ["Run the formatter before committing"]
 
-[projects.clashlens.model_selection.options]
-reasoningEffort = "high"
+[projects.my-project.workers.ui]
+effort = "xhigh"
 ```
 
-For a CLI running on oracle itself, override `hosts.oracle.url` to
-`http://127.0.0.1:3773/mcp` and set its `ssh = ""`. Git inspection uses the
-configured worker host and the worktree path returned by T3. It requires
-noninteractive SSH authorization and Python 3 on that host.
+Provider instance IDs and model options must exist on the selected host. The
+examples above are illustrative; unsupported effort values fail before launch.
+The legacy `[projects.<name>.model_selection]` table with `model`, `instanceId`
+and an `options` table is still accepted. Live T3 project defaults apply when
+no model is configured.
 
-Tokens come from the named environment variable, then `~/.hermes/.env`.
-The file accepts literal `KEY=value` lines, optionally with matching outer
-quotes. It is never sourced or evaluated. Environment values take precedence.
-Automatic secret discovery ignores values shorter than 12 characters,
-boolean/number literals and config flag keys such as `HERMES_REDACT*`,
-`*_SECRETS` and `*_ENABLED`. Explicit host `token_env` credentials are always
-protected, even when short, including a file credential overridden by the env.
-Never put tokens in TOML, command arguments, URLs or Git. Use T3's pairing and
-OAuth flow to grant MCP read/operate access. `boss` discovers tool schemas on
-every new MCP session, captures `mcp-session-id` from `initialize`, sends the
-initialized notification, and uses Bearer authentication on subsequent requests.
-It supports JSON and SSE responses. HTTP is allowed only on loopback;
-use HTTPS or an SSH tunnel for other addresses. Redirects are refused.
+```sh
+boss config show --origin
+boss config show --origin --project my-project
+boss config show --origin --project my-project --worker ui --effort high
+boss config get projects.my-project.merge
+boss config set projects.my-project.merge never
+boss config set projects.my-project.extra_rules '["Run the formatter"]'
+boss config unset projects.my-project.merge
+```
 
-`gh auth status` must succeed on the machine running `boss`. Launch resolves
-the repository's current GitHub default branch, then asks T3 to fetch origin
-and create a worktree with branch `boss/<id>` from that default branch.
-Model defaults come from the registry, then the T3 project. `--model` and
-`--effort` are checked against T3's live catalog; unsupported settings fail
-before launch. Use `providerInstanceId:model` if a model ID is ambiguous.
+`show` prints effective keys and the stored host, role and project tables.
+`--origin` identifies built-in defaults, the config file, the project or role
+block, or CLI flags for each key. `--project` selects the project layer;
+without it, only global settings and a global default role are effective.
+`get` reads effective global defaults or a dotted stored key. `set` accepts
+TOML literals or bare strings. Quote a component containing dots, for example
+`boss config get 'projects."my.project".merge'`. Editing with `set`, `unset`,
+or host commands rewrites TOML formatting and comments. `project add` preserves
+the existing file and appends its new block.
 
-## Preference layers
+## Worker roles
 
-All preferences are optional. `~/.boss/rules.md` supplies global worker rules.
-`[projects.<name>]` supplies settings, and `~/.boss/projects/<name>.md` supplies
-project notes. Settings-only entries can omit host, project ID and repository
-and still use title discovery. `auto_merge` and `no_mistakes` default to false;
-`test_host` has no default. These values are stored with each spawned task.
-`auto_merge` appears in project details and task status for the supervisor;
-it grants no merge authority to the worker or the CLI.
+Role choice is `--worker`, then the project `worker`, then global
+`default_worker`, then T3's current default behavior. `--kind scout` without
+`--worker` selects the `scout` role when defined. The explicit `--kind` still
+wins over a role's kind.
 
-For example:
+For a selected role, each field resolves in this order:
 
 ```text
-~/.boss/rules.md: Work in small steps and include verification evidence.
-~/.boss/projects/clashlens.md: Run browser checks on wsl.
+[workers.<role>]
+[projects.<project>.workers.<role>]
+explicit --model / --effort / --host / --kind
 ```
 
-With `test_host = "wsl"` and `no_mistakes = true` in the project's config,
-and a goal and active steer, the saved and sent brief contains, in order:
-
-```markdown
-<task brief>
-
-## Rules
-Work in small steps and include verification evidence.
-
-## Project settings
-test_host: wsl
-no_mistakes: true
-
-## Project notes
-Run browser checks on wsl.
-
-## Project goal
-Ship a mobile-first app.
-
-## Captain steers
-- <steer-id>: No PostHog.
-
-Project settings and project notes win over global rules when they conflict; the boss worker contract below always applies.
-
-## boss worker contract
-<existing kind/delivery instructions, including never merge and never deploy>
-```
-
-Empty sections are skipped. Only explicitly set `test_host` and `no_mistakes`
-values are rendered in the settings section; `auto_merge` stays out of worker
-instructions. The final composed brief, including the footer, is limited to
-115000 characters. A size error names the layer to shorten. Rules and notes
-are checked with the existing secret redactor before launch, as are the goal
-and active steers. A detected token or secret refuses the spawn without
-echoing its value or saving a task.
-
-Code conventions (package manager, folders not to touch) belong in the repo's AGENTS.md, not boss.
-
-## Project goal and captain steers
-
-Record the project's goal and every captain steer so later sessions can read
-them before dispatching work:
+Project roles merge field by field and may exist without a global definition.
+An unknown role fails with the available roles for that project. Both
+`config show --origin --project <name>` and `project show <name>` show the
+selected role's effective model, effort, host and kind with their origins.
+The task metadata records the resolved `worker` name.
 
 ```sh
-boss goal clashlens "Ship a mobile-first app."
-boss goal clashlens
-boss steer clashlens "Use PostHog."
-boss steer clashlens "No PostHog." --replaces <steer-id>
-boss steer clashlens "Keep the existing navigation." --task <task-id>
-boss steer list clashlens
-boss steer list clashlens --all
-boss spawn clashlens --title "Fix navigation" --brief-file brief.md \
-  --fits "Improve phone navigation without adding analytics."
+boss spawn my-project --worker ui --title 'Polish navigation' --brief-file brief.md
+boss spawn my-project --worker ui --model claude:opus-5.5 --effort high --title 'Review UI' --brief-file brief.md
 ```
 
-`goal` replaces the current goal atomically. Steers have unique IDs and UTC
-timestamps. Adding a steer appends one JSON-lines record, including any
-`--task` and `--replaces` references. Replacing a steer leaves every existing
-record unchanged. The default list shows active steers; `--all` includes
-history with superseded records marked. Replacements must reference a steer
-in the same project. A related task must already exist in that project;
-`--task` records where the steer came from, and it still applies to future
-project tasks. Goals and steers can be recorded before project registration
-and require no T3 or GitHub connection. Secret-bearing input is refused.
+Bare model IDs remain accepted on `spawn --model` when unambiguous. Stored
+`model` values use `instance:model`. Boss checks the merged selection against
+the host's real model catalog, sends exact options, and verifies the returned
+selection. A mismatch requests an interruption and reports the task for review.
 
-If a goal or any active steers exist, `spawn` refuses with exit 2 unless
-`--fits` supplies a nonblank line, up to 2000 characters. The refusal prints
-the full goal and all active steers before any remote calls or task creation.
-The supervisor reads them and explains how the new task fits. `boss` stores
-that line as `fits` in the task metadata and launch journal. It makes no LLM
-calls and does not judge whether the explanation resolves any conflict.
-Projects without a goal or active steers can spawn without `--fits`.
+## Project policy and worker briefs
 
-The goal and active steers enter the saved and sent worker brief after project
-notes and before the worker contract, inside the same 115000-character limit.
-Superseded steers stay out of the brief. Later context changes apply to future
-spawns; an existing task keeps its original brief. Record a steer with
-`--task` and use `boss send` to tell an already-running worker about it.
+`merge` is supervisor policy: `never` blocks `boss land`, `approved` requires
+captain approval, and `auto` records the supervisor's intended workflow.
+**Every `boss land` still requires `--approved` and all existing guards.**
+Workers never merge or deploy, regardless of policy. The deprecated
+`auto_merge = true` maps to `merge = "auto"`, and false maps to `"approved"`,
+with a warning. Supplying both keys in the same block is an error.
 
-## Commands
+`delivery` is `direct-PR` or `local-only`. Direct-PR ship workers commit, push
+and open exactly one PR against the origin default branch. Local-only workers
+commit locally and return a `BOSS_REPORT:`. Scouts investigate and return a
+report with a clean worktree. `test_host` and `no_mistakes` are worker
+instructions. `extra_rules` is a list appended to the worker contract. It
+cannot override the contract's worktree, merge or deployment restrictions.
+
+Brief composition preserves task text, `$BOSS_HOME/rules.md`, project settings,
+`projects/<name>.md`, the project goal, active captain steers and the worker
+contract, in that order. Project settings and notes win over global rules.
+The contract always applies. The composed brief has a 115,000-character limit;
+secret-bearing rules, notes, goals, steers and extra rules are refused.
+
+## Commands and guards
 
 ```sh
-boss                                      # Live active fleet, counts, decisions, next step
-boss project list                         # T3 projects on default_host, with registry/notes markers
-boss project list --host oracle
-boss project add clashlens --host oracle  # Save discovery results; optional, not required to spawn
-boss project add homepage --delivery local-only --auto-merge --test-host wsl --no-mistakes
-boss project show clashlens               # Effective settings and contributing files
-boss goal clashlens "Ship a mobile-first app."
-boss goal clashlens                       # Show the current goal
-boss steer clashlens "No PostHog." --task <id>
-boss steer clashlens "Use local analytics." --replaces <steer-id>
-boss steer list clashlens                 # Active steers
-boss steer list clashlens --all           # Include superseded history
-boss spawn clashlens --title "Fix login" --brief-file brief.md
-boss spawn clashlens --title "Fix login" --brief-file brief.md --fits "Fix mobile login without analytics."
-cat brief.md | boss spawn clashlens --title "Inspect login" --kind scout
-boss spawn clashlens --title "Fix login" --brief-file brief.md \
-  --host ser5ver --model codex:gpt-6.1-sol --effort high
-boss status                               # Same fleet overview
-boss status <id>                          # Run, input questions, PRs/CI, last assistant text
-boss status <id> --full                   # Complete assistant text and questions
-boss send <id> "Check the regression too"
-boss answer <id> <request> "Use the existing endpoint"
-boss stop <id>                            # Request interruption; keep all work
-boss land <id> --approved "I reviewed this PR, merge it."
-boss settle <id>
-boss settle <id> --discard-approved "Discard this experiment."
-boss decide add "Which API should we use?" --task <id>
+boss                            # live fleet and open decisions
+boss project list
+boss project show my-project
+boss project add my-project --host local --merge approved --worker builder
+boss goal my-project 'The project goal'
+boss steer my-project 'Keep the change portable' --task <id>
+boss steer list my-project
+boss steer my-project 'New direction' --replaces <steer-id>
+boss steer list my-project --all
+boss spawn my-project --title 'Task' --brief-file brief.md --fits 'How this fits the goal and active steers'
+boss status <id> --full
+boss send <id> 'Additional instruction'
+boss answer <id> <request-id/0> 'Answer text'
+boss stop <id>
+boss decide add 'Captain decision needed' --task <id>
 boss decide list
-boss decide close <decision-id> "Use the existing API."
+boss decide close <decision-id> 'Captain resolution'
+boss land <id> --approved 'The captain exact words'
+boss settle <id>
 boss poll
 ```
 
-Every command, project subcommand and decision subcommand has `--help`. Omit `--brief-file` or
-use `--brief-file -` to read piped stdin. Interactive missing input fails
-instead of prompting. Multi-question input requests take one JSON object:
-`boss answer <id> <request> '{"question_a":"yes","question_b":"existing"}'`.
-Answers cannot approve permission requests. `--full` also works on the fleet
-view and decision list. Default messages include a total character count when
-truncated. Output uses terse key/value records with explicit totals such as
-`0 active tasks` and `0 open decisions`.
+Projects can be discovered by exact T3 title without registration. Zero or
+multiple matches fail with candidates. Registering saves the host, T3 ID and
+GitHub repository, plus optional policy. Git origin is resolved on the actual
+worker host. Explicit registry values take precedence over discovery.
 
-`project add` appends a quoted `[projects.<name>]` block containing the host,
-project ID and resolved repository, plus any supplied preference flags. It
-preserves all existing config text and comments using an atomic write, and
-refuses an existing entry. `project show` reports registry versus T3 lookup,
-effective model/delivery/preferences, whether `rules.md`, project notes and
-a goal are present, and the active steer count. It reads settings; it does
-not launch a worker or change config.
+Record every captain steer before dispatching work. `send` alone does not
+record a project steer. `--replaces` supersedes an earlier steer without
+rewriting its history. `spawn` requires a nonblank, single-line `--fits` when
+a project has a goal or active steers. It saves the explanation with the task.
+Boss does not ask an LLM to judge it; the captain resolves unclear choices.
 
-Delivery modes:
+`answer` accepts the request ID or the exact `request-id/question-id` printed
+by `status`, including `/0`. A suffix must identify a real question in that
+pending request. Requests with multiple questions still require a JSON object
+keyed by all question IDs. Pending permission requests remain in T3's approval
+UI; `answer` cannot approve them.
 
-- `ship` + `direct-PR`: verify, commit, push, open exactly one linked PR, stop.
-- `ship` + `local-only`: verify, commit, keep a clean local branch, write a final
-  report, stop. No push or PR. The captain arranges landing separately;
-  `boss land` only merges PRs. Settlement proves default-branch ancestry.
-- `scout`: investigate, leave a clean worktree, write a final report, no PR.
-  The final assistant message starts with `BOSS_REPORT:`. `boss` copies the
-  complete report into the task's durable `report.md`; local-only ships use
-  the same report convention. A report from an older run does not count.
+Landing checks a terminal worker, no pending inputs, exactly one linked PR,
+the recorded repository and branches, green CI, a clean merge state, no draft
+or changes-requested review, and the captain's explicit quote. It matches the
+approved head SHA and confirms the merged result. `settle` checks live thread,
+PR and worktree evidence before unwatching and settling. It refuses unlanded
+work and missing reports. Use `--discard-approved` only with explicit captain
+authority. Settlement preserves the worktree and ledger.
 
-All briefs append the worktree, assigned-branch, configured Git identity,
-no AI co-author, no merge and no deploy rules. Workers must never rename or
-switch the assigned branch. These are worker instructions; the merge and
-settlement checks below are enforced in the CLI.
+Launch intent is journaled before the network mutation. An uncertain launch is
+reconciled by its unique title marker, never blindly retried. Commands serialize
+ledger writes; metadata is recovered from the append-only journal. `status`
+acknowledges completed-run reminders, without approving merges or discards.
 
-## Polling from Hermes
+Exit codes: 0 success, 1 usage/config, 2 guard refusal, 3 transport/external/data
+failure. Every command has `--help` and actionable errors.
 
-Schedule only `boss poll` for T3 checks. The command is LLM-free: one pass
-reads active T3 tasks and GitHub CI, updates the ledger, and prints changed
-actionable items. Unchanged successful polls exit 0 with exactly zero output,
-including after a restart. A changed task can report finished, failed,
-interrupted, waiting for input, open PRs and current CI aggregates. No actionable
-items also means empty output. A failed host remains an error with a nonzero
-exit and diagnostic output; other tasks are still checked.
+## Hermes wake-up
 
-Poll's last observation is separate from on-demand status reads, so reading
-status does not consume an input or CI change before the next scheduled pass.
-`boss status <id>` marks that completed run as reviewed; it does not approve
-merging or discarding. Another completed run gets a new reminder. Bare `boss`
-and `boss status` show the fleet without acknowledging individual tasks.
-An input reminder stays until the request is answered or a live refresh shows
-it resolved. Closing a decision and settling a task also clear their reminders.
+`boss poll --hermes-gate` is the bundled cron gate. When unchanged or on error,
+it emits exactly `{"wakeAgent": false}` and exits 0. Errors are appended,
+redacted, to `$BOSS_HOME/logs/poll.log`, or `~/.boss/logs/poll.log`. Otherwise it
+emits changed actionable text. Plain `boss poll` retains its normal output and
+error exits. A pass containing any error suppresses the wake for that pass.
+Neither poll mode calls an LLM.
 
-After each CLI command, `attention.json` stores a bounded local summary: the
-total and up to six validated IDs for open decisions, pending worker inputs,
-and completed runs first recorded by poll that remain unreviewed. The plugin
-reads only this file, at most 4096 bytes; it does not scan task journals or
-follow network state on a turn. Missing or corrupt cache data adds no context.
-Full questions, task text, tokens and decision bodies never enter this summary.
-For example:
-
-```text
-boss: 2 need you (d3 decision, t7 input) - run boss status
-```
-
-The hook keeps reminding until the local records are resolved. Use the CLI
-to check live state. Run `boss poll` once after upgrading to populate the view
-from existing decisions and tasks. The timing check in `scripts/check_ambient.py`
-measures the actual callback, including its bounded local read, against 50 ms.
-
-For an opt-in, five-minute Hermes cron on ser5ver, first create this wrapper
-under the active Hermes profile's `scripts/` directory:
+Opt in to the five-minute cron:
 
 ```sh
-mkdir -p ~/.hermes/scripts
-cat > ~/.hermes/scripts/boss-poll.sh <<'SH'
-#!/bin/sh
-exec "$HOME/.local/bin/boss" poll
-SH
-hermes cron create '*/5 * * * *' --name boss-poll --script boss-poll.sh --no-agent --deliver local
+./install.sh --with-cron
 ```
 
-This is documentation only; installation never creates the script or cron.
-Hermes runs `.sh` scripts with bash. `--no-agent` skips the LLM completely,
-silently accepts empty stdout and records nonempty output locally. Use this
-script gate instead of `--monitor-script`, which expects a persistent snapshot
-and would treat a transition back to empty output as a new change. The plugin
-has no timer; interactive `boss`/`status` still query live state on demand.
+This writes `$HERMES_HOME/scripts/boss-poll-gate.sh`, capturing the installed
+Python path, checkout and explicit boss/XDG/Hermes homes. It creates this job
+through Hermes, without `--no-agent`:
 
-## Guard rules
-
-- `spawn` requires a one-line `--fits` explanation when the project has a goal
-  or active steers. A refusal displays that context for reconciliation.
-- `land` requires a nonblank captain quote, a terminal worker with no pending
-  questions, and exactly one linked PR for this task's repository and branches.
-  The PR must be open, nondraft, mergeable with GitHub `CLEAN` state, and have
-  at least one successful check, no failing or pending checks, and no change
-  request review. No checks, only skipped checks and unknown checks refuse.
-  `gh pr merge --squash --match-head-commit <approved SHA>` binds the merge to
-  the inspected head. `boss` then verifies the merged state and records the
-  quote, head and merge commit. It never enables auto-merge or deletes branches.
-- `settle` requires a terminal worker with no pending questions. Open PRs,
-  missing scout/local-only reports, dirty files, a different origin, unmatched
-  branches, unpushed commits and unlanded branches refuse. Git evidence is refreshed
-  from origin before checking ancestry. A merged PR in the task's repository
-  targeting the task's base counts when its head commit matches the worktree
-  HEAD and its head branch matches the worktree branch. This proves landing
-  for renamed branches and squash merges. Previously seen PR links remain in
-  the ledger, so unlinking one cannot hide it from the guard.
-- A nonblank `--discard-approved` quote overrides the unlanded-work checks,
-  including missing evidence. It cannot override a running worker or pending
-  input. The quote is recorded. Settlement unwatches linked PRs and settles
-  the thread, then reads T3 back to confirm. It never deletes the worktree,
-  closes PRs, resets files or discards Git commits itself. T3's own configured
-  settle lifecycle and project scripts still apply.
-- Approval quotes are an audit record supplied by the trusted supervisor.
-  `boss` cannot authenticate who originally spoke the words.
-
-Exit codes: `0` success; `1` usage/configuration; `2` guard refusal;
-`3` transport, T3, GitHub or local I/O failure. Structured errors go to stdout
-as `error`, `message`, `next`; no traceback or token is printed.
-
-## Durability and recovery
-
-```text
-~/.boss/
-  config.toml
-  rules.md                  # Optional global worker rules
-  projects/<name>.md         # Optional project notes
-  projects/<name>.goal       # Current project goal, UTF-8 text
-  projects/<name>.steers.jsonl # Append-only captain steer history
-  tasks/<id>/meta.json
-  tasks/<id>/brief.md
-  tasks/<id>/events.log
-  tasks/<id>/report.md       # Completed scout/local-only report
-  decisions/<id>.json
-  attention.json            # Bounded local-only view for the Hermes hook
+```sh
+hermes cron create '*/5 * * * *' \
+  'Run boss status, review changed workers and pending decisions, and report actionable items to the captain. Never invent merge approval.' \
+  --name boss-poll --script boss-poll-gate.sh --deliver local
 ```
 
-Goals and other snapshot files use replacement + fsync and owner-only
-permissions for new state. Steer logs use append + fsync with the same private
-permissions; supersession never rewrites a prior record. A malformed or
-incomplete steer record refuses listing, appending and spawning, so inspect
-the log and preserve its history before retrying. A nonblocking file lock
-permits one ledger writer at a time.
-`events.log` is an atomically replaced JSON-lines journal; each record includes
-the committed metadata. If a crash interrupts its `meta.json` replacement,
-the journal restores the state on the next read. Live T3 and GitHub evidence
-is refreshed for status, poll and guards; a cached completion is never merge
-or settlement authority. Keep the ledger directory private.
+The same active gate job is not duplicated on reinstall. Keep the Hermes
+gateway running for scheduled jobs. The gate skips the agent when quiet; a
+change lets Hermes wake the agent with the actionable text. Agent work can
+consume tokens. The ambient plugin separately reads only the bounded local
+`attention.json` cache and never calls boss, T3, GitHub or an LLM.
 
-Launch intent and the complete brief are durable before calling T3.
-Launch has no retry key: an ambiguous failure leaves the task as
-`launch_unknown`. Run `boss status <id>` to find its unique `[boss:<id>]`
-thread before doing anything else. Never blindly respawn. An absent or
-ambiguous match refuses and requires inspecting T3. Send uses a T3
-`clientRequestId` recorded in its intent event; `boss` never automatically
-retries mutations after transport failures. Inspect the worker and journal
-before manually resending. A merge interrupted after GitHub accepted it is
-reconciled against the recorded approved head on the next `land` call.
-Settlement and decision closure can safely be repeated.
+## MIGRATION
+
+Built-in hosts have been removed. Before upgrading an existing setup, add an
+explicit host block **for every host name referenced by your tasks and projects**:
+
+```toml
+default_host = "my-existing-host"
+
+[hosts.my-existing-host]
+url = "http://127.0.0.1:3773/mcp"  # Use your existing endpoint or tunnel port.
+token_env = "MY_EXISTING_T3_TOKEN"
+# ssh = "my-existing-ssh-alias"   # Needed for a remote worker's Git inspection.
+```
+
+Keep the old names and endpoint values from your installation. Boss still reads
+an existing `~/.boss/config.toml` when no XDG config exists. Setting `BOSS_HOME`
+explicitly keeps config and ledger together there. No task, `.goal`, project
+note or `.steers.jsonl` migration is needed. Legacy task metadata remains
+readable. Replace `auto_merge` with `merge` when convenient.
+
+Re-run `./install.sh` to add the Hermes-home skill link. Enable the plugin if
+needed. Remove the old `--no-agent` poll cron with `hermes cron remove <job-id>`
+after inspecting `hermes cron list`, then run `./install.sh --with-cron` to
+create the waking gate. The old external wrapper is no longer needed.
 
 ## Verification
 
 ```sh
-python3 -m unittest -v
-python3 -m compileall -q boss scripts tests
-python3 scripts/check_ambient.py
+python3 -m unittest discover -v
+python3 scripts/check_fresh_install.py
 python3 scripts/check_steering.py
-git diff --check
-# Explicit opt-in, with a privately supplied existing MCP token:
-python3 scripts/smoke.py --url http://127.0.0.1:3773/mcp --token-env T3_ORACLE_MCP_TOKEN
+python3 scripts/check_ambient.py
 ```
 
-The unittest suite uses a fake MCP HTTP server and disposable Git repos.
-It covers spawn/worktree contracts, model settings, lost-response recovery,
-poll determinism, input requests, guard refusals, approved merge recording,
-report capture, restart recovery, JSON/SSE sessions and token redaction.
-The live script launches only a trivial scratch worker, checks repeat-poll silence,
-captures its report, settles it and reads T3 back. It does not merge anything.
-The original v1 launch/settle smoke output is in [evidence/oracle-smoke.txt](evidence/oracle-smoke.txt).
-Project-discovery coverage also checks title matches, local/SSH origin lookup,
-ordered preference layers, size and secret refusals, and config append safety.
-Steering coverage checks goal replacement, append-only supersession, task and
-project references, complete reconciliation refusals, saved `fits` lines,
-brief ordering and size boundaries. `scripts/check_steering.py` runs real CLI
-processes against disposable state, without T3 or GitHub calls. Its output and
-the test results are in [evidence/steering-verification.txt](evidence/steering-verification.txt).
-The read-only oracle project-list smoke is recorded in
-[evidence/oracle-project-list.txt](evidence/oracle-project-list.txt).
-
-Design references only: [AXI's ten principles](https://axi.md/),
-[Firstmate vision](https://github.com/kunchenguid/firstmate/blob/main/VISION.md),
-and [Firstmate contract sections 1, 7, 8, 9](https://github.com/kunchenguid/firstmate/blob/main/AGENTS.md).
-No Firstmate scripts or supervisor architecture are ported.
+GitHub Actions runs the unittest suite on Ubuntu and macOS with Python 3.12
+and 3.13, and uploads a fresh-install transcript per matrix job. The fresh
+install check uses a temporary HOME, a stdlib HTTP MCP server and fake
+GitHub/Hermes commands. It runs the real installer and separate CLI processes,
+including init, doctor, a fake role spawn, and wake/quiet/error gate transitions.
+It never touches a real Hermes profile or launches a paid worker. The checked-in
+[evidence](evidence/portable-fresh-install.txt) records the portability run.

@@ -68,7 +68,12 @@ def compose_brief(brief, home, name, settings, contract, redact, *, goal="", ste
     layers.extend(steering_sections(goal, steers, redact))
     precedence = ("\n\nProject settings and project notes win over global rules when they conflict; "
                   "the boss worker contract below always applies.") if len(layers) > 1 else ""
-    suffix = redact(precedence + contract)
+    extra = ""
+    if settings.get("extra_rules"):
+        extra = "\n\n## Extra worker rules\n" + "\n".join("- " + rule for rule in settings["extra_rules"])
+        if redact(extra) != extra:
+            refuse("extra_rules layer contains a token or secret", "remove credentials from config")
+    suffix = redact(precedence + contract + extra)
     composed = ""
     for label, text in layers:
         composed += redact(text)

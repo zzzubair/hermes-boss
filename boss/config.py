@@ -1,8 +1,10 @@
-"""TOML registry and deliberately narrow KEY=value credential loading."""
+"""Strict layered TOML configuration and narrow KEY=value credential loading."""
+import copy
 import json
 import os
 from pathlib import Path
 import re
+import sys
 import tomllib
 from urllib.parse import urlsplit
 
@@ -11,54 +13,189 @@ from .preferences import project_name
 from .state import atomic_write
 
 
-DEFAULT_HOSTS = {
-    "ser5ver": {"url": "http://127.0.0.1:3773/mcp", "token_env": "T3_SER5VER_MCP_TOKEN"},
-    "oracle": {"url": "http://127.0.0.1:13773/mcp", "token_env": "T3_ORACLE_MCP_TOKEN", "ssh": "oracle"},
-    "wsl": {"url": "http://127.0.0.1:23773/mcp", "token_env": "T3_WSL_MCP_TOKEN", "ssh": "wsl"},
-}
+DEFAULTS = {"default_host": "", "delivery": "direct-PR", "merge": "approved",
+            "no_mistakes": False, "kind": "ship", "extra_rules": []}
+SETTINGS = {"host": str, "worker": str, "model": str, "effort": str, "kind": str,
+            "delivery": str, "merge": str, "auto_merge": bool, "test_host": str,
+            "no_mistakes": bool, "extra_rules": list, "model_selection": dict}
+
+
+def boss_home():
+    # The ledger deliberately stays at its original location.
+    return Path(os.environ.get("BOSS_HOME", "~/.boss")).expanduser()
+
+
+def hermes_home():
+    return Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))).expanduser()
+
+
+def config_path(home):
+    if "BOSS_HOME" in os.environ:
+        return home / "config.toml"
+    modern = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))).expanduser() / "boss/config.toml"
+    legacy = home / "config.toml"
+    return modern if modern.exists() or not legacy.exists() else legacy
+
+
+def literal(value):
+    if isinstance(value, dict):
+        return "{ " + ", ".join(f"{json.dumps(k, ensure_ascii=False)} = {literal(v)}" for k, v in value.items()) + " }"
+    if isinstance(value, list):
+        return "[" + ", ".join(literal(v) for v in value) + "]"
+    return json.dumps(value, ensure_ascii=False)
+
+
+def dumps(data):
+    """Small TOML writer. Dotted names are always quoted, including project titles."""
+    lines = []
+
+    def table(data, path=()):
+        for key, value in data.items():
+            if not isinstance(value, dict):
+                lines.append(f"{json.dumps(key, ensure_ascii=False)} = {literal(value)}")
+        for key, value in data.items():
+            if isinstance(value, dict):
+                lines.append("\n[" + ".".join(json.dumps(k, ensure_ascii=False) for k in (*path, key)) + "]")
+                table(value, (*path, key))
+    table(data)
+    return "\n".join(lines) + "\n"
+
+
+def key_parts(key):
+    try:
+        node = tomllib.loads(key + " = 0")
+        parts = []
+        while isinstance(node, dict) and len(node) == 1:
+            part, node = next(iter(node.items()))
+            parts.append(part)
+        if node != 0 or not parts:
+            raise ValueError()
+        return parts
+    except ValueError:
+        raise BossError("config", f"invalid key path {key}", "use dotted keys, e.g. projects.demo.merge", 1) from None
+
+
+def flatten(data, path=()):
+    for key, value in data.items():
+        parts = (*path, key)
+        if isinstance(value, dict) and value:
+            yield from flatten(value, parts)
+        else:
+            yield parts, value
+
+
+def display_key(parts):
+    return ".".join(k if re.fullmatch(r"[A-Za-z0-9_-]+", k) else json.dumps(k, ensure_ascii=False) for k in parts)
 
 
 class Config:
     def __init__(self, home, redact):
-        self.path = home / "config.toml"
+        self.path = config_path(Path(home))
         self.redact = redact
-        self.credentials, file_credentials = self._credentials()
+        self.credentials, self.file_credentials = self._credentials()
         try:
-            data = tomllib.loads(self.path.read_text()) if self.path.exists() else {}
+            self.data = tomllib.loads(self.path.read_text()) if self.path.exists() else {}
         except (OSError, ValueError) as exc:
             raise BossError("config", f"cannot read {self.path}: {exc}", exit_code=1) from None
-        try:
-            self.default_host = data.get("default_host", "oracle")
-            self.hosts = {k: dict(v) for k, v in DEFAULT_HOSTS.items()}
-            for name, host in data.get("hosts", {}).items():
-                self.hosts[name] = {**self.hosts.get(name, {}), **host}
-            self.projects = data.get("projects", {})
-            if not isinstance(self.projects, dict):
-                raise ValueError("projects must be a table")
-            if not isinstance(self.default_host, str) or self.default_host not in self.hosts:
-                raise ValueError("default_host must name a configured host")
-            for name, host in self.hosts.items():
+        self.validate(self.data)
+        self._load()
+        for path, value in flatten(self.data):
+            if path[-1] == "auto_merge":
+                print(self.redact(f"warning: {display_key(path)} is deprecated; use merge = {literal('auto' if value else 'approved')}"), file=sys.stderr)
+
+    def _load(self):
+        self.hosts = self.data.get("hosts", {})
+        self.projects = self.data.get("projects", {})
+        self.workers = self.data.get("workers", {})
+        self.default_host = self.data.get("default_host", "")
+
+    def fail(self, key, message):
+        raise BossError("config", f"{key}: {message}", f"edit {self.path}", 1)
+
+    def validate(self, data):
+        def fields(table, schema, prefix="", *, legacy_selection=False):
+            if not isinstance(table, dict):
+                self.fail(prefix, "must be a table")
+            for key, value in table.items():
+                path = prefix + "." + key if prefix else key
+                if key not in schema:
+                    self.fail(path, "unknown key")
+                expected = schema[key]
+                if type(value) is not expected:
+                    self.fail(path, f"must be {expected.__name__}")
+                if expected is str and not value.strip() and key not in ("default_host", "ssh"):
+                    self.fail(path, "must be a nonempty string")
+                if key == "extra_rules" and any(type(v) is not str or not v.strip() for v in value):
+                    self.fail(path, "must be a list of nonempty strings")
+                choices = {"delivery": ("direct-PR", "local-only"), "merge": ("never", "approved", "auto"),
+                           "kind": ("ship", "scout")}
+                if key in choices and value not in choices[key]:
+                    self.fail(path, "must be one of " + ", ".join(choices[key]))
+                if key == "model" and not legacy_selection and (":" not in value or any(not p for p in value.split(":", 1))):
+                    self.fail(path, "must be instance:model")
+                if key == "model_selection":
+                    # Legacy explicit model selections remain readable.
+                    fields(value, {"model": str, "instanceId": str, "options": dict}, path, legacy_selection=True)
+                    if not value.get("model"):
+                        self.fail(path + ".model", "required")
+                    for option, setting in value.get("options", {}).items():
+                        if type(setting) not in (str, bool):
+                            self.fail(path + ".options.'" + option + "'", "must be str or bool")
+            if "merge" in table and "auto_merge" in table:
+                self.fail(prefix or "config", "use merge or deprecated auto_merge, not both")
+
+        # Register explicit token names even when unrelated validation fails.
+        for host in data.get("hosts", {}).values() if isinstance(data.get("hosts", {}), dict) else ():
+            if isinstance(host, dict) and isinstance(host.get("token_env", "T3_MCP_TOKEN"), str):
+                key = host.get("token_env", "T3_MCP_TOKEN")
+                self.redact.add(self.file_credentials.get(key))
+                self.redact.add(self.credentials.get(key))
+        fields(data, {"default_host": str, "default_worker": str, "hosts": dict, "projects": dict, "workers": dict, **{k: v for k, v in SETTINGS.items() if k != "worker"}})
+        for name, host in data.get("hosts", {}).items():
+            prefix = "hosts." + name
+            fields(host, {"url": str, "token_env": str, "ssh": str}, prefix)
+            if "url" not in host:
+                self.fail(prefix + ".url", "required")
+            try:
                 url = urlsplit(host["url"])
+                port = url.port
                 if url.username or url.password or url.query or url.fragment:
-                    raise ValueError(f"host {name}: credentials/query/fragment are forbidden in URLs")
-                if url.scheme not in ("http", "https") or not url.hostname:
-                    raise ValueError(f"host {name}: invalid MCP URL")
+                    self.fail(prefix + ".url", "credentials/query/fragment are forbidden in URLs")
+                if url.scheme not in ("http", "https") or not url.hostname or port == 0:
+                    self.fail(prefix + ".url", "invalid MCP URL")
                 if url.scheme == "http" and url.hostname not in ("localhost", "127.0.0.1", "::1"):
-                    raise ValueError(f"host {name}: use HTTPS or a loopback SSH tunnel")
-                if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", host["token_env"]):
-                    raise ValueError(f"host {name}: invalid token_env")
-                if host.get("ssh") and not re.fullmatch(r"[A-Za-z0-9_@.:-]+", host["ssh"]):
-                    raise ValueError(f"host {name}: invalid ssh destination")
-                if host.get("ssh", "").startswith("-"):
-                    raise ValueError(f"host {name}: invalid ssh destination")
-                self.redact.add(file_credentials.get(host["token_env"]))
-                self.redact.add(self.credentials.get(host["token_env"]))
-        except (KeyError, TypeError, AttributeError, ValueError) as exc:
-            raise BossError("config", str(exc), f"edit {self.path}", 1) from None
+                    self.fail(prefix + ".url", "use HTTPS or a loopback SSH tunnel")
+            except ValueError:
+                self.fail(prefix + ".url", "invalid MCP URL")
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", host.get("token_env", "T3_MCP_TOKEN")):
+                self.fail(prefix + ".token_env", "invalid environment variable")
+            ssh = host.get("ssh", "")
+            if ssh and (not re.fullmatch(r"[A-Za-z0-9_@.:-]+", ssh) or ssh.startswith("-")):
+                self.fail(prefix + ".ssh", "invalid ssh destination")
+        for name, worker in data.get("workers", {}).items():
+            fields(worker, {k: SETTINGS[k] for k in ("host", "model", "effort", "kind")}, "workers." + name)
+        for name, project in data.get("projects", {}).items():
+            project_name(name)
+            fields(project, {**SETTINGS, "project_id": str, "repository": str, "workers": dict}, "projects." + name)
+        hosts, workers = data.get("hosts", {}), data.get("workers", {})
+        role_schema = {k: SETTINGS[k] for k in ("host", "model", "effort", "kind")}
+        for name, project in data.get("projects", {}).items():
+            for role, settings in project.get("workers", {}).items():
+                fields(settings, role_schema, f"projects.{name}.workers.{role}")
+        tables = [("", data), *(("workers." + k, v) for k, v in workers.items())]
+        for name, project in data.get("projects", {}).items():
+            tables.append(("projects." + name, project))
+            tables.extend((f"projects.{name}.workers.{role}", settings) for role, settings in project.get("workers", {}).items())
+        for prefix, table in tables:
+            for key in ("host", "default_host"):
+                if table.get(key) and table[key] not in hosts:
+                    self.fail((prefix + "." if prefix else "") + key, "must name a configured host")
+        if data.get("default_worker") and data["default_worker"] not in workers:
+            self.fail("default_worker", "unknown role; available: " + (", ".join(sorted(workers)) or "none"))
 
     def _credentials(self):
         values = {}
-        path = Path.home() / ".hermes/.env"
+        path = hermes_home() / ".env"
         if path.exists():
             for line in path.read_text().splitlines():
                 key, sep, value = line.partition("=")
@@ -68,57 +205,114 @@ class Config:
                     if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
                         value = value[1:-1]
                     values[key] = value
-        # Register candidates before any output, including config errors.
         self.redact.discover(values)
         self.redact.discover(os.environ)
         return {**values, **os.environ}, values
 
     def host(self, name):
-        if name not in self.hosts:
-            raise BossError("usage", f"unknown host {name}", f"edit {self.path}", 1)
+        if not self.hosts:
+            raise BossError("config", "no hosts configured", "run boss init", 1)
+        if not name or name not in self.hosts:
+            raise BossError("config", f"unknown or unset host {name!r}", "boss host list; boss config set default_host <name>", 1)
         host = self.hosts[name]
-        token = self.credentials.get(host["token_env"])
+        key = host.get("token_env", "T3_MCP_TOKEN")
+        token = self.credentials.get(key)
         if not token:
-            raise BossError("auth", f"missing {host['token_env']}", "set it in env or ~/.hermes/.env")
+            raise BossError("auth", f"missing {key}", f"set it in env or {hermes_home() / '.env'}")
         self.redact.add(token)
         if any(c.isspace() for c in token):
-            raise BossError("auth", f"invalid whitespace in {host['token_env']}", "replace it with a valid MCP token")
+            raise BossError("auth", f"invalid whitespace in {key}", "replace it with a valid MCP token")
         return host, token
 
     def project(self, name):
         project_name(name)
-        project = self.projects.get(name, {})
-        if not isinstance(project, dict):
-            raise BossError("config", f"project {name} must be a table", f"edit {self.path}", 1)
-        if project.get("delivery", "direct-PR") not in ("direct-PR", "local-only"):
-            raise BossError("config", f"invalid delivery for {name}", f"edit {self.path}", 1)
-        for key in ("host", "project_id", "repository", "test_host"):
-            if key in project and (not isinstance(project[key], str) or not project[key].strip()):
-                raise BossError("config", f"{name}.{key} must be a nonempty string", f"edit {self.path}", 1)
-        for key in ("auto_merge", "no_mistakes"):
-            if key in project and not isinstance(project[key], bool):
-                raise BossError("config", f"{name}.{key} must be a boolean", f"edit {self.path}", 1)
-        selection = project.get("model_selection")
-        if selection is not None and (not isinstance(selection, dict) or not isinstance(selection.get("model"), str)):
-            raise BossError("config", f"invalid model_selection for {name}", f"edit {self.path}", 1)
-        return project
+        return self.projects.get(name, {})
+
+    @staticmethod
+    def normalized(settings):
+        settings = dict(settings)
+        if "auto_merge" in settings:
+            settings["merge"] = "auto" if settings.pop("auto_merge") else "approved"
+        return settings
+
+    def roles(self, name=None):
+        return sorted(set(self.workers) | set(self.project(name).get("workers", {}) if name else {}))
+
+    def effective(self, name=None, overrides=None):
+        values, origins = {}, {}
+
+        def apply(layer, origin):
+            for key in layer:
+                for old in list(origins):
+                    if old[0] == key:
+                        del origins[old]
+            for key, value in flatten(layer):
+                origins[key] = origin
+            values.update(copy.deepcopy(layer))
+        overrides = {k: v for k, v in (overrides or {}).items() if v is not None}
+        apply(DEFAULTS, "built-in")
+        apply(self.normalized({k: v for k, v in self.data.items() if k not in ("hosts", "projects", "workers")}), str(self.path))
+        project = self.normalized({k: v for k, v in (self.project(name) if name else {}).items() if k != "workers"})
+        apply(project, f"{self.path} [projects.{name}]")
+        roles = self.roles(name)
+        role = overrides.get("worker")
+        role_origin = "CLI"
+        if not role and overrides.get("kind") == "scout" and "scout" in roles:
+            role, role_origin = "scout", "CLI --kind scout"
+        if not role:
+            role = project.get("worker") or self.data.get("default_worker")
+            role_origin = f"{self.path} [projects.{name}]" if project.get("worker") else str(self.path)
+        if role:
+            if role not in roles:
+                self.fail("worker", f"unknown role {role}; available for {name or 'global'}: " + (", ".join(roles) or "none"))
+            apply(self.workers.get(role, {}), f"{self.path} [workers.{role}]")
+            if name:
+                apply(self.project(name).get("workers", {}).get(role, {}), f"{self.path} [projects.{name}.workers.{role}]")
+            apply({"worker": role}, role_origin)
+        apply(overrides, "CLI")
+        if not values.get("host"):
+            values["host"] = values["default_host"]
+            origins[("host",)] = origins[("default_host",)]
+        return values, origins
+
+    def write(self, data):
+        self.validate(data)
+        atomic_write(self.path, dumps(data))
+        self.data = data
+        self._load()
+
+    def change(self, key, value=None, *, unset=False):
+        parts = key_parts(key)
+        updated = copy.deepcopy(self.data)
+        node = updated
+        for part in parts[:-1]:
+            if part not in node:
+                if unset:
+                    self.fail(key, "key is not set")
+                node[part] = {}
+            node = node[part]
+            if not isinstance(node, dict):
+                self.fail(key, "parent must be a table")
+        if unset:
+            if parts[-1] not in node:
+                self.fail(key, "key is not set")
+            del node[parts[-1]]
+        else:
+            node[parts[-1]] = value
+        self.write(updated)
 
     def add_project(self, name, settings):
         project_name(name)
-        # Read again immediately before writing so comments and edits made
-        # during the lookup remain intact. The CLI holds the ledger writer lock.
         original = self.path.read_bytes().decode("utf-8") if self.path.exists() else ""
-        try:
-            current = tomllib.loads(original)
-            if name in current.get("projects", {}):
-                refuse(f"project {name} already has a registry entry", f"boss project show {name}")
-            lines = [f"[projects.{json.dumps(name, ensure_ascii=False)}]"]
-            for key, value in settings.items():
-                literal = str(value).lower() if isinstance(value, bool) else json.dumps(value, ensure_ascii=False)
-                lines.append(f"{key} = {literal}")
-            updated = original + ("\n" if original and not original.endswith("\n") else "") + "\n" + "\n".join(lines) + "\n"
-            tomllib.loads(updated)
-        except (ValueError, TypeError) as exc:
-            raise BossError("config", f"cannot append project block: {exc}", f"edit {self.path}", 1) from None
+        current = tomllib.loads(original)
+        if name in current.get("projects", {}):
+            refuse(f"project {name} already has a registry entry", f"boss project show {name}")
+        candidate = copy.deepcopy(current)
+        candidate.setdefault("projects", {})[name] = settings
+        self.validate(candidate)
+        lines = [f"[projects.{json.dumps(name, ensure_ascii=False)}]"]
+        lines.extend(f"{key} = {literal(value)}" for key, value in settings.items())
+        updated = original + ("\n" if original and not original.endswith("\n") else "") + "\n" + "\n".join(lines) + "\n"
         atomic_write(self.path, updated)
-        self.projects[name] = dict(settings)
+        self.data = candidate
+        self._load()

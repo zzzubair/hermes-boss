@@ -1,0 +1,115 @@
+Python 3.12.3; disposable HOME; stdlib HTTP MCP; fake gh/Hermes; no LLM calls
+$ ./install.sh
+installed: <HOME>/.local/bin/boss
+installed: <HOME>/hermes profile/skills/boss
+installed: <HOME>/.agents/skills/boss
+installed: <HOME>/hermes profile/plugins/boss
+enable plugin (opt-in): hermes plugins enable boss
+next: boss init
+exit: 0
+$ boss init --url http://127.0.0.1:<PORT>/mcp
+configured: <HOME>/.config/boss/config.toml
+host: local (1 projects)
+next: hermes plugins enable boss
+next: boss doctor; boss project list
+optional wake-up: ./install.sh --with-cron
+exit: 0
+$ boss init (repeat; config unchanged)
+config exists: <HOME>/.config/boss/config.toml (unchanged; --force permits updating the host)
+next: boss host list; boss doctor
+exit: 0
+$ boss doctor (plugin disabled; expected failure)
+ok: Python 3.12+
+ok: gh auth
+ok: hosts
+ok: host local token
+ok: host local MCP + projects 1 projects
+ok: plugin installed
+fail: plugin enabled: not configured; fix: hermes plugins enable boss
+ok: skill installed
+optional: wake cron: not configured; fix: ./install.sh --with-cron; keep the Hermes gateway running
+exit: 1
+$ hermes plugins enable boss
+boss enabled (fake Hermes)
+exit: 0
+$ boss doctor (cron optional)
+ok: Python 3.12+
+ok: gh auth
+ok: hosts
+ok: host local token
+ok: host local MCP + projects 1 projects
+ok: plugin installed
+ok: plugin enabled
+ok: skill installed
+optional: wake cron: not configured; fix: ./install.sh --with-cron; keep the Hermes gateway running
+exit: 0
+$ ./install.sh --with-cron
+created boss-poll every 5 minutes (fake Hermes)
+installed: <HOME>/.local/bin/boss
+installed: <HOME>/hermes profile/skills/boss
+installed: <HOME>/.agents/skills/boss
+installed: <HOME>/hermes profile/plugins/boss
+enable plugin (opt-in): hermes plugins enable boss
+next: boss init
+exit: 0
+$ ./install.sh --with-cron (repeat; no duplicate)
+installed: <HOME>/.local/bin/boss
+installed: <HOME>/hermes profile/skills/boss
+installed: <HOME>/.agents/skills/boss
+installed: <HOME>/hermes profile/plugins/boss
+enable plugin (opt-in): hermes plugins enable boss
+next: boss init
+wake cron exists: boss-poll (unchanged)
+exit: 0
+$ boss doctor (wake cron installed)
+ok: Python 3.12+
+ok: gh auth
+ok: hosts
+ok: host local token
+ok: host local MCP + projects 1 projects
+ok: plugin installed
+ok: plugin enabled
+ok: skill installed
+ok: wake cron
+exit: 0
+$ boss config set projects.repo.repository example/repo
+projects.repo.repository: set
+exit: 0
+$ boss config set workers.scout.model codex:gpt-test
+workers.scout.model: set
+exit: 0
+$ boss config set workers.scout.effort low
+workers.scout.effort: set
+exit: 0
+$ printf brief | boss spawn repo --title "Fresh install scout" --kind scout
+939dd977605e: spawned local running
+thread: thread-1
+next: boss status 939dd977605e
+exit: 0
+$ boss poll --hermes-gate (running; silent)
+{"wakeAgent": false}
+exit: 0
+$ boss poll --hermes-gate (completed; wake)
+939dd977605e: finished
+exit: 0
+$ boss poll --hermes-gate (unchanged)
+{"wakeAgent": false}
+exit: 0
+$ boss poll --hermes-gate (MCP error; quiet and logged)
+{"wakeAgent": false}
+exit: 0
+$ sh <HERMES_HOME>/scripts/boss-poll-gate.sh
+{"wakeAgent": false}
+exit: 0
+$ boss doctor (wrong Hermes home; expected failure)
+ok: Python 3.12+
+ok: gh auth
+ok: hosts
+fail: host local token: missing T3_MCP_TOKEN; fix: set T3_MCP_TOKEN in env or <HOME>/.hermes/.env
+fail: host local MCP + projects: missing T3_MCP_TOKEN; fix: boss host test local; check T3 MCP URL/token
+fail: plugin installed: not configured; fix: ./install.sh
+fail: plugin enabled: not configured; fix: hermes plugins enable boss
+fail: skill installed: not configured; fix: ./install.sh
+optional: wake cron: not configured; fix: ./install.sh --with-cron; keep the Hermes gateway running
+exit: 1
+PASS: fresh install, idempotent init/cron, doctor, role spawn, gate transitions, logged errors and legacy ledger location
