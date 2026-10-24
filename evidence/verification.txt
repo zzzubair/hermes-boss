@@ -1,0 +1,22 @@
+Machine: oracle-free (oracle)
+Runtime: Python 3.12.3
+
+$ python3 -m unittest -v
+Ran 41 tests in 6.663s
+OK
+
+Includes a real fake MCP HTTP server, JSON/SSE sessions, durable restart
+recovery, deterministic polls, model settings, pending questions, merge and
+settlement guards, token redaction, disposable Git repos, symlink installation
+and every command's --help.
+
+$ python3 -m compileall -q boss scripts tests
+exit: 0
+$ sh -n install.sh
+exit: 0
+$ git diff --check
+exit: 0
+
+Live oracle MCP smoke: oracle-smoke.txt (verbatim script output).
+Authentication: ephemeral t3 auth pairing create credential exchanged through
+T3's OAuth registration, PKCE consent and token endpoints. No tokens in evidence.
