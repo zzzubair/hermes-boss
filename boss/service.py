@@ -16,6 +16,7 @@ def footer(kind, delivery):
     rules = [
         "## boss worker contract",
         "Work only in this assigned worktree. Never change the primary checkout or another task's worktree.",
+        "Stay on the assigned branch. Never rename it or switch to another branch.",
         "Commit as the repository's configured Git user. Never change Git identity or add AI co-author trailers or agent credit.",
         "Never merge. Never deploy. Report through this thread to boss.",
     ]
@@ -441,17 +442,18 @@ class Boss:
                     except BossError as exc:
                         refuse(f"cannot verify unlanded work: {exc.message}",
                                f'boss settle {task_id} --discard-approved "<quote>" only with explicit discard authority')
-                    if evidence["branch"] != meta["branch"]:
+                    merged = next((p for p in snapshot["prs"]
+                                   if p["state"] == "MERGED" and p["headRefOid"] == evidence["head"] and
+                                   PR_PATTERN.fullmatch(p["url"])[1].lower() == meta["repository"].lower() and
+                                   p.get("baseRefName") == meta["base"]), None)
+                    branch = merged["headRefName"] if merged else meta["branch"]
+                    if evidence["branch"] != branch:
                         blockers.append("worktree branch mismatch")
                     actual_repo = github_repository({"repositoryIdentity": {"locator": {"remoteUrl": evidence["origin"]}}})
                     if not actual_repo or actual_repo.lower() != meta["repository"].lower():
                         blockers.append("worktree origin differs from the task")
                     if evidence["dirty"]:
                         blockers.append("uncommitted work")
-                    merged = any(p["state"] == "MERGED" and p["headRefOid"] == evidence["head"] and
-                                 PR_PATTERN.fullmatch(p["url"])[1].lower() == meta["repository"].lower() and
-                                 p["headRefName"] == meta["branch"] and p.get("baseRefName") == meta["base"]
-                                 for p in snapshot["prs"])
                     if not evidence["in_default"] and not merged:
                         if not evidence["pushed"]:
                             blockers.append("unpushed branch")

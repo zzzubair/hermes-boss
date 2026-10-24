@@ -234,8 +234,10 @@ delivery = "direct-PR"
         self.assertEqual(launch["workspaceStrategy"], {"type": "worktree", "branch": "boss/" + meta["id"], "baseRef": "trunk", "startFromOrigin": True})
         self.assertEqual(launch["modelSelection"], {"instanceId": "codex", "model": "gpt-test", "options": {"reasoningEffort": "max"}})
         brief = (self.store.directory(meta["id"]) / "brief.md").read_text()
-        for text in ("investigate this", "Never merge", "Never deploy", "configured Git user", "exactly ONE PR"):
+        for text in ("investigate this", "Never merge", "Never deploy", "configured Git user", "exactly ONE PR",
+                     "Stay on the assigned branch. Never rename it or switch to another branch."):
             self.assertIn(text, brief)
+        self.assertEqual(launch["message"], brief)
         for name in ("meta.json", "events.log", "brief.md"):
             self.assertTrue((self.store.directory(meta["id"]) / name).exists())
         self.assertTrue(all(h.get("Mcp-Session-Id") == "fake-session" for h in self.fake.headers[1:]))
@@ -450,6 +452,64 @@ serviceTier = "priority"
         self.gh.pr["state"] = "MERGED"
         self.evidence.update(in_default=False, pushed=False)
         self.assertEqual(self.cli("settle", meta["id"])[0], 0)
+
+    def test_renamed_branch_squash_merged_pr_settles(self):
+        meta = self.spawn()
+        self.completed(meta)
+        self.fake.prs = [URL]
+        self.gh.pr.update(state="MERGED", headRefName="boss/steer-ledger", mergeCommit={"oid": "b" * 40})
+        self.evidence.update(branch="boss/steer-ledger", in_default=False, pushed=False)
+
+        code, output = self.cli("settle", meta["id"])
+
+        self.assertEqual(code, 0, output)
+        self.assertTrue(self.store.load(meta["id"])["settled"])
+        self.assertTrue(self.fake.threads[meta["thread_id"]]["settled"])
+        self.assertIn(("unwatch_pull_request", {"threadId": meta["thread_id"], "url": URL}), self.fake.calls)
+
+    def test_renamed_branch_unmerged_pr_refuses(self):
+        for state in ("OPEN", "CLOSED"):
+            with self.subTest(state=state):
+                meta = self.spawn()
+                self.completed(meta)
+                self.fake.prs = [URL]
+                self.gh.pr.update(state=state, headRefName="boss/steer-ledger")
+                self.evidence.update(branch="boss/steer-ledger", in_default=False, pushed=False)
+
+                code, output = self.cli("settle", meta["id"])
+
+                self.assertEqual(code, 2, output)
+                self.assertIn("worktree branch mismatch", output)
+                self.assertIn("branch is not landed", output)
+                if state == "OPEN":
+                    self.assertIn("open PR", output)
+                self.assertFalse(self.store.load(meta["id"])["settled"])
+        self.assertFalse(any(n == "t3_thread_organize" for n, _ in self.fake.calls))
+
+    def test_renamed_branch_merged_pr_refuses_unsafe_work(self):
+        for name, pr_changes, git_changes, blocker in (
+                ("dirty", {}, {"dirty": True}, "uncommitted work"),
+                ("foreign origin", {}, {"origin": "https://github.com/other/repo.git"}, "worktree origin differs"),
+                ("foreign PR", {"url": "https://github.com/other/repo/pull/7"}, {}, "branch is not landed"),
+                ("wrong base", {"baseRefName": "other-base"}, {}, "branch is not landed"),
+                ("different head", {}, {"head": "c" * 40}, "branch is not landed"),
+                ("different branch", {"headRefName": "boss/other-worker"}, {}, "worktree branch mismatch")):
+            with self.subTest(case=name):
+                meta = self.spawn()
+                self.completed(meta)
+                self.gh.pr.update(url=URL, state="MERGED", headRefName="boss/steer-ledger", baseRefName="trunk")
+                self.gh.pr.update(pr_changes)
+                self.fake.prs = [self.gh.pr["url"]]
+                self.evidence.update(head="a" * 40, branch="boss/steer-ledger", dirty=False,
+                                     origin="https://github.com/example/repo.git", in_default=False, pushed=False)
+                self.evidence.update(git_changes)
+
+                code, output = self.cli("settle", meta["id"])
+
+                self.assertEqual(code, 2, output)
+                self.assertIn(blocker, output)
+                self.assertFalse(self.store.load(meta["id"])["settled"])
+        self.assertFalse(any(n == "t3_thread_organize" for n, _ in self.fake.calls))
 
     def test_git_inspection_failure_refuses_safely(self):
         meta = self.spawn()
