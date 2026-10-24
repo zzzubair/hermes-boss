@@ -17,10 +17,25 @@ cd hermes-boss
 boss --help
 ```
 
-The installer symlinks `~/.local/bin/boss` to this checkout's `bin/boss`.
-Keep the checkout and put `~/.local/bin` on PATH. For development use
-`python3 -m boss` or `./bin/boss`. Remove the symlink to uninstall; the ledger
-stays intact. No agent hooks or Hermes configuration are changed by installation.
+The installer symlinks `~/.local/bin/boss` to this checkout's `bin/boss`,
+`~/.agents/skills/boss` to `skill/`, and `~/.hermes/plugins/boss` to `plugin/`.
+Keep the checkout and put `~/.local/bin` on PATH. Existing real files or
+directories at these destinations refuse installation; existing symlinks can
+be updated. For development use `python3 -m boss` or `./bin/boss`.
+Remove those three symlinks to uninstall; the ledger stays intact.
+
+Installation does not enable the plugin or change any Hermes config. It
+prints the opt-in enable command:
+
+```sh
+hermes plugins enable boss
+```
+
+The `boss` skill provides the command/guard reference on demand. Its ambient
+plugin registers exactly one `pre_llm_call` callback and returns one line only
+when local records need attention. It never calls the CLI, T3, GitHub, a
+subprocess or an LLM. When nothing needs attention it returns `None`, adding
+zero context tokens. No Hermes core files are patched.
 
 ## Configuration
 
@@ -207,23 +222,57 @@ settlement checks below are enforced in the CLI.
 
 ## Polling from Hermes
 
-Use `boss poll` as the Hermes cron monitor script. One pass checks all active
-tasks and prints only unresolved actionable state: finished, failed,
-interrupted, waiting for input, open PRs and their current CI aggregate.
-No actionable state means exactly zero output and exit 0. A failed host is
-reported while the rest of the fleet is still checked.
+Schedule only `boss poll` for T3 checks. The command is LLM-free: one pass
+reads active T3 tasks and GitHub CI, updates the ledger, and prints changed
+actionable items. Unchanged successful polls exit 0 with exactly zero output,
+including after a restart. A changed task can report finished, failed,
+interrupted, waiting for input, open PRs and current CI aggregates. No actionable
+items also means empty output. A failed host remains an error with a nonzero
+exit and diagnostic output; other tasks are still checked.
 
-Poll is a current alert snapshot, not a consume-on-read event queue. Alerts
-remain while they need attention. `PR opened` identifies an open PR;
-`CI changed` supplies its current aggregate for the monitor's comparison.
-Identical live state always produces identical bytes, even after a restart or
-a `status` call. Task IDs, request IDs and PR URLs are sorted; timestamps,
-durations, last-message text and GitHub update times are excluded. A CI count
-or state change changes the snapshot. Settled tasks leave the poll entirely.
-The ledger records observation changes without duplicating unchanged events.
+Poll's last observation is separate from on-demand status reads, so reading
+status does not consume an input or CI change before the next scheduled pass.
+`boss status <id>` marks that completed run as reviewed; it does not approve
+merging or discarding. Another completed run gets a new reminder. Bare `boss`
+and `boss status` show the fleet without acknowledging individual tasks.
+An input reminder stays until the request is answered or a live refresh shows
+it resolved. Closing a decision and settling a task also clear their reminders.
 
-To provide ambient context, an operator can call bare `boss` from a Hermes
-session-start hook. Hook installation is opt-in and outside this CLI's scope.
+After each CLI command, `attention.json` stores a bounded local summary: the
+total and up to six validated IDs for open decisions, pending worker inputs,
+and completed runs first recorded by poll that remain unreviewed. The plugin
+reads only this file, at most 4096 bytes; it does not scan task journals or
+follow network state on a turn. Missing or corrupt cache data adds no context.
+Full questions, task text, tokens and decision bodies never enter this summary.
+For example:
+
+```text
+boss: 2 need you (d3 decision, t7 input) - run boss status
+```
+
+The hook keeps reminding until the local records are resolved. Use the CLI
+to check live state. Run `boss poll` once after upgrading to populate the view
+from existing decisions and tasks. The timing check in `scripts/check_ambient.py`
+measures the actual callback, including its bounded local read, against 50 ms.
+
+For an opt-in, five-minute Hermes cron on ser5ver, first create this wrapper
+under the active Hermes profile's `scripts/` directory:
+
+```sh
+mkdir -p ~/.hermes/scripts
+cat > ~/.hermes/scripts/boss-poll.sh <<'SH'
+#!/bin/sh
+exec "$HOME/.local/bin/boss" poll
+SH
+hermes cron create '*/5 * * * *' --name boss-poll --script boss-poll.sh --no-agent --deliver local
+```
+
+This is documentation only; installation never creates the script or cron.
+Hermes runs `.sh` scripts with bash. `--no-agent` skips the LLM completely,
+silently accepts empty stdout and records nonempty output locally. Use this
+script gate instead of `--monitor-script`, which expects a persistent snapshot
+and would treat a transition back to empty output as a new change. The plugin
+has no timer; interactive `boss`/`status` still query live state on demand.
 
 ## Guard rules
 
@@ -266,6 +315,7 @@ as `error`, `message`, `next`; no traceback or token is printed.
   tasks/<id>/events.log
   tasks/<id>/report.md       # Completed scout/local-only report
   decisions/<id>.json
+  attention.json            # Bounded local-only view for the Hermes hook
 ```
 
 Files are written with replacement + fsync and owner-only permissions for
@@ -292,6 +342,7 @@ Settlement and decision closure can safely be repeated.
 ```sh
 python3 -m unittest -v
 python3 -m compileall -q boss scripts tests
+python3 scripts/check_ambient.py
 git diff --check
 # Explicit opt-in, with a privately supplied existing MCP token:
 python3 scripts/smoke.py --url http://127.0.0.1:3773/mcp --token-env T3_ORACLE_MCP_TOKEN
@@ -301,9 +352,9 @@ The unittest suite uses a fake MCP HTTP server and disposable Git repos.
 It covers spawn/worktree contracts, model settings, lost-response recovery,
 poll determinism, input requests, guard refusals, approved merge recording,
 report capture, restart recovery, JSON/SSE sessions and token redaction.
-The live script launches only a trivial scratch worker, compares two polls,
+The live script launches only a trivial scratch worker, checks repeat-poll silence,
 captures its report, settles it and reads T3 back. It does not merge anything.
-Oracle's verified smoke output is in [evidence/oracle-smoke.txt](evidence/oracle-smoke.txt).
+The original v1 launch/settle smoke output is in [evidence/oracle-smoke.txt](evidence/oracle-smoke.txt).
 Project-discovery coverage also checks title matches, local/SSH origin lookup,
 ordered preference layers, size and secret refusals, and config append safety.
 The read-only oracle project-list smoke is recorded in

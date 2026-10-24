@@ -1,0 +1,39 @@
+Machine: oracle-free (oracle)
+Branch: boss-ambient, stacked on boss-prefs at b103aad
+
+$ python3 -m unittest -v
+Ran 82 tests in 11.143s
+OK
+
+Hook coverage: zero output/context for clean state; one line for decisions,
+inputs and unreviewed finishes; missing/corrupt/oversized/FIFO cache safety;
+no network/subprocess use; bounded aggregate context; review/answer/settlement
+clearing; repeat-poll silence across new CLI instances; only T3 read tools
+during poll; installer repeatability and config preservation.
+
+$ python3 -m compileall -q boss plugin scripts tests
+exit: 0
+$ sh -n install.sh
+exit: 0
+$ python3 /home/zubair/.codex/skills/.system/skill-creator/scripts/quick_validate.py skill
+Skill is valid!
+skill/SKILL.md: 53 lines (limit: under 120)
+$ git diff --check
+exit: 0
+
+$ python3 scripts/check_ambient.py
+3000 callback samples, all under 50 ms. See ambient-timing.txt for measured
+median/p99/max and output. Includes local open/read/decode/render; excludes
+ledger production, Hermes import/dispatch and process startup.
+
+Installed Hermes checks used an isolated temporary HERMES_HOME:
+- hermes plugins validate <repo>/plugin --json: 14 checks passed, no warnings.
+  Exact output: hermes-plugin-validation.json.
+- Actual PluginManager loaded/register()ed the plugin and invoked the hook
+  with the turn_context.py kwargs. Clean/corrupt state produced no context;
+  actionable state produced the expected one-line context and did not modify
+  the ledger. Output: hermes-hook-smoke.txt.
+
+No plugin was enabled in a Hermes config. No cron or wrapper was installed.
+The installer was exercised only in temporary test homes. No Hermes core
+source was patched, no worker was launched and no PR was merged.

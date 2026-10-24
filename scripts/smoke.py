@@ -64,9 +64,9 @@ def smoke():
         else:
             raise RuntimeError("scratch worker did not complete within 180 seconds")
         print("poll: " + polled.strip())
-        if command(["poll"]) != polled:
-            raise RuntimeError("identical live poll state produced different bytes")
-        print("poll_repeat: byte-identical")
+        if command(["poll"]):
+            raise RuntimeError("unchanged live poll state produced output")
+        print("poll_repeat: empty")
         report = store.directory(task_id) / "report.md"
         if not report.exists() or report.read_text().strip() != "smoke-ok":
             print(command(["status", task_id, "--full"]), end="")

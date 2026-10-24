@@ -54,7 +54,7 @@ def parser():
     settle = commands.add_parser("settle", help="unwatch PRs and settle a terminal thread; preserve its worktree")
     settle.add_argument("id")
     settle.add_argument("--discard-approved", metavar="QUOTE", help="captain's explicit authority to leave work unlanded")
-    commands.add_parser("poll", help="one deterministic pass; only unresolved actionable items, otherwise silent")
+    commands.add_parser("poll", help="one LLM-free pass; changed actionable items only, otherwise silent")
     project = commands.add_parser("project", help="discover T3 projects and inspect or save preferences")
     projects = project.add_subparsers(dest="project_command", required=True)
     project_list = projects.add_parser("list", help="list T3 projects with registry/notes markers")
@@ -191,12 +191,13 @@ def dispatch(args, boss):
                      f'next: boss land {args.id} --approved "<captain quote>"' if view["status"] == "completed" and any(p["state"] == "OPEN" and p["ci"]["state"] == "green" for p in view["prs"]) else
                      f"next: boss settle {args.id}" if view["status"] == "completed" and not any(p["state"] == "OPEN" for p in view["prs"]) else
                      f"next: boss send {args.id} \"<message>\"")
+        boss.reviewed(meta, view)
         return lines, 0
     if command == "poll":
         lines, code = [], 0
         for meta in boss.store.tasks(active=True):
             try:
-                lines.extend(boss.snapshot(meta)["alerts"])
+                lines.extend(boss.poll(meta))
             except BossError as exc:
                 # One unavailable host must not hide the rest of the fleet.
                 lines.append(f"{meta['id']}: failed {exc.code} {compact(boss.redact(exc.message))}")
@@ -247,7 +248,10 @@ def main(argv=None):
         config = Config(home, redact)
         store = Store(home, redact)
         with store.locked():
-            lines, code = dispatch(args, Boss(config, store, redact))
+            try:
+                lines, code = dispatch(args, Boss(config, store, redact))
+            finally:
+                store.refresh_attention()
         if lines:
             print(redact("\n".join(lines)))
         return code

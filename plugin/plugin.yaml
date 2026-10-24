@@ -1,0 +1,5 @@
+name: boss
+version: "0.1.0"
+description: "Local boss ledger reminders for captain decisions and worker attention."
+provides_hooks:
+  - pre_llm_call

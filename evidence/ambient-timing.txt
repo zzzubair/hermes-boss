@@ -1,0 +1,10 @@
+machine: oracle-free
+python: 3.12.3
+measurement: callback wall time; includes local file read; excludes ledger production and Hermes startup
+clean: samples=1000 bytes=39 median_ms=0.021 p99_ms=0.039 max_ms=0.067
+context: none (zero tokens)
+actionable: samples=1000 bytes=136 median_ms=0.026 p99_ms=0.046 max_ms=0.225
+context: boss: 3 need you (d3 decision, t7 input, t9 finished) - run boss status
+large_total: samples=1000 bytes=226 median_ms=0.030 p99_ms=0.053 max_ms=0.086
+context: boss: 2000 need you (t0 input, t1 input, t2 input, t3 input, t4 input, t5 input, +1994 more) - run boss status
+result: all callback samples under 50 ms
