@@ -1,0 +1,6 @@
+hermes_registration: exactly one pre_llm_call hook
+clean_ledger: no context
+actionable_context: boss: 2 need you (d3 decision, t7 input) - run boss status
+repeated_context: identical; ledger unchanged
+corrupt_ledger: no context, no exception
+plugin_enabled_in_config: false

@@ -292,17 +292,17 @@ serviceTier = "priority"
         self.assertEqual(len(self.fake.threads), 1)
         self.assertEqual(len([n for n, _ in self.fake.calls if n == "t3_thread_launch"]), 1)
 
-    def test_poll_running_silent_and_terminal_deterministic(self):
+    def test_poll_running_and_unchanged_terminal_are_silent(self):
         meta = self.spawn()
         self.assertEqual(self.cli("poll"), (0, ""))
         self.completed(meta, "done")
         expected = (0, meta["id"] + ": finished\n")
         self.assertEqual(self.cli("poll"), expected)
         revision = self.store.load(meta["id"])["revision"]
-        self.assertEqual(self.cli("poll"), expected)
-        self.cli("status", meta["id"])
-        self.assertEqual(self.cli("poll"), expected)
+        self.assertEqual(self.cli("poll"), (0, ""))
         self.assertEqual(self.store.load(meta["id"])["revision"], revision)
+        self.cli("status", meta["id"])
+        self.assertEqual(self.cli("poll"), (0, ""))
 
     def test_poll_ci_aggregates_changes_and_unlinked_pr_retained(self):
         meta = self.spawn()
@@ -310,13 +310,13 @@ serviceTier = "priority"
         first = self.cli("poll")
         self.assertIn("PR opened " + URL, first[1])
         self.assertIn("1 passed,0 failed,0 pending,0 skipped", first[1])
-        self.assertEqual(first, self.cli("poll"))
+        self.assertEqual(self.cli("poll"), (0, ""))
         self.gh.pr["statusCheckRollup"] = [{"conclusion": "FAILURE"}]
         second = self.cli("poll")
         self.assertNotEqual(first, second)
-        self.assertEqual(second, self.cli("poll"))
+        self.assertEqual(self.cli("poll"), (0, ""))
         self.fake.prs = []
-        self.assertEqual(second, self.cli("poll"))
+        self.assertEqual(self.cli("poll"), (0, ""))
         self.assertEqual(self.store.load(meta["id"])["pr_urls"], [URL])
 
     def test_poll_failed_interrupted_and_waiting(self):
@@ -325,7 +325,7 @@ serviceTier = "priority"
             self.fake.threads[meta["thread_id"]]["status"] = status
             first = self.cli("poll")
             self.assertIn(label, first[1])
-            self.assertEqual(first, self.cli("poll"))
+            self.assertEqual(self.cli("poll"), (0, ""))
 
     def test_pending_input_and_answer(self):
         meta = self.spawn()
@@ -583,6 +583,10 @@ class GitEvidenceTest(HermeticTestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             executable = Path(temporary) / ".local/bin/boss"
             self.assertTrue(executable.is_symlink())
+            self.assertEqual((Path(temporary) / ".agents/skills/boss").resolve(), root / "skill")
+            self.assertEqual((Path(temporary) / ".hermes/plugins/boss").resolve(), root / "plugin")
+            self.assertIn("hermes plugins enable boss", result.stdout)
+            self.assertFalse((Path(temporary) / ".hermes/config.yaml").exists())
             version = subprocess.run([str(executable), "--version"], env=env, capture_output=True, text=True)
             self.assertEqual(version.returncode, 0, version.stderr)
             self.assertEqual(version.stdout, "boss 0.1.0\n")

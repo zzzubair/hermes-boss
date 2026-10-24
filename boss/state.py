@@ -95,3 +95,37 @@ class Store:
     def decision(self, record):
         atomic_write(self.home / "decisions" / (identifier(record["id"]) + ".json"),
                      json.dumps(self.redact.data(record), sort_keys=True) + "\n")
+
+    def refresh_attention(self):
+        """Materialize a tiny local hook view once per CLI command, under its lock.
+
+        The journal remains authoritative. No text, question bodies or secrets
+        enter this view: only validated IDs, kinds and a precomputed total.
+        """
+        items = []
+        for path in sorted((self.home / "decisions").glob("*.json")):
+            try:
+                record = json.loads(path.read_text())
+                record_id = identifier(record["id"])
+                if not record.get("closed"):
+                    items.append({"id": record_id, "kind": "decision"})
+            except (OSError, ValueError, KeyError, TypeError, BossError):
+                continue
+        for directory in sorted((self.home / "tasks").glob("*")):
+            if not directory.is_dir() or directory.name.startswith("."):
+                continue
+            try:
+                meta = self.load(directory.name)
+                if meta.get("settled"):
+                    continue
+                polled = meta.get("poll_observed") or {}
+                if meta.get("pending_inputs"):
+                    items.append({"id": meta["id"], "kind": "input"})
+                elif (meta.get("status") == "completed" and polled.get("status") == "completed" and
+                      polled.get("run_id") and polled["run_id"] != meta.get("reviewed_run_id") and
+                      polled["run_id"] == (meta.get("observed") or {}).get("run_id")):
+                    items.append({"id": meta["id"], "kind": "finished"})
+            except (OSError, ValueError, KeyError, TypeError, AttributeError, BossError):
+                continue
+        attention = {"version": 1, "count": len(items), "items": items[:6]}
+        atomic_write(self.home / "attention.json", json.dumps(attention, sort_keys=True) + "\n")

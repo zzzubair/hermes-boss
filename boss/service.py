@@ -288,6 +288,27 @@ class Boss:
         return {"thread": thread, "status": status, "requests": requests, "prs": prs,
                 "assistant": text, "alerts": alerts}
 
+    def poll(self, meta):
+        view = self.snapshot(meta)
+        observed = meta["observed"]
+        changed = observed != meta.get("poll_observed")
+        if changed or meta.get("pending_inputs") != view["requests"]:
+            meta.update(poll_observed=observed, pending_inputs=view["requests"])
+            self.store.save(meta, "polled")
+        if not changed:
+            return []
+        return [line for line in view["alerts"]
+                if not (line == f"{meta['id']}: finished" and meta.get("reviewed_run_id") == observed.get("run_id"))]
+
+    def reviewed(self, meta, view):
+        """Reading one task acknowledges its completed run, never merge authority."""
+        before = (meta.get("reviewed_run_id"), meta.get("pending_inputs"))
+        meta["pending_inputs"] = view["requests"]
+        if view["status"] == "completed":
+            meta["reviewed_run_id"] = view["thread"].get("latestRunId")
+        if before != (meta.get("reviewed_run_id"), meta.get("pending_inputs")):
+            self.store.save(meta, "reviewed")
+
     def active_task(self, task_id):
         meta = self.store.load(task_id)
         if meta.get("settled"):
@@ -304,6 +325,8 @@ class Boss:
         result = client.call("t3_thread_send", threadId=meta["thread_id"], message=text,
                              clientRequestId=request_id)
         meta.pop("report_run_id", None)
+        if meta.get("status") == "completed":
+            meta["reviewed_run_id"] = (meta.get("observed") or {}).get("run_id")
         self.store.save(meta, "sent", client_request_id=request_id, result=result)
 
     def answer(self, task_id, request_id, text):
@@ -327,6 +350,7 @@ class Boss:
                 raise BossError("usage", "answer keys must match all question ids", exit_code=1)
         self.store.save(meta, "answer_intent", request_id=request_id, answers=answers)
         result = client.call("t3_pending_request_respond", threadId=meta["thread_id"], requestId=request_id, answers=answers)
+        meta["pending_inputs"] = [r for r in meta.get("pending_inputs", []) if r != request_id]
         self.store.save(meta, "answered", request_id=request_id, result=result)
 
     def stop(self, task_id):
@@ -353,6 +377,7 @@ class Boss:
             intent = meta.get("land_intent", {})
             if intent.get("head") == pr["headRefOid"]:
                 meta["landed"] = {"url": pr["url"], "head": pr["headRefOid"], "merge": pr.get("mergeCommit"), "approved": intent["approved"]}
+                meta["reviewed_run_id"] = snapshot["thread"].get("latestRunId")
                 self.store.save(meta, "land_reconciled")
                 return
             refuse("PR already merged outside this landing", f"boss settle {task_id}")
@@ -367,6 +392,7 @@ class Boss:
         if after["state"] != "MERGED" or after["headRefOid"] != pr["headRefOid"] or not after.get("mergeCommit"):
             raise BossError("github", "merge not confirmed for the approved head", f"boss status {task_id}")
         meta["landed"] = {**meta["land_intent"], "merge": after["mergeCommit"]}
+        meta["reviewed_run_id"] = snapshot["thread"].get("latestRunId")
         self.store.save(meta, "landed")
 
     @staticmethod
