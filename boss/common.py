@@ -21,6 +21,24 @@ class Redactor:
         if secret:
             self.secrets.add(secret)
 
+    def discover(self, values, *, token_keys=()):
+        """Infer credentials conservatively; explicit host token keys win."""
+        explicit = set(token_keys)
+        literals = {"true", "false", "yes", "no", "on", "off"}
+        for key, value in values.items():
+            if key in explicit:
+                self.add(value)
+                continue
+            name = key.upper()
+            if (not any(word in name for word in ("TOKEN", "SECRET", "PASSWORD", "API_KEY")) or
+                    name.endswith(("_SECRETS", "_ENABLED")) or name.startswith("HERMES_REDACT")):
+                continue
+            candidate = value.strip()
+            if (len(candidate) < 12 or candidate.casefold() in literals or candidate.isdigit() or
+                    re.fullmatch(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?", candidate)):
+                continue
+            self.add(value)
+
     def __call__(self, value):
         text = str(value)
         for secret in sorted(self.secrets, key=len, reverse=True):

@@ -17,6 +17,7 @@ from boss.config import Config
 from boss.integrations import ci_summary, inspect_worktree
 from boss.mcp import MCP
 from boss.state import Store, atomic_write
+from tests.support import HermeticTestCase
 
 
 TOKEN = "test-secret-token-never-print"
@@ -37,6 +38,9 @@ class FakeT3:
     def __init__(self):
         self.calls, self.headers = [], []
         self.threads, self.pending, self.prs = {}, {}, []
+        self.projects = [{"id": "p1", "title": "repo", "workspaceRoot": "/fake/repo",
+                          "defaultModelSelection": None,
+                          "repositoryIdentity": {"owner": "example", "name": "repo"}}]
         self.failure, self.drop_launch, self.sse, self.missing_session = None, False, False, False
         self.launch_selection = None
         self.catalog = {"providers": [{"providerInstanceId": "codex", "models": [
@@ -107,8 +111,7 @@ class FakeT3:
 
     def tool(self, name, args):
         if name == "t3_project_list":
-            return {"projects": [{"id": "p1", "title": "repo", "defaultModelSelection": None,
-                                  "repositoryIdentity": {"owner": "example", "name": "repo"}}], "nextCursor": None}
+            return {"projects": self.projects, "nextCursor": None}
         if name == "orchestrator_capabilities":
             return self.catalog
         if name == "t3_thread_launch":
@@ -163,10 +166,10 @@ class FakeGitHub:
         self.pr.update(state="MERGED", mergeCommit={"oid": "b" * 40})
 
 
-class CLITest(unittest.TestCase):
+class CLITest(HermeticTestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory()
-        self.home = Path(self.temporary.name)
+        HermeticTestCase.setUp(self)
+        os.environ.update(BOSS_HOME=str(self.home), T3_TEST_MCP_TOKEN=TOKEN)
         self.fake, self.gh = FakeT3(), FakeGitHub()
         (self.home / "config.toml").write_text(f'''[hosts.test]
 url = "{self.fake.url}"
@@ -178,8 +181,6 @@ project_id = "p1"
 repository = "example/repo"
 delivery = "direct-PR"
 ''')
-        self.env = patch.dict(os.environ, {"BOSS_HOME": str(self.home), "T3_TEST_MCP_TOKEN": TOKEN})
-        self.env.start()
         self.gh_patch = patch("boss.service.GitHub", return_value=self.gh)
         self.gh_patch.start()
         self.redact = Redactor()
@@ -193,9 +194,7 @@ delivery = "direct-PR"
     def tearDown(self):
         self.probe.stop()
         self.gh_patch.stop()
-        self.env.stop()
         self.fake.close()
-        self.temporary.cleanup()
 
     def cli(self, *args, stdin="investigate this"):
         output = io.StringIO()
@@ -575,7 +574,7 @@ serviceTier = "priority"
             self.assertEqual(config.credentials["TOKEN_LITERAL"], "$(touch /tmp/should-not-exist-boss)")
 
 
-class GitEvidenceTest(unittest.TestCase):
+class GitEvidenceTest(HermeticTestCase):
     def test_installed_symlink_can_import_package_and_show_help(self):
         root = Path(__file__).resolve().parent.parent
         with tempfile.TemporaryDirectory(prefix="boss install ") as temporary:
@@ -590,7 +589,9 @@ class GitEvidenceTest(unittest.TestCase):
             for args in ([], ["--help"], ["spawn", "--help"], ["status", "--help"], ["send", "--help"],
                          ["answer", "--help"], ["stop", "--help"], ["land", "--help"], ["settle", "--help"],
                          ["poll", "--help"], ["decide", "--help"], ["decide", "add", "--help"],
-                         ["decide", "list", "--help"], ["decide", "close", "--help"]):
+                         ["decide", "list", "--help"], ["decide", "close", "--help"],
+                         ["project", "--help"], ["project", "list", "--help"],
+                         ["project", "add", "--help"], ["project", "show", "--help"]):
                 p = subprocess.run([str(executable), *args], env=env, capture_output=True, text=True)
                 self.assertEqual(p.returncode, 0, p.stderr)
                 self.assertTrue(p.stdout)
@@ -600,19 +601,30 @@ class GitEvidenceTest(unittest.TestCase):
             root = Path(temporary)
             remote, checkout = root / "remote.git", root / "checkout"
 
-            def git(*args):
-                p = subprocess.run(["git", *map(str, args)], capture_output=True, text=True)
+            def git(*args, input=None):
+                p = subprocess.run(["git", *map(str, args)], input=input, capture_output=True, text=True)
                 self.assertEqual(p.returncode, 0, p.stderr)
                 return p.stdout
 
             git("init", "--bare", remote)
             git("init", "-b", "main", checkout)
-            # Use the machine's existing Git identity; never overwrite it.
-            git("-C", checkout, "commit", "--allow-empty", "-m", "base")
+            # Build disposable Git objects using the repository's existing
+            # author/committer headers, without reading host Git configuration.
+            source = Path(__file__).resolve().parent.parent
+            headers = git("-C", source, "cat-file", "commit", "HEAD").split("\n\n", 1)[0]
+            identity = "\n".join(line for line in headers.splitlines() if line.startswith(("author ", "committer ")))
+            tree = git("-C", checkout, "mktree", input="").strip()
+
+            def commit_object(message, parent=None):
+                body = f"tree {tree}\n" + (f"parent {parent}\n" if parent else "") + identity + f"\n\n{message}\n"
+                return git("-C", checkout, "hash-object", "-t", "commit", "-w", "--stdin", input=body).strip()
+
+            base = commit_object("base")
+            git("-C", checkout, "update-ref", "refs/heads/main", base)
             git("-C", checkout, "remote", "add", "origin", remote)
             git("-C", checkout, "push", "origin", "main")
             git("-C", checkout, "checkout", "-b", "boss/test")
-            git("-C", checkout, "commit", "--allow-empty", "-m", "worker")
+            git("-C", checkout, "update-ref", "refs/heads/boss/test", commit_object("worker", base))
             state = inspect_worktree({}, str(checkout), "boss/test", "main")
             self.assertFalse(state["pushed"])
             self.assertFalse(state["in_default"])
