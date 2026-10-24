@@ -272,8 +272,9 @@ Delivery modes:
   complete report into the task's durable `report.md`; local-only ships use
   the same report convention. A report from an older run does not count.
 
-All briefs append the worktree, configured Git identity, no AI co-author,
-no merge and no deploy rules. These are worker instructions; the merge and
+All briefs append the worktree, assigned-branch, configured Git identity,
+no AI co-author, no merge and no deploy rules. Workers must never rename or
+switch the assigned branch. These are worker instructions; the merge and
 settlement checks below are enforced in the CLI.
 
 ## Polling from Hermes
@@ -343,11 +344,13 @@ has no timer; interactive `boss`/`status` still query live state on demand.
   the inspected head. `boss` then verifies the merged state and records the
   quote, head and merge commit. It never enables auto-merge or deletes branches.
 - `settle` requires a terminal worker with no pending questions. Open PRs,
-  missing scout/local-only reports, dirty files, a different branch/origin,
-  unpushed commits and unlanded branches refuse. Git evidence is refreshed
-  from origin before checking ancestry. A squash-merged PR counts only when
-  its head matches the worktree head. Previously seen PR links remain in the
-  ledger, so unlinking one cannot hide it from the guard.
+  missing scout/local-only reports, dirty files, a different origin, unmatched
+  branches, unpushed commits and unlanded branches refuse. Git evidence is refreshed
+  from origin before checking ancestry. A merged PR in the task's repository
+  targeting the task's base counts when its head commit matches the worktree
+  HEAD and its head branch matches the worktree branch. This proves landing
+  for renamed branches and squash merges. Previously seen PR links remain in
+  the ledger, so unlinking one cannot hide it from the guard.
 - A nonblank `--discard-approved` quote overrides the unlanded-work checks,
   including missing evidence. It cannot override a running worker or pending
   input. The quote is recorded. Settlement unwatches linked PRs and settles
