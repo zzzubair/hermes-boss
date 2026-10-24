@@ -2,7 +2,8 @@
 
 `boss` is a stdlib Python CLI for an agent to supervise T3 Code workers. It can
 spawn, watch, steer and land workers while keeping a durable local ledger.
-It runs no daemon and makes no LLM calls. `poll` uses MCP and GitHub evidence;
+The CLI makes no LLM calls. An optional Hermes plugin thread polls for changes
+and wakes the captain's existing chat. `poll` uses MCP and GitHub evidence;
 only a worker or a Hermes agent that wakes consumes model tokens.
 
 ## Install and first run
@@ -32,8 +33,10 @@ There are **no built-in hosts**. To use another endpoint or token variable:
 boss init --url https://coding.example.com/mcp --name workstation --token-env MY_T3_TOKEN
 ```
 
-All setup flags are non-interactive. Repeating `init` leaves an existing config
-unchanged. `--force` permits updating the named host and `default_host`, while
+All setup flags are non-interactive. Repeating plain `init` leaves an existing
+host configuration unchanged. A wake-only config from the installer still gets
+its first host on `init`. `--with-wake` updates only wake settings when hosts already exist.
+`--force` permits updating the named host and `default_host`, while
 preserving other hosts, projects and roles. Failed probes leave config unchanged.
 Existing configs can instead use `boss host add` followed by `boss config set default_host`.
 
@@ -58,8 +61,9 @@ export the corresponding variables when installing **and when running boss**:
 `boss doctor` prints one line per check with a fix hint on failures. Required
 checks cover Python, GitHub authentication, configured hosts and credentials,
 MCP project access, SSH destination resolution, plugin installation/enabling,
-and the Hermes skill. It exits nonzero if any required check fails. A wake cron
-is optional and is reported separately. SSH resolution does not prove remote
+and the Hermes skill. When plugin wake is requested, target and gateway consent
+are required too. Doctor reports an active legacy wake cron alongside plugin
+wake as a failure. Wake is optional otherwise. SSH resolution does not prove remote
 Git access. Keep custom paths discoverable by Hermes as well as by boss.
 
 ## Hosts and credentials
@@ -295,6 +299,118 @@ failure. Every command has `--help` and actionable errors.
 
 ## Hermes wake-up
 
+The plugin can wake the supervisor as a normal user turn inside the captain's
+existing gateway chat. Hermes reuses the chat's history and normal reply path,
+including its busy-session queue. There is no separate cron session or
+`[Cron delivery: boss-wake]` wrapper.
+
+Configure one target, either an existing gateway routing key or a chat origin:
+
+```sh
+boss init --with-wake --wake-session-key '<existing gateway session_key>'
+# Or, including the captain's authorized platform user ID:
+./install.sh --with-wake --wake-origin '{"platform":"telegram","chat_id":"123456","user_id":"123456"}'
+# Optional on either command: --wake-interval 60
+```
+
+Both commands save `[wake]` in the selected boss config and print the consent
+setting. They never edit Hermes `config.yaml`, enable plugins, or modify cron
+jobs. `--with-wake` without a target saves the defaults but starts no thread.
+Re-running it preserves a saved target and interval unless a flag replaces them.
+
+Add this to the captain's **Hermes profile** config, merging into its existing
+`plugins` block, then enable boss and restart the gateway:
+
+```yaml
+plugins:
+  entries:
+    boss:
+      allow_gateway_injection: true
+```
+
+The exact setting is `plugins.entries.boss.allow_gateway_injection: true`.
+Run `boss doctor` using the same `HERMES_HOME`, `BOSS_HOME` and XDG settings as
+the gateway. Hermes still checks the target's platform connection, profile
+route and current user allowlist. Choose an authorized captain `user_id`.
+Plugins can inject only within their own Hermes profile. Acceptance means
+queued for dispatch, not confirmed delivery; later routing failures appear
+in the Hermes gateway log.
+
+An equivalent boss config is:
+
+```toml
+[wake]
+enabled = true
+interval_seconds = 300
+origin = { platform = "telegram", chat_id = "123456", user_id = "123456" }
+# Alternatively, remove origin and set session_key = "<existing routing key>".
+```
+
+`interval_seconds` must be a positive integer. Set `wake.enabled = false` to
+disable plugin wake while keeping its target. The target is global boss
+configuration, separate from project and worker preferences. Restart the
+gateway or reload the plugin after changing wake settings.
+
+### Finding the target
+
+Send a message in the captain's intended chat first, then inspect that
+profile's local routing index with this read-only command. It prints routing
+metadata, never conversation transcripts. Do not infer routing keys from the
+agent's session ID or prompt, which may omit or redact chat identifiers:
+
+```sh
+python3 - <<'PY'
+import json, os, pathlib, sqlite3
+home = pathlib.Path(os.environ.get("HERMES_HOME", "~/.hermes")).expanduser()
+db = home / "state.db"
+if db.exists():
+    with sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True) as connection:
+        entries = [(key, json.loads(value)) for key, value in
+                   connection.execute("SELECT session_key, entry_json FROM gateway_routing")]
+else:
+    entries = json.loads((home / "sessions/sessions.json").read_text()).items()
+for key, entry in entries:
+    if not key.startswith("_") and entry.get("origin"):
+        print(json.dumps({"session_key": key, "origin": entry["origin"]}))
+PY
+```
+
+Pick the entry whose platform, chat and thread match the captain's chat. Use
+its stable **routing key**, not its conversation/session ID. Or copy its origin
+into `[wake]`, omitting null fields because TOML has no null value. Preserve
+`thread_id`, `chat_type`, `scope_id` and `parent_chat_id` when present so a
+threaded conversation stays in that thread. If you use a custom sessions
+directory on an older Hermes, adjust the JSON fallback path above.
+
+### Polling and failures
+
+Loading the plugin in a gateway starts one daemon thread per profile and boss
+home, guarded against plugin reloads. CLI and one-shot processes start none.
+The loop waits for the gateway injector before running `boss poll` as a
+subprocess with a 30-second timeout, then waits the configured interval.
+The default interval is 300 seconds. No target means no thread.
+
+A successful, nonempty poll injects a short `[boss wake]` summary and asks the
+agent to run `boss status`. Quiet polls make no injections and use zero LLM
+tokens. Poll's persisted `poll_observed` state suppresses repeats across CLI
+processes and gateway restarts. A new completed run may have the same summary
+text and still deserves a wake. The pre-LLM context hook continues to read only
+the bounded local `attention.json` cache; it never polls or starts work.
+
+Failed polls, timeouts and injector exceptions never become chat messages.
+Errors go to `$BOSS_HOME/poll-errors.log`, default `~/.boss/poll-errors.log`,
+with credential redaction. If injection returns `False`, the loop logs the
+refusal once per load and keeps running. Poll changes are consumed before
+injection and are **not retried** after refusal, timeout, or a crash between
+poll and injection. Run `boss status` after fixing delivery to catch up.
+There is no automatic failover that might double-wake the captain.
+
+### Legacy cron fallback
+
+Use this if your Hermes does not support gateway injection. Disable plugin
+wake first with `boss config set wake.enabled false` and restart/reload the
+gateway. `--with-cron` is available on both `install.sh` and `boss init`.
+
 `boss poll --hermes-gate` is the bundled cron gate. When unchanged or on error,
 it emits exactly `{"wakeAgent": false}` and exits 0. Errors are appended,
 redacted, to `$BOSS_HOME/logs/poll.log`, or `~/.boss/logs/poll.log`. Otherwise it
@@ -318,11 +434,19 @@ hermes cron create '*/5 * * * *' \
   --name boss-poll --script boss-poll-gate.sh --deliver local
 ```
 
-The same active gate job is not duplicated on reinstall. Keep the Hermes
+The same active gate job is not duplicated on reinstall, including an existing
+`boss-wake` job. Keep the Hermes
 gateway running for scheduled jobs. The gate skips the agent when quiet; a
 change lets Hermes wake the agent with the actionable text. Agent work can
-consume tokens. The ambient plugin separately reads only the bounded local
-`attention.json` cache and never calls boss, T3, GitHub or an LLM.
+consume tokens in a separate cron session. The installer refuses `--with-cron`
+while a plugin wake target is enabled. `boss doctor` detects both sources even
+if a legacy job was installed separately. Do not run both: they compete for
+changed-only poll state and can produce duplicate or missing notifications.
+
+To migrate an existing cron, inspect `hermes cron list` and manually pause or
+remove only the `boss-wake`/`boss-poll` job after configuring plugin wake and
+consent. Run `boss doctor` before restarting the gateway. Installation never
+changes or removes that existing job automatically.
 
 ## MIGRATION
 
@@ -345,9 +469,8 @@ note or `.steers.jsonl` migration is needed. Legacy task metadata remains
 readable. Replace `auto_merge` with `merge` when convenient.
 
 Re-run `./install.sh` to add the Hermes-home skill link. Enable the plugin if
-needed. Remove the old `--no-agent` poll cron with `hermes cron remove <job-id>`
-after inspecting `hermes cron list`, then run `./install.sh --with-cron` to
-create the waking gate. The old external wrapper is no longer needed.
+needed. Follow [Hermes wake-up](#hermes-wake-up) to configure chat injection or
+retain the legacy cron fallback. Inspect and change old cron jobs manually.
 
 ## Verification
 
@@ -356,6 +479,7 @@ python3 -m unittest discover -v
 python3 scripts/check_fresh_install.py
 python3 scripts/check_steering.py
 python3 scripts/check_ambient.py
+python3 scripts/check_wake.py
 ```
 
 GitHub Actions runs the unittest suite on Ubuntu and macOS with Python 3.12
@@ -365,3 +489,5 @@ GitHub/Hermes commands. It runs the real installer and separate CLI processes,
 including init, doctor, a fake role spawn, and wake/quiet/error gate transitions.
 It never touches a real Hermes profile or launches a paid worker. The checked-in
 [evidence](evidence/portable-fresh-install.txt) records the portability run.
+The [wake transcript](evidence/wake-verification.txt) exercises real poll
+subprocesses with fake T3 and an injector, including restart dedupe and failures.

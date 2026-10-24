@@ -1,9 +1,10 @@
-"""One bounded local ledger read; no boss, Hermes, subprocess or network imports."""
+"""Bounded local context hook, plus an opt-in gateway wake loop."""
 import json
 import os
 from pathlib import Path
 import re
 import stat
+import sys
 
 
 def on_pre_llm_call(**kwargs):
@@ -40,3 +41,15 @@ def on_pre_llm_call(**kwargs):
 
 def register(ctx):
     ctx.register_hook("pre_llm_call", on_pre_llm_call)
+    # The marker alone is inherited by subprocesses. Require the gateway module
+    # in THIS interpreter too, so CLI/one-shot children never start poll threads.
+    main_spec = getattr(sys.modules.get("__main__"), "__spec__", None)
+    gateway_loaded = "gateway.run" in sys.modules or getattr(main_spec, "name", None) == "gateway.run"
+    if (os.environ.get("_HERMES_GATEWAY") != "1" or not gateway_loaded or
+            getattr(getattr(ctx, "_manager", None), "_cli_ref", None) is not None):
+        return
+    root = str(Path(__file__).resolve().parent.parent)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from boss.wake import start_gateway_wake
+    start_gateway_wake(ctx)

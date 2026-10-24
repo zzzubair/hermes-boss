@@ -89,9 +89,10 @@ def display_key(parts):
 
 
 class Config:
-    def __init__(self, home, redact):
+    def __init__(self, home, redact, *, hermes=None):
         self.path = config_path(Path(home))
         self.redact = redact
+        self.hermes = Path(hermes) if hermes is not None else hermes_home()
         self.credentials, self.file_credentials = self._credentials()
         try:
             self.data = tomllib.loads(self.path.read_text()) if self.path.exists() else {}
@@ -150,7 +151,21 @@ class Config:
                 key = host.get("token_env", "T3_MCP_TOKEN")
                 self.redact.add(self.file_credentials.get(key))
                 self.redact.add(self.credentials.get(key))
-        fields(data, {"default_host": str, "default_worker": str, "hosts": dict, "projects": dict, "workers": dict, **{k: v for k, v in SETTINGS.items() if k != "worker"}})
+        fields(data, {"default_host": str, "default_worker": str, "hosts": dict, "projects": dict, "workers": dict, "wake": dict, **{k: v for k, v in SETTINGS.items() if k != "worker"}})
+        wake = data.get("wake", {})
+        fields(wake, {"enabled": bool, "interval_seconds": int, "origin": dict, "session_key": str}, "wake")
+        if wake.get("interval_seconds", 300) <= 0:
+            self.fail("wake.interval_seconds", "must be a positive integer")
+        if "origin" in wake and "session_key" in wake:
+            self.fail("wake", "use origin or session_key, not both")
+        if "origin" in wake:
+            strings = ("platform", "chat_id", "chat_type", "thread_id", "user_id", "user_name", "chat_name",
+                       "chat_topic", "user_id_alt", "chat_id_alt", "scope_id", "guild_id", "parent_chat_id",
+                       "message_id", "profile", "auto_thread_initial_name", "prospective_thread_id")
+            fields(wake["origin"], {**dict.fromkeys(strings, str), "auto_thread_created": bool}, "wake.origin")
+            for key in ("platform", "chat_id"):
+                if key not in wake["origin"]:
+                    self.fail("wake.origin." + key, "required")
         for name, host in data.get("hosts", {}).items():
             prefix = "hosts." + name
             fields(host, {"url": str, "token_env": str, "ssh": str}, prefix)
@@ -195,7 +210,7 @@ class Config:
 
     def _credentials(self):
         values = {}
-        path = hermes_home() / ".env"
+        path = self.hermes / ".env"
         if path.exists():
             for line in path.read_text().splitlines():
                 key, sep, value = line.partition("=")
@@ -218,7 +233,7 @@ class Config:
         key = host.get("token_env", "T3_MCP_TOKEN")
         token = self.credentials.get(key)
         if not token:
-            raise BossError("auth", f"missing {key}", f"set it in env or {hermes_home() / '.env'}")
+            raise BossError("auth", f"missing {key}", f"set it in env or {self.hermes / '.env'}")
         self.redact.add(token)
         if any(c.isspace() for c in token):
             raise BossError("auth", f"invalid whitespace in {key}", "replace it with a valid MCP token")
@@ -251,7 +266,7 @@ class Config:
             values.update(copy.deepcopy(layer))
         overrides = {k: v for k, v in (overrides or {}).items() if v is not None}
         apply(DEFAULTS, "built-in")
-        apply(self.normalized({k: v for k, v in self.data.items() if k not in ("hosts", "projects", "workers")}), str(self.path))
+        apply(self.normalized({k: v for k, v in self.data.items() if k not in ("hosts", "projects", "workers", "wake")}), str(self.path))
         project = self.normalized({k: v for k, v in (self.project(name) if name else {}).items() if k != "workers"})
         apply(project, f"{self.path} [projects.{name}]")
         roles = self.roles(name)
