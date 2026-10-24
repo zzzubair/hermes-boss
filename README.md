@@ -102,7 +102,7 @@ existing locations and formats.
 Effective settings come from built-in defaults, the user file, a project's
 settings, the selected role, and explicit CLI flags. Defaults are
 `delivery = "direct-PR"`, `merge = "approved"`, `kind = "ship"`,
-`no_mistakes = false`, `extra_rules = []`, with no default host or role.
+`no_mistakes = false`, with no default host or role.
 Unknown keys and invalid types fail with the full key path, including settings
 for projects that are not currently being spawned.
 
@@ -138,7 +138,6 @@ merge = "never"
 delivery = "direct-PR"
 test_host = "workstation"
 no_mistakes = true
-extra_rules = ["Run the formatter before committing"]
 
 [projects.my-project.workers.ui]
 effort = "xhigh"
@@ -156,7 +155,6 @@ boss config show --origin --project my-project
 boss config show --origin --project my-project --worker ui --effort high
 boss config get projects.my-project.merge
 boss config set projects.my-project.merge never
-boss config set projects.my-project.extra_rules '["Run the formatter"]'
 boss config unset projects.my-project.merge
 ```
 
@@ -213,21 +211,35 @@ with a warning. Supplying both keys in the same block is an error.
 `delivery` is `direct-PR` or `local-only`. Direct-PR ship workers commit, push
 and open exactly one PR against the origin default branch. Local-only workers
 commit locally and return a `BOSS_REPORT:`. Scouts investigate and return a
-report with a clean worktree. `test_host` and `no_mistakes` are worker
-instructions. `extra_rules` is a list appended to the worker contract. It
-cannot override the contract's worktree, merge or deployment restrictions.
+report with a clean worktree. `test_host` and `no_mistakes` are worker instructions.
 
-Brief composition preserves task text, `$BOSS_HOME/rules.md`, project settings,
-`projects/<name>.md`, the project goal, active captain steers and the worker
-contract, in that order. Project settings and notes win over global rules.
+Boss compiles `$BOSS_HOME/rules.md` and `projects/<name>.md` before dispatch.
+A project `## Testing` replaces the entire global `## Testing`, including
+nested headings. Other sections keep global order, followed by project-only
+sections. Text before the first heading is a preamble with the same replacement
+rule. Heading names are case-sensitive. ATX (`## Heading`) and Setext headings
+are supported; headings inside fenced code are literal text.
+
+Workers receive task text, one `## Rules` section with the compiled instructions,
+execution settings and worker contract, then the goal and active steers. Rules
+headings become subsections. Workers receive no source or precedence notes.
 The contract always applies. The composed brief has a 115,000-character limit;
-secret-bearing rules, notes, goals, steers and extra rules are refused.
+secret-bearing rules, notes, goals and steers are refused, even if replaced.
+
+`boss brief <project> [--worker ROLE]` prints that exact brief with `<task>` in
+place of the task text. `--origin` annotates sections with their source files
+for inspection. It writes nothing and needs no T3 connection. `boss doctor`
+warns about empty or duplicate headings and identical project overrides.
+Invalid UTF-8, NUL characters and unclosed code fences fail the check.
+Configs containing the removed `extra_rules` key are refused with a `next:` hint
+to move their lines into `projects/<p>.md` and remove the key.
 
 ## Commands and guards
 
 ```sh
 boss                            # live fleet and open decisions
 boss project list
+boss brief my-project --origin
 boss project show my-project
 boss project add my-project --host local --merge approved --worker builder
 boss goal my-project 'The project goal'
