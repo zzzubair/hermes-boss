@@ -106,9 +106,9 @@ class Boss:
                    f"boss project list --host {host_name}")
         return matches[0]
 
-    def resolve_project(self, name, host=None):
-        settings = self.config.project(name)
-        host_name = host or settings.get("host") or self.config.default_host
+    def resolve_project(self, name, host=None, overrides=None):
+        settings, _ = self.config.effective(name, {**(overrides or {}), **({"host": host} if host else {})})
+        host_name = settings["host"]
         if settings.get("project_id"):
             info = next((p for p in self.project_catalog(host_name) if p["id"] == settings["project_id"]), None)
             if info is None:
@@ -121,7 +121,8 @@ class Boss:
         # is not needed: discovery reads origin on the actual project host.
         repository = settings.get("repository") or resolve_repository(self.config.hosts[host_name], info.get("workspaceRoot"))
         effective = {"host": host_name, "project_id": info["id"], "repository": repository,
-                     "delivery": "direct-PR", "auto_merge": False, "no_mistakes": False, **settings}
+                     "delivery": "direct-PR", "no_mistakes": False, **settings}
+        effective["auto_merge"] = effective["merge"] == "auto"
         effective["host"] = host_name
         effective["model_selection"] = settings.get("model_selection") or info.get("defaultModelSelection")
         return effective, info, source
@@ -163,7 +164,7 @@ class Boss:
         self.config.add_project(name, settings)
         return settings
 
-    def spawn(self, project_name, title, brief, kind="ship", host=None, model=None, effort=None, fits=None):
+    def spawn(self, project_name, title, brief, kind=None, host=None, model=None, effort=None, fits=None, worker=None):
         require_text(title, "title", 300)
         require_text(brief, "task brief", 115000)
         goal = self.store.goal(project_name)
@@ -177,26 +178,29 @@ class Boss:
             require_text(fits, "--fits", 2000)
             if len(fits.splitlines()) != 1:
                 raise BossError("usage", "--fits must be one line", "boss spawn --help", 1)
-        project, info, source = self.resolve_project(project_name, host)
+        overrides = {k: v for k, v in {"kind": kind, "worker": worker, "effort": effort}.items() if v is not None}
+        project, info, source = self.resolve_project(project_name, host, overrides)
+        kind = project["kind"]
         host_name = project["host"]
         client = self.client(host_name)
         repo = project["repository"]
         delivery = project["delivery"]
         # Render only settings actually supplied, rather than injecting defaults
         # into the worker's preference layer. auto_merge stays supervisor-only.
-        configured = self.config.project(project_name)
+        configured = {k: v for k, v in project.items() if k in ("test_host", "extra_rules") or
+                      (k == "no_mistakes" and (k in self.config.data or k in self.config.project(project_name)))}
         message = compose_brief(brief, self.store.home, project_name, configured, footer(kind, delivery), self.redact,
                                 goal=goal, steers=steers)
         base = self.github.default_branch(repo)
-        selection = self.model_selection(client, info, project.get("model_selection"), model, effort)
+        selection = self.model_selection(client, info, project.get("model_selection"), model or project.get("model"), effort or project.get("effort"))
         task_id = self.store.new_id()
         meta = {"id": task_id, "project": project_name, "project_id": project["project_id"],
                 "host": host_name, "repository": repo, "title": title, "kind": kind,
                 "delivery": delivery, "branch": "boss/" + task_id, "base": base,
                 "model_selection": selection, "thread_id": None, "settled": False,
-                "status": "launching", "auto_merge": project["auto_merge"],
+                "status": "launching", "merge": project["merge"], "auto_merge": project["auto_merge"],
                 "no_mistakes": project["no_mistakes"], "test_host": project.get("test_host"),
-                "project_source": source, "fits": fits.strip() if fits is not None else None}
+                "worker": project.get("worker"), "project_source": source, "fits": fits.strip() if fits is not None else None}
         self.store.text(task_id, "brief.md", message)
         self.store.save(meta, "launch_intent")
         try:
@@ -349,10 +353,17 @@ class Boss:
         self.recover(meta)
         client = self.client(meta["host"])
         pending = client.call("t3_pending_request_list", threadId=meta["thread_id"])["requestIds"]
+        question_id = None
+        if request_id not in pending and "/" in request_id:
+            candidate, question_id = request_id.rsplit("/", 1)
+            if candidate in pending:
+                request_id = candidate
         if request_id not in pending:
             refuse("request is not pending on this task", f"boss status {task_id}")
         request = client.call("t3_pending_request_read", threadId=meta["thread_id"], requestId=request_id)
         questions = request["questions"]
+        if question_id is not None and question_id not in {q["id"] for q in questions}:
+            refuse("question is not part of this pending request", f"boss status {task_id}")
         if len(questions) == 1:
             answers = {questions[0]["id"]: text}
         else:
@@ -378,6 +389,8 @@ class Boss:
         if not approved or not approved.strip():
             refuse("landing requires the captain's words", f'boss land {task_id} --approved "<quote>"')
         meta = self.active_task(task_id)
+        if meta.get("merge", "auto" if meta.get("auto_merge") else "approved") == "never":
+            refuse("project merge policy is never", "arrange landing outside boss")
         snapshot = self.snapshot(meta)
         if meta["kind"] != "ship" or meta["delivery"] != "direct-PR":
             refuse("only direct-PR ship tasks can land with boss", "arrange an explicitly approved local landing separately")

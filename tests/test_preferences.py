@@ -102,11 +102,11 @@ class PreferenceTest(unittest.TestCase):
         self.assertEqual(code, 3, output)
         self.assertIn("repeated its cursor", output)
 
-    def test_default_host_oracle_and_explicit_host_override(self):
+    def test_no_default_host_and_explicit_host_override(self):
         self.unlisted()
         config = self.home / "config.toml"
         config.write_text(config.read_text().replace('default_host = "test"\n', ""))
-        self.assertEqual(Config(self.home, self.redact).default_host, "oracle")
+        self.assertEqual(Config(self.home, self.redact).default_host, "")
         with patch("boss.service.resolve_repository", return_value="example/repo"):
             meta = self.spawn("--host", "test")
         self.assertEqual(meta["host"], "test")
