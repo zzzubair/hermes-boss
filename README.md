@@ -131,7 +131,7 @@ For example:
 ```
 
 With `test_host = "wsl"` and `no_mistakes = true` in the project's config,
-the saved and sent brief contains, in order:
+and a goal and active steer, the saved and sent brief contains, in order:
 
 ```markdown
 <task brief>
@@ -146,6 +146,12 @@ no_mistakes: true
 ## Project notes
 Run browser checks on wsl.
 
+## Project goal
+Ship a mobile-first app.
+
+## Captain steers
+- <steer-id>: No PostHog.
+
 Project settings and project notes win over global rules when they conflict; the boss worker contract below always applies.
 
 ## boss worker contract
@@ -156,10 +162,52 @@ Empty sections are skipped. Only explicitly set `test_host` and `no_mistakes`
 values are rendered in the settings section; `auto_merge` stays out of worker
 instructions. The final composed brief, including the footer, is limited to
 115000 characters. A size error names the layer to shorten. Rules and notes
-are checked with the existing secret redactor before launch; a detected token
-or secret refuses the spawn without echoing its value or saving a task.
+are checked with the existing secret redactor before launch, as are the goal
+and active steers. A detected token or secret refuses the spawn without
+echoing its value or saving a task.
 
 Code conventions (package manager, folders not to touch) belong in the repo's AGENTS.md, not boss.
+
+## Project goal and captain steers
+
+Record the project's goal and every captain steer so later sessions can read
+them before dispatching work:
+
+```sh
+boss goal clashlens "Ship a mobile-first app."
+boss goal clashlens
+boss steer clashlens "Use PostHog."
+boss steer clashlens "No PostHog." --replaces <steer-id>
+boss steer clashlens "Keep the existing navigation." --task <task-id>
+boss steer list clashlens
+boss steer list clashlens --all
+boss spawn clashlens --title "Fix navigation" --brief-file brief.md \
+  --fits "Improve phone navigation without adding analytics."
+```
+
+`goal` replaces the current goal atomically. Steers have unique IDs and UTC
+timestamps. Adding a steer appends one JSON-lines record, including any
+`--task` and `--replaces` references. Replacing a steer leaves every existing
+record unchanged. The default list shows active steers; `--all` includes
+history with superseded records marked. Replacements must reference a steer
+in the same project. A related task must already exist in that project;
+`--task` records where the steer came from, and it still applies to future
+project tasks. Goals and steers can be recorded before project registration
+and require no T3 or GitHub connection. Secret-bearing input is refused.
+
+If a goal or any active steers exist, `spawn` refuses with exit 2 unless
+`--fits` supplies a nonblank line, up to 2000 characters. The refusal prints
+the full goal and all active steers before any remote calls or task creation.
+The supervisor reads them and explains how the new task fits. `boss` stores
+that line as `fits` in the task metadata and launch journal. It makes no LLM
+calls and does not judge whether the explanation resolves any conflict.
+Projects without a goal or active steers can spawn without `--fits`.
+
+The goal and active steers enter the saved and sent worker brief after project
+notes and before the worker contract, inside the same 115000-character limit.
+Superseded steers stay out of the brief. Later context changes apply to future
+spawns; an existing task keeps its original brief. Record a steer with
+`--task` and use `boss send` to tell an already-running worker about it.
 
 ## Commands
 
@@ -170,7 +218,14 @@ boss project list --host oracle
 boss project add clashlens --host oracle  # Save discovery results; optional, not required to spawn
 boss project add homepage --delivery local-only --auto-merge --test-host wsl --no-mistakes
 boss project show clashlens               # Effective settings and contributing files
+boss goal clashlens "Ship a mobile-first app."
+boss goal clashlens                       # Show the current goal
+boss steer clashlens "No PostHog." --task <id>
+boss steer clashlens "Use local analytics." --replaces <steer-id>
+boss steer list clashlens                 # Active steers
+boss steer list clashlens --all           # Include superseded history
 boss spawn clashlens --title "Fix login" --brief-file brief.md
+boss spawn clashlens --title "Fix login" --brief-file brief.md --fits "Fix mobile login without analytics."
 cat brief.md | boss spawn clashlens --title "Inspect login" --kind scout
 boss spawn clashlens --title "Fix login" --brief-file brief.md \
   --host ser5ver --model codex:gpt-6.1-sol --effort high
@@ -202,8 +257,9 @@ truncated. Output uses terse key/value records with explicit totals such as
 project ID and resolved repository, plus any supplied preference flags. It
 preserves all existing config text and comments using an atomic write, and
 refuses an existing entry. `project show` reports registry versus T3 lookup,
-effective model/delivery/preferences, and whether `rules.md` and project notes
-are present. It reads settings; it does not launch a worker or change config.
+effective model/delivery/preferences, whether `rules.md`, project notes and
+a goal are present, and the active steer count. It reads settings; it does
+not launch a worker or change config.
 
 Delivery modes:
 
@@ -276,6 +332,8 @@ has no timer; interactive `boss`/`status` still query live state on demand.
 
 ## Guard rules
 
+- `spawn` requires a one-line `--fits` explanation when the project has a goal
+  or active steers. A refusal displays that context for reconciliation.
 - `land` requires a nonblank captain quote, a terminal worker with no pending
   questions, and exactly one linked PR for this task's repository and branches.
   The PR must be open, nondraft, mergeable with GitHub `CLEAN` state, and have
@@ -310,6 +368,8 @@ as `error`, `message`, `next`; no traceback or token is printed.
   config.toml
   rules.md                  # Optional global worker rules
   projects/<name>.md         # Optional project notes
+  projects/<name>.goal       # Current project goal, UTF-8 text
+  projects/<name>.steers.jsonl # Append-only captain steer history
   tasks/<id>/meta.json
   tasks/<id>/brief.md
   tasks/<id>/events.log
@@ -318,8 +378,12 @@ as `error`, `message`, `next`; no traceback or token is printed.
   attention.json            # Bounded local-only view for the Hermes hook
 ```
 
-Files are written with replacement + fsync and owner-only permissions for
-new state. A nonblocking file lock permits one ledger writer at a time.
+Goals and other snapshot files use replacement + fsync and owner-only
+permissions for new state. Steer logs use append + fsync with the same private
+permissions; supersession never rewrites a prior record. A malformed or
+incomplete steer record refuses listing, appending and spawning, so inspect
+the log and preserve its history before retrying. A nonblocking file lock
+permits one ledger writer at a time.
 `events.log` is an atomically replaced JSON-lines journal; each record includes
 the committed metadata. If a crash interrupts its `meta.json` replacement,
 the journal restores the state on the next read. Live T3 and GitHub evidence
@@ -343,6 +407,7 @@ Settlement and decision closure can safely be repeated.
 python3 -m unittest -v
 python3 -m compileall -q boss scripts tests
 python3 scripts/check_ambient.py
+python3 scripts/check_steering.py
 git diff --check
 # Explicit opt-in, with a privately supplied existing MCP token:
 python3 scripts/smoke.py --url http://127.0.0.1:3773/mcp --token-env T3_ORACLE_MCP_TOKEN
@@ -357,6 +422,11 @@ captures its report, settles it and reads T3 back. It does not merge anything.
 The original v1 launch/settle smoke output is in [evidence/oracle-smoke.txt](evidence/oracle-smoke.txt).
 Project-discovery coverage also checks title matches, local/SSH origin lookup,
 ordered preference layers, size and secret refusals, and config append safety.
+Steering coverage checks goal replacement, append-only supersession, task and
+project references, complete reconciliation refusals, saved `fits` lines,
+brief ordering and size boundaries. `scripts/check_steering.py` runs real CLI
+processes against disposable state, without T3 or GitHub calls. Its output and
+the test results are in [evidence/steering-verification.txt](evidence/steering-verification.txt).
 The read-only oracle project-list smoke is recorded in
 [evidence/oracle-project-list.txt](evidence/oracle-project-list.txt).
 

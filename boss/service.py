@@ -6,7 +6,7 @@ import uuid
 from .common import BossError, compact, refuse, require_text
 from .integrations import GitHub, PR_PATTERN, github_repository, inspect_worktree, resolve_repository
 from .mcp import MCP
-from .preferences import compose_brief, notes_path, project_name
+from .preferences import compose_brief, notes_path, project_name, steering_sections
 
 
 TERMINAL = {"completed", "failed", "interrupted", "cancelled", "rolled_back", "idle"}
@@ -162,9 +162,20 @@ class Boss:
         self.config.add_project(name, settings)
         return settings
 
-    def spawn(self, project_name, title, brief, kind="ship", host=None, model=None, effort=None):
+    def spawn(self, project_name, title, brief, kind="ship", host=None, model=None, effort=None, fits=None):
         require_text(title, "title", 300)
         require_text(brief, "task brief", 115000)
+        goal = self.store.goal(project_name)
+        steers = self.store.steers(project_name)
+        context = steering_sections(goal, steers, self.redact)
+        if context and (fits is None or not fits.strip()):
+            raise BossError("refused", "reconcile this task against the project goal and active captain steers",
+                            'retry boss spawn with --fits "<one line explaining how the task fits>"', 2,
+                            context=[text.strip() for _, text in context])
+        if fits is not None:
+            require_text(fits, "--fits", 2000)
+            if len(fits.splitlines()) != 1:
+                raise BossError("usage", "--fits must be one line", "boss spawn --help", 1)
         project, info, source = self.resolve_project(project_name, host)
         host_name = project["host"]
         client = self.client(host_name)
@@ -173,7 +184,8 @@ class Boss:
         # Render only settings actually supplied, rather than injecting defaults
         # into the worker's preference layer. auto_merge stays supervisor-only.
         configured = self.config.project(project_name)
-        message = compose_brief(brief, self.store.home, project_name, configured, footer(kind, delivery), self.redact)
+        message = compose_brief(brief, self.store.home, project_name, configured, footer(kind, delivery), self.redact,
+                                goal=goal, steers=steers)
         base = self.github.default_branch(repo)
         selection = self.model_selection(client, info, project.get("model_selection"), model, effort)
         task_id = self.store.new_id()
@@ -183,7 +195,7 @@ class Boss:
                 "model_selection": selection, "thread_id": None, "settled": False,
                 "status": "launching", "auto_merge": project["auto_merge"],
                 "no_mistakes": project["no_mistakes"], "test_host": project.get("test_host"),
-                "project_source": source}
+                "project_source": source, "fits": fits.strip() if fits is not None else None}
         self.store.text(task_id, "brief.md", message)
         self.store.save(meta, "launch_intent")
         try:

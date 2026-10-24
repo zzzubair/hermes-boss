@@ -603,7 +603,8 @@ class GitEvidenceTest(HermeticTestCase):
                          ["poll", "--help"], ["decide", "--help"], ["decide", "add", "--help"],
                          ["decide", "list", "--help"], ["decide", "close", "--help"],
                          ["project", "--help"], ["project", "list", "--help"],
-                         ["project", "add", "--help"], ["project", "show", "--help"]):
+                         ["project", "add", "--help"], ["project", "show", "--help"],
+                         ["goal", "--help"], ["steer", "--help"], ["steer", "list", "--help"]):
                 p = subprocess.run([str(executable), *args], env=env, capture_output=True, text=True)
                 self.assertEqual(p.returncode, 0, p.stderr)
                 self.assertTrue(p.stdout)

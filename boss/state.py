@@ -1,5 +1,6 @@
 """Atomic journal commits, recoverable materialized metadata and one writer."""
 from contextlib import contextmanager
+from datetime import datetime, timezone
 import fcntl
 import json
 import os
@@ -8,7 +9,8 @@ import re
 import tempfile
 import uuid
 
-from .common import BossError, refuse
+from .common import BossError, refuse, require_text
+from .preferences import BRIEF_LIMIT, goal_path, layer_text, project_name, steers_path
 
 
 def atomic_write(path, text):
@@ -95,6 +97,74 @@ class Store:
     def decision(self, record):
         atomic_write(self.home / "decisions" / (identifier(record["id"]) + ".json"),
                      json.dumps(self.redact.data(record), sort_keys=True) + "\n")
+
+    def goal(self, name):
+        return layer_text(goal_path(self.home, name), "project goal", self.redact)
+
+    def set_goal(self, name, text):
+        path = goal_path(self.home, name)
+        require_text(text, "project goal", BRIEF_LIMIT)
+        if self.redact(text) != text:
+            refuse("project goal layer contains a token or secret", "remove credentials from the goal")
+        atomic_write(path, text.strip())
+
+    def steers(self, name, all=False):
+        path = steers_path(self.home, name)
+        if not path.exists():
+            return []
+        records, seen, replaced = [], set(), set()
+        try:
+            with path.open(encoding="utf-8") as stream:
+                for line in stream:
+                    if not line.endswith("\n"):
+                        raise ValueError("incomplete append")
+                    record = json.loads(line)
+                    steer_id = identifier(record["id"])
+                    require_text(record["text"], "captain steer", BRIEF_LIMIT)
+                    if steer_id in seen:
+                        raise ValueError("duplicate steer id")
+                    if not datetime.fromisoformat(record["created_at"]).tzinfo:
+                        raise ValueError("timestamp has no timezone")
+                    if record.get("task"):
+                        identifier(record["task"])
+                    if record.get("replaces"):
+                        if record["replaces"] not in seen:
+                            raise ValueError("unknown replaced steer")
+                        replaced.add(record["replaces"])
+                    seen.add(steer_id)
+                    records.append(record)
+        except (ValueError, KeyError, TypeError, BossError) as exc:
+            raise BossError("ledger", f"invalid steer log for {name}: {exc}",
+                            f"inspect {path}; preserve existing history") from None
+        return [{**r, "superseded": r["id"] in replaced} for r in records if all or r["id"] not in replaced]
+
+    def add_steer(self, name, text, task=None, replaces=None):
+        project_name(name)
+        require_text(text, "captain steer", BRIEF_LIMIT)
+        if self.redact(text) != text:
+            refuse("captain steers layer contains a token or secret", "remove credentials from the steer")
+        records = self.steers(name, all=True)
+        if task is not None and self.load(task)["project"] != name:
+            refuse("related task belongs to another project", "use a task from this project")
+        if replaces is not None and not any(r["id"] == replaces for r in records):
+            raise BossError("usage", "unknown steer to replace in this project", f"boss steer list {name} --all", 1)
+        record = {"id": self.new_id(), "text": text.strip(), "task": task, "replaces": replaces,
+                  "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+        path = steers_path(self.home, name)
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # The CLI holds the ledger lock. Append one record and fsync it without
+        # replacing the file or changing any previous record, even on supersession.
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        return record
 
     def refresh_attention(self):
         """Materialize a tiny local hook view once per CLI command, under its lock.

@@ -16,6 +16,14 @@ def notes_path(home, name):
     return home / "projects" / (project_name(name) + ".md")
 
 
+def goal_path(home, name):
+    return home / "projects" / (project_name(name) + ".goal")
+
+
+def steers_path(home, name):
+    return home / "projects" / (project_name(name) + ".steers.jsonl")
+
+
 def layer_text(path, label, redact):
     if not path.exists():
         return ""
@@ -29,7 +37,20 @@ def layer_text(path, label, redact):
     return text.strip()
 
 
-def compose_brief(brief, home, name, settings, contract, redact):
+def steering_sections(goal, steers, redact):
+    rendered = "\n".join(f"- {s['id']}: {s['text']}" + (f" [task {s['task']}]" if s.get("task") else "")
+                         for s in steers)
+    sections = []
+    for label, heading, text in (("project goal", "Project goal", goal),
+                                 ("captain steers", "Captain steers", rendered)):
+        if redact(text) != text:
+            refuse(f"{label} layer contains a token or secret", "remove credentials from the project context")
+        if text:
+            sections.append((label, f"\n\n## {heading}\n{text}"))
+    return sections
+
+
+def compose_brief(brief, home, name, settings, contract, redact, *, goal="", steers=()):
     require_text(brief, "task brief", BRIEF_LIMIT)
     rules = layer_text(home / "rules.md", "global rules", redact)
     notes = layer_text(notes_path(home, name), "project notes", redact)
@@ -44,6 +65,7 @@ def compose_brief(brief, home, name, settings, contract, redact):
                                  ("project notes", "Project notes", notes)):
         if text:
             layers.append((label, f"\n\n## {heading}\n{text}"))
+    layers.extend(steering_sections(goal, steers, redact))
     precedence = ("\n\nProject settings and project notes win over global rules when they conflict; "
                   "the boss worker contract below always applies.") if len(layers) > 1 else ""
     suffix = redact(precedence + contract)

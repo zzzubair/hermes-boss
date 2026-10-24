@@ -8,7 +8,7 @@ import sys
 from . import __version__
 from .common import BossError, Redactor, compact, require_text
 from .config import Config, DEFAULT_HOSTS
-from .preferences import notes_path
+from .preferences import goal_path, notes_path
 from .service import Boss, ci_text
 from .state import Store
 
@@ -36,6 +36,7 @@ def parser():
     spawn.add_argument("--host", help="registry host override; project_id must exist there")
     spawn.add_argument("--model", help="model id or providerInstanceId:model")
     spawn.add_argument("--effort", help="exact effort value supported by that model")
+    spawn.add_argument("--fits", metavar="TEXT", help="one line reconciling this task with the project goal and active steers")
     status = commands.add_parser("status", help="live fleet or one task, pending questions and PR checks")
     status.add_argument("id", nargs="?")
     status.add_argument("--full", action="store_true", default=argparse.SUPPRESS, help="show complete text")
@@ -68,6 +69,15 @@ def parser():
     project_add.add_argument("--no-mistakes", action="store_true", default=None, help="render no_mistakes: true in briefs")
     project_show = projects.add_parser("show", help="show effective settings and preference sources")
     project_show.add_argument("name")
+    goal = commands.add_parser("goal", help="show or set a project's goal")
+    goal.add_argument("project")
+    goal.add_argument("text", nargs="?", help="new goal; omit to show the current goal")
+    steer = commands.add_parser("steer", help="append a captain steer, or list a project's steers")
+    steer.add_argument("project", help="project name, or 'list'")
+    steer.add_argument("text", help="steer text, or the project name after 'list'")
+    steer.add_argument("--task", help="related task from this project")
+    steer.add_argument("--replaces", metavar="STEER_ID", help="supersede an earlier steer in this project")
+    steer.add_argument("--all", action="store_true", help="with 'list', include superseded steers")
     decide = commands.add_parser("decide", help="record decisions that need the captain")
     decisions = decide.add_subparsers(dest="decision_command", required=True)
     add = decisions.add_parser("add", help="open a durable decision")
@@ -129,6 +139,28 @@ def dispatch(args, boss):
     full = getattr(args, "full", False)
     if command is None or (command == "status" and not args.id):
         return fleet(boss, full)
+    if command == "goal":
+        if args.text is not None:
+            boss.store.set_goal(args.project, args.text)
+        goal = boss.store.goal(args.project)
+        return [f"project: {compact(args.project)}", "goal: " + (goal or "unset")], 0
+    if command == "steer":
+        if args.project == "list":
+            if args.task is not None or args.replaces is not None:
+                raise BossError("usage", "--task and --replaces apply only when adding a steer", "boss steer --help", 1)
+            records = boss.store.steers(args.text, all=args.all)
+            lines = [f"{len(records)} {'total' if args.all else 'active'} steers project={compact(args.text)}"]
+            for record in records:
+                state = "superseded" if record["superseded"] else "active"
+                lines.append(f"{record['id']}: {state} {record['created_at']} {record['text']}" +
+                             (f" task={record['task']}" if record.get("task") else "") +
+                             (f" replaces={record['replaces']}" if record.get("replaces") else ""))
+            return lines, 0
+        if args.all:
+            raise BossError("usage", "--all applies only to boss steer list", "boss steer --help", 1)
+        record = boss.store.add_steer(args.project, args.text, args.task, args.replaces)
+        return [f"{record['id']}: steer recorded project={compact(args.project)}",
+                f"next: boss steer list {compact(args.project)}"], 0
     if command == "project":
         if args.project_command == "list":
             host_name, rows = boss.project_list(args.host)
@@ -154,6 +186,10 @@ def dispatch(args, boss):
         lines.append(f"registry: {boss.config.path}" if args.name in boss.config.projects else "registry: absent")
         lines.append(f"rules: {rules}" if rules.is_file() else "rules: absent")
         lines.append(f"notes: {notes}" if notes.is_file() else "notes: absent")
+        goal = boss.store.goal(args.name)
+        steers = boss.store.steers(args.name)
+        lines.append(f"goal: {goal_path(boss.store.home, args.name)}" if goal else "goal: absent")
+        lines.append(f"active_steers: {len(steers)}")
         return lines + [f'next: boss spawn {compact(args.name)} --title "<task>" --brief-file <file>'], 0
     if command == "spawn":
         if args.brief_file and args.brief_file != "-":
@@ -162,7 +198,7 @@ def dispatch(args, boss):
             brief = sys.stdin.read(115001)
         else:
             raise BossError("usage", "supply --brief-file or pipe a brief on stdin", "boss spawn --help", 1)
-        meta = boss.spawn(args.project, args.title, brief, args.kind, args.host, args.model, args.effort)
+        meta = boss.spawn(args.project, args.title, brief, args.kind, args.host, args.model, args.effort, args.fits)
         return [f"{meta['id']}: spawned {meta['host']} {meta['status']}",
                 f"thread: {meta['thread_id']}", f"next: boss status {meta['id']}"], 0
     if command == "status":
@@ -256,7 +292,8 @@ def main(argv=None):
             print(redact("\n".join(lines)))
         return code
     except BossError as exc:
-        print(redact(f"error: {exc.code}\nmessage: {compact(redact(exc.message), 600)}\nnext: {exc.hint}"))
+        lines = [f"error: {exc.code}", f"message: {compact(redact(exc.message), 600)}", *exc.context, f"next: {exc.hint}"]
+        print(redact("\n".join(lines)))
         return exc.exit_code
     except (OSError, UnicodeError) as exc:
         print(redact(f"error: io\nmessage: {compact(redact(exc), 400)}\nnext: check file paths and permissions"))
