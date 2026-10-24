@@ -4,9 +4,10 @@ import re
 
 
 class BossError(Exception):
-    def __init__(self, code, message, hint="boss --help", exit_code=3):
+    def __init__(self, code, message, hint="boss --help", exit_code=3, *, context=()):
         super().__init__(message)
         self.code, self.message, self.hint, self.exit_code = code, message, hint, exit_code
+        self.context = context
 
 
 def refuse(message, hint):

@@ -1,0 +1,92 @@
+machine: oracle-free
+python: 3.12.3
+branch: boss/steer-ledger
+base: ed0237c0f8921cc50ae3d5f28ba86670c079df3e
+date: 2026-10-24 UTC
+
+$ python3 -m unittest -q  # Before implementation
+----------------------------------------------------------------------
+Ran 90 tests in 11.040s
+
+OK
+
+$ python3 -m unittest -v  # After implementation, summary excerpt
+----------------------------------------------------------------------
+Ran 112 tests in 12.606s
+
+OK
+exit: 0
+
+$ python3 -m compileall -q boss scripts tests
+(no stdout)
+exit: 0
+
+$ python3 scripts/check_ambient.py
+machine: oracle-free
+python: 3.12.3
+measurement: callback wall time; includes local file read; excludes ledger production and Hermes startup
+clean: samples=1000 bytes=39 median_ms=0.021 p99_ms=0.039 max_ms=0.144
+context: none (zero tokens)
+actionable: samples=1000 bytes=136 median_ms=0.026 p99_ms=0.052 max_ms=0.218
+context: boss: 3 need you (d3 decision, t7 input, t9 finished) - run boss status
+large_total: samples=1000 bytes=226 median_ms=0.029 p99_ms=0.055 max_ms=0.134
+context: boss: 2000 need you (t0 input, t1 input, t2 input, t3 input, t4 input, t5 input, +1994 more) - run boss status
+result: all callback samples under 50 ms
+exit: 0
+
+$ python3 scripts/check_steering.py
+machine: oracle-free
+python: 3.12.3
+scope: disposable BOSS_HOME; real CLI processes; no T3 or GitHub calls
+$ boss goal demo
+project: demo
+goal: unset
+exit: 0
+$ boss goal demo 'Ship a mobile-first app'
+project: demo
+goal: Ship a mobile-first app
+exit: 0
+$ boss steer demo 'Use PostHog'
+e83e4010397c: steer recorded project=demo
+next: boss steer list demo
+exit: 0
+$ boss steer demo 'No PostHog' --replaces e83e4010397c
+efda9045d431: steer recorded project=demo
+next: boss steer list demo
+exit: 0
+verified: original log bytes and inode preserved
+$ boss goal demo
+project: demo
+goal: Ship a mobile-first app
+exit: 0
+$ boss steer list demo
+1 active steers project=demo
+efda9045d431: active 2026-10-24T13:05:37+00:00 No PostHog replaces=e83e4010397c
+exit: 0
+$ boss steer list demo --all
+2 total steers project=demo
+e83e4010397c: superseded 2026-10-24T13:05:36+00:00 Use PostHog
+efda9045d431: active 2026-10-24T13:05:37+00:00 No PostHog replaces=e83e4010397c
+exit: 0
+$ boss spawn demo --title 'Improve navigation'
+error: refused
+message: reconcile this task against the project goal and active captain steers
+## Project goal
+Ship a mobile-first app
+## Captain steers
+- efda9045d431: No PostHog
+next: retry boss spawn with --fits "<one line explaining how the task fits>"
+exit: 2
+result: durable goal, append-only history, active filtering and spawn refusal verified
+exit: 0
+
+$ git diff --check
+(no stdout)
+exit: 0
+
+The unittest suite uses disposable homes, a fake MCP HTTP server and fake
+GitHub responses. It exercises successful --fits launches, matching saved
+and transmitted briefs, launch-journal persistence, goal-only and steer-only
+guards, complete refusal output, task/project references, secret checks,
+exact brief-size boundaries and malformed-log refusals. No live worker was
+launched for this change. The CLI script above uses real separate processes.
