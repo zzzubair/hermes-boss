@@ -51,7 +51,25 @@ def main():
             raise RuntimeError("reconciliation refusal omitted project context")
         if "Use PostHog" in refused or list((state / "tasks").glob("*")):
             raise RuntimeError("refusal included superseded context or created a task")
-    print("result: durable goal, append-only history, active filtering and spawn refusal verified")
+        before_drop = log.read_bytes()
+        command("steer", "drop", "demo", active)
+        if not log.read_bytes().startswith(before_drop) or log.stat().st_ino != inode:
+            raise RuntimeError("drop rewrote existing steer history")
+        print("verified: drop preserved original log bytes and inode")
+        listed = command("steer", "list", "demo")
+        history = command("steer", "list", "demo", "--all")
+        if "0 active steers" not in listed or active + ": dropped" not in history or "drops=" + active not in history:
+            raise RuntimeError("incorrect dropped steer listing")
+        after_drop = log.read_bytes()
+        command("steer", "drop", "demo", active, expected=2)
+        command("steer", "drop", "demo", first, expected=2)
+        command("steer", "drop", "other", active, expected=1)
+        if log.read_bytes() != after_drop or (state / "projects/other.steers.jsonl").exists():
+            raise RuntimeError("refused drop changed steer history")
+        refused = command("spawn", "demo", "--title", "Improve navigation", expected=2)
+        if "Ship a mobile-first app" not in refused or "## Captain steers" in refused:
+            raise RuntimeError("goal gate included dropped steer context")
+    print("result: durable goal, append-only supersession/drop history, active filtering and spawn refusal verified")
     return 0
 
 

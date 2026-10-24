@@ -234,6 +234,7 @@ boss goal my-project 'The project goal'
 boss steer my-project 'Keep the change portable' --task <id>
 boss steer list my-project
 boss steer my-project 'New direction' --replaces <steer-id>
+boss steer drop my-project <steer-id>
 boss steer list my-project --all
 boss spawn my-project --title 'Task' --brief-file brief.md --fits 'How this fits the goal and active steers'
 boss status <id> --full
@@ -258,6 +259,17 @@ record a project steer. `--replaces` supersedes an earlier steer without
 rewriting its history. `spawn` requires a nonblank, single-line `--fits` when
 a project has a goal or active steers. It saves the explanation with the task.
 Boss does not ask an LLM to judge it; the captain resolves unclear choices.
+
+### Retracting a steer
+
+`boss steer drop <project> <steer_id>` retracts an active steer without new
+text. It appends a tombstone; earlier log lines stay unchanged. Dropped steers
+leave future worker briefs and the dispatch gate. `steer list <project> --all`
+marks them `dropped`, distinct from `superseded`, and shows the tombstones.
+Unknown, other-project, inactive and tombstone IDs are refused with a `next:` hint.
+`list` and `drop` are reserved verbs in the first position. For a T3 project
+with either title, set `boss config set projects.alias.project_id '<T3 project ID>'`
+and use `alias` for all boss commands, including goals and steers.
 
 `answer` accepts the request ID or the exact `request-id/question-id` printed
 by `status`, including `/0`. A suffix must identify a real question in that
