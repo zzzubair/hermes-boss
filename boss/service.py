@@ -1,20 +1,21 @@
 """Task lifecycle: durable intent first, live evidence before every guard."""
 import copy
 import json
+from pathlib import Path
 import uuid
 
 from .common import BossError, compact, refuse, require_text
 from .integrations import GitHub, PR_PATTERN, github_repository, inspect_worktree, resolve_repository
 from .mcp import MCP
-from .preferences import compose_brief, notes_path, project_name, steering_sections
+from .preferences import compose_brief, notes_path, project_name, source_note, steering_sections
 
 
 TERMINAL = {"completed", "failed", "interrupted", "cancelled", "rolled_back", "idle"}
 
 
-def footer(kind, delivery):
+def footer(kind, delivery, *, origin=False):
     rules = [
-        "## boss worker contract",
+        "### boss worker contract",
         "Work only in this assigned worktree. Never change the primary checkout or another task's worktree.",
         "Stay on the assigned branch. Never rename it or switch to another branch.",
         "Commit as the repository's configured Git user. Never change Git identity or add AI co-author trailers or agent credit.",
@@ -30,6 +31,8 @@ def footer(kind, delivery):
     else:
         rules.append("Ship, direct-PR: implement, verify, commit and push this branch. Open exactly ONE PR against the origin default branch, "
                      "link it to this thread with link_pull_request, then stop. Include the PR URL and verification in your final reply.")
+    if origin:
+        rules.insert(1, source_note(Path(__file__), True).rstrip())
     return "\n\n" + "\n".join(rules) + "\n"
 
 
@@ -164,6 +167,17 @@ class Boss:
         self.config.add_project(name, settings)
         return settings
 
+    def worker_brief(self, name, brief="<task>", *, worker=None, settings=None, goal=None, steers=None, origin=False):
+        if settings is None:
+            settings, _ = self.config.effective(name, {"worker": worker})
+        configured = {k: v for k, v in settings.items() if k == "test_host" or
+                      (k == "no_mistakes" and (k in self.config.data or k in self.config.project(name)))}
+        return compose_brief(brief, self.store.home, name, configured,
+                             footer(settings["kind"], settings["delivery"], origin=origin), self.redact,
+                             goal=self.store.goal(name) if goal is None else goal,
+                             steers=self.store.steers(name) if steers is None else steers,
+                             origin=origin, settings_source=self.config.path)
+
     def spawn(self, project_name, title, brief, kind=None, host=None, model=None, effort=None, fits=None, worker=None):
         require_text(title, "title", 300)
         require_text(brief, "task brief", 115000)
@@ -185,12 +199,7 @@ class Boss:
         client = self.client(host_name)
         repo = project["repository"]
         delivery = project["delivery"]
-        # Render only settings actually supplied, rather than injecting defaults
-        # into the worker's preference layer. auto_merge stays supervisor-only.
-        configured = {k: v for k, v in project.items() if k in ("test_host", "extra_rules") or
-                      (k == "no_mistakes" and (k in self.config.data or k in self.config.project(project_name)))}
-        message = compose_brief(brief, self.store.home, project_name, configured, footer(kind, delivery), self.redact,
-                                goal=goal, steers=steers)
+        message = self.worker_brief(project_name, brief, settings=project, goal=goal, steers=steers)
         base = self.github.default_branch(repo)
         selection = self.model_selection(client, info, project.get("model_selection"), model or project.get("model"), effort or project.get("effort"))
         task_id = self.store.new_id()

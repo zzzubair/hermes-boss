@@ -50,19 +50,19 @@ class ConfigTest(HermeticTestCase):
     def test_config_commands_validate_and_report_origins(self):
         os.environ["BOSS_HOME"] = str(self.home)
         for args in (("set", "delivery", "local-only"), ("set", "projects.demo.merge", '"never"'),
-                     ("set", "projects.demo.extra_rules", '["Run the build", "Read AGENTS.md"]')):
+                     ("set", "projects.demo.test_host", '"workstation"')):
             self.assertEqual(self.cli("config", *args)[0], 0)
         code, output, _ = self.cli("config", "show", "--origin", "--project", "demo", "--delivery", "direct-PR")
         self.assertEqual(code, 0, output)
         self.assertIn('CLI\tdelivery = "direct-PR"', output)
         self.assertIn('[projects.demo]\tmerge = "never"', output)
         self.assertIn('built-in\tkind = "ship"', output)
-        self.assertEqual(self.cli("config", "get", "projects.demo.extra_rules")[1].strip(), '["Run the build", "Read AGENTS.md"]')
+        self.assertEqual(self.cli("config", "get", "projects.demo.test_host")[1].strip(), '"workstation"')
         self.assertEqual(self.cli("config", "unset", "projects.demo.merge")[0], 0)
         self.assertEqual(self.cli("config", "get", "merge")[1].strip(), '"approved"')
         before = (self.home / "config.toml").read_bytes()
         for key, value in (("projects.demo.no_mistakes", "1"), ("projects.demo.no_mistaks", "true"),
-                           ("projects.demo.extra_rules", '["ok", 1]'), ("workers.ui.model", '"missing-instance"')):
+                           ("workers.ui.model", '"missing-instance"')):
             code, output, _ = self.cli("config", "set", key, value)
             self.assertEqual(code, 1, output)
             self.assertIn(key, output)
@@ -72,7 +72,7 @@ class ConfigTest(HermeticTestCase):
         os.environ["BOSS_HOME"] = str(self.home)
         for text, path in (('[hosts.local]\nurl="http://127.0.0.1/mcp"\ntokn="x"', 'hosts.local.tokn'),
                            ('[projects.demo.workers.ui]\neffort=7', 'projects.demo.workers.ui.effort'),
-                           ('[workers.ui]\nextra_rules=[]', 'workers.ui.extra_rules'),
+                           ('[workers.ui]\nunknown=[]', 'workers.ui.unknown'),
                            ('[workers.model_selection]\nmodel="bare"', 'workers.model_selection.model'),
                            ('merge=true', 'merge'), ('hosts=[]', 'hosts')):
             (self.home / "config.toml").write_text(text)
@@ -183,8 +183,10 @@ class RoleTest(HermeticTestCase):
         self.assertIn("unsupported reasoningEffort=xhigh", output)
         self.assertFalse(self.fake.threads)
 
-    def test_merge_policy_and_extra_rules_preserve_guards(self):
-        self.configure('merge="never"\nextra_rules=["Run the formatter"]\n')
+    def test_merge_policy_and_project_rules_preserve_guards(self):
+        self.configure('merge="never"\n')
+        (self.home / "projects").mkdir()
+        (self.home / "projects/repo.md").write_text("Run the formatter")
         meta = self.spawn()
         self.assertEqual(meta["merge"], "never")
         message = self.store.directory(meta["id"]).joinpath("brief.md").read_text()
@@ -255,14 +257,6 @@ class RoleTest(HermeticTestCase):
         log = (self.home / "logs/poll.log").read_text()
         self.assertNotIn(harness.TOKEN, log)
         self.assertIn("[REDACTED]", log)
-
-    def test_extra_rule_secrets_are_refused_before_launch(self):
-        self.configure('extra_rules=["' + harness.TOKEN + '"]\n')
-        code, output = self.cli("spawn", "repo", "--title", "T")
-        self.assertEqual(code, 2, output)
-        self.assertIn("extra_rules layer contains a token", output)
-        self.assertNotIn(harness.TOKEN, output)
-        self.assertFalse(self.fake.threads)
 
     def test_gate_does_not_wake_just_for_deprecation_warning(self):
         self.configure('auto_merge=false\n')

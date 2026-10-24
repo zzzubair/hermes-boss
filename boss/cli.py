@@ -71,6 +71,10 @@ def parser():
     spawn.add_argument("--model", help="model id or providerInstanceId:model")
     spawn.add_argument("--effort", help="exact effort value supported by that model")
     spawn.add_argument("--fits", metavar="TEXT", help="one line reconciling this task with the project goal and active steers")
+    brief = commands.add_parser("brief", help="print the compiled worker brief with a <task> placeholder; read-only")
+    brief.add_argument("project")
+    brief.add_argument("--worker", help="named worker preset")
+    brief.add_argument("--origin", action="store_true", help="annotate sections with their source files")
     status = commands.add_parser("status", help="live fleet or one task, pending questions and PR checks")
     status.add_argument("id", nargs="?")
     status.add_argument("--full", action="store_true", default=argparse.SUPPRESS, help="show complete text")
@@ -419,9 +423,13 @@ def main(argv=None):
         home = boss_home()
         config = Config(home, redact)
         store = Store(home, redact)
+        boss = Boss(config, store, redact)
+        if args.command == "brief":
+            print(boss.worker_brief(args.project, worker=args.worker, origin=args.origin), end="")
+            return 0
         with store.locked():
             try:
-                lines, code = dispatch(args, Boss(config, store, redact))
+                lines, code = dispatch(args, boss)
             finally:
                 store.refresh_attention()
         if lines:

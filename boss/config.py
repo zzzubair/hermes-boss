@@ -14,10 +14,10 @@ from .state import atomic_write
 
 
 DEFAULTS = {"default_host": "", "delivery": "direct-PR", "merge": "approved",
-            "no_mistakes": False, "kind": "ship", "extra_rules": []}
+            "no_mistakes": False, "kind": "ship"}
 SETTINGS = {"host": str, "worker": str, "model": str, "effort": str, "kind": str,
             "delivery": str, "merge": str, "auto_merge": bool, "test_host": str,
-            "no_mistakes": bool, "extra_rules": list, "model_selection": dict}
+            "no_mistakes": bool, "model_selection": dict}
 
 
 def boss_home():
@@ -90,7 +90,8 @@ def display_key(parts):
 
 class Config:
     def __init__(self, home, redact):
-        self.path = config_path(Path(home))
+        self.home = Path(home)
+        self.path = config_path(self.home)
         self.redact = redact
         self.credentials, self.file_credentials = self._credentials()
         try:
@@ -113,11 +114,14 @@ class Config:
         raise BossError("config", f"{key}: {message}", f"edit {self.path}", 1)
 
     def validate(self, data):
-        def fields(table, schema, prefix="", *, legacy_selection=False):
+        def fields(table, schema, prefix="", *, legacy_selection=False, project=None):
             if not isinstance(table, dict):
                 self.fail(prefix, "must be a table")
             for key, value in table.items():
                 path = prefix + "." + key if prefix else key
+                if key == "extra_rules":
+                    raise BossError("config", f"{path}: extra_rules was removed",
+                                    f"move the lines into {self.home}/projects/{project or '<p>'}.md and remove {path} from {self.path}", 1)
                 if key not in schema:
                     self.fail(path, "unknown key")
                 expected = schema[key]
@@ -125,8 +129,6 @@ class Config:
                     self.fail(path, f"must be {expected.__name__}")
                 if expected is str and not value.strip() and key not in ("default_host", "ssh"):
                     self.fail(path, "must be a nonempty string")
-                if key == "extra_rules" and any(type(v) is not str or not v.strip() for v in value):
-                    self.fail(path, "must be a list of nonempty strings")
                 choices = {"delivery": ("direct-PR", "local-only"), "merge": ("never", "approved", "auto"),
                            "kind": ("ship", "scout")}
                 if key in choices and value not in choices[key]:
@@ -176,12 +178,12 @@ class Config:
             fields(worker, {k: SETTINGS[k] for k in ("host", "model", "effort", "kind")}, "workers." + name)
         for name, project in data.get("projects", {}).items():
             project_name(name)
-            fields(project, {**SETTINGS, "project_id": str, "repository": str, "workers": dict}, "projects." + name)
+            fields(project, {**SETTINGS, "project_id": str, "repository": str, "workers": dict}, "projects." + name, project=name)
         hosts, workers = data.get("hosts", {}), data.get("workers", {})
         role_schema = {k: SETTINGS[k] for k in ("host", "model", "effort", "kind")}
         for name, project in data.get("projects", {}).items():
             for role, settings in project.get("workers", {}).items():
-                fields(settings, role_schema, f"projects.{name}.workers.{role}")
+                fields(settings, role_schema, f"projects.{name}.workers.{role}", project=name)
         tables = [("", data), *(("workers." + k, v) for k, v in workers.items())]
         for name, project in data.get("projects", {}).items():
             tables.append(("projects." + name, project))
