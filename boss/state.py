@@ -9,6 +9,7 @@ import re
 import tempfile
 import uuid
 
+from .captain import presence
 from .common import BossError, refuse, require_text
 from .preferences import BRIEF_LIMIT, goal_path, layer_text, project_name, steers_path
 
@@ -30,6 +31,26 @@ def atomic_write(path, text):
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+
+
+def now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def append_line(path, record):
+    """Append one fsynced JSON line without replacing or changing earlier records."""
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    return record
 
 
 def identifier(value):
@@ -81,7 +102,7 @@ class Store:
         directory = self.directory(meta["id"])
         meta["revision"] = meta.get("revision", 0) + 1
         meta.update(self.redact.data(meta))
-        record = {"event": event, "details": details, "meta": meta}
+        record = {"event": event, "at": now(), "details": details, "meta": meta}
         journal = directory / "events.log"
         prior = journal.read_text() if journal.exists() else ""
         atomic_write(journal, prior + json.dumps(self.redact.data(record), sort_keys=True) + "\n")
@@ -171,7 +192,7 @@ class Store:
             if "drops" in target or target["dropped"]:
                 refuse("cannot replace a dropped steer or tombstone", f"boss steer list {name} --all")
         record = {"id": self.new_id(), "text": text.strip(), "task": task, "replaces": replaces,
-                  "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+                  "created_at": now()}
         return self._append_steer(name, record)
 
     def drop_steer(self, name, steer_id):
@@ -188,25 +209,45 @@ class Store:
         if target["superseded"]:
             refuse("steer is already superseded", hint)
         record = {"id": self.new_id(), "drops": steer_id,
-                  "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+                  "created_at": now()}
         return self._append_steer(name, record)
 
     def _append_steer(self, name, record):
-        path = steers_path(self.home, name)
-        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        # The CLI holds the ledger lock. Append one record and fsync it without
-        # replacing the file or changing any previous record, even on supersession.
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        # The CLI holds the ledger lock. Never rewrite history, even on supersession.
+        return append_line(steers_path(self.home, name), record)
+
+    def journal(self, task_id):
+        """Every committed record of one task, oldest first."""
+        path = self.directory(task_id) / "events.log"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def captain_path(self):
+        return self.home / "captain.jsonl"
+
+    def captain_events(self):
+        """Append-only captain journal: away, back, check-in logs, ask rounds, unclear marks."""
+        path = self.captain_path()
+        if not path.exists():
+            return []
+        records = []
         try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-        return record
+            with path.open(encoding="utf-8") as stream:
+                for line in stream:
+                    if not line.endswith("\n"):
+                        raise ValueError("incomplete append")
+                    record = json.loads(line)
+                    if record["event"] not in ("away", "back", "log", "ask", "unclear"):
+                        raise ValueError("unknown event " + str(record["event"]))
+                    if not datetime.fromisoformat(record["at"]).tzinfo:
+                        raise ValueError("timestamp has no timezone")
+                    records.append(record)
+        except (ValueError, KeyError, TypeError) as exc:
+            raise BossError("ledger", f"invalid captain journal: {exc}",
+                            f"inspect {path}; preserve existing history") from None
+        return records
+
+    def captain(self, event, **fields):
+        return append_line(self.captain_path(), self.redact.data({"event": event, "at": now(), **fields}))
 
     def refresh_attention(self):
         """Materialize a tiny local hook view once per CLI command, under its lock.
@@ -240,4 +281,11 @@ class Store:
             except (OSError, ValueError, KeyError, TypeError, AttributeError, BossError):
                 continue
         attention = {"version": 1, "count": len(items), "items": items[:6]}
+        try:
+            away = presence(self.captain_events())
+            if away:
+                # The captain's own short note; one line, bounded for the hook.
+                attention["away"] = {"since": away["at"], "note": " ".join(str(away.get("note") or "").split())[:80]}
+        except BossError:
+            pass
         atomic_write(self.home / "attention.json", json.dumps(attention, sort_keys=True) + "\n")

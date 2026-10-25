@@ -1,0 +1,141 @@
+# Captain away/back and numbered decisions: real CLI run
+# 2026-10-25T23:21Z on oracle, fresh temp BOSS_HOME, no T3 host needed.
+# Slash commands use the real plugin handlers, which run bin/boss in a subprocess.
+
+$ boss decide add Use SQLite or Postgres for the ledger?
+a5399fd9e6a2: decision open
+next: boss decide ask
+[exit 0]
+
+$ boss decide add Rename the CLI to captain?
+4e6b2ab7e4e1: decision open
+next: boss decide ask
+[exit 0]
+
+$ boss decide add Drop Python 3.10 support?
+872629ba9c46: decision open
+next: boss decide ask
+[exit 0]
+
+$ boss decide ask
+3 open decisions (round 1; reply like "1 yes 2 no"):
+1. Use SQLite or Postgres for the ledger?
+2. Rename the CLI to captain?
+3. Drop Python 3.10 support?
+next: boss decide close <n> "<captain words>"
+[exit 0]
+
+$ boss decide close 3 no, keep 3.10
+872629ba9c46: decision closed
+next: boss
+[exit 0]
+
+$ /away going to bed
+Away since 23:21 (going to bed). I won't ask you anything; anything you decide in a check-in counts.
+
+$ /away second away keeps the first
+Already away since 23:21 (going to bed); nothing changed.
+
+$ <pre_llm_call hook>
+{'context': "boss: captain away since 23:21 (going to bed); don't ask him anything, act on your own judgement and queue decisions for /back; anything he says or decides in a check-in counts in full, record it with boss log. boss: 2 need you (4e6b2ab7e4e1 decision, a5399fd9e6a2 decision) - run boss status"}
+
+$ boss decide ask
+error: refused
+message: "the captain is away; do not ask him, queue decisions for /back"
+next: boss decide ask --requested "<his words>" only when he asks for the list
+[exit 2]
+
+$ boss log Checked in from phone: keep the docs PR moving, no rush on the rename
+check-in logged
+next: boss
+[exit 0]
+
+$ boss decide close 1 SQLite --round 1
+a5399fd9e6a2: decision closed
+next: boss
+[exit 0]
+
+$ boss decide close 1 Postgres --round 1
+a5399fd9e6a2: decision already closed; kept the first answer
+next: boss
+[exit 0]
+
+$ boss steer repo Prefer SQLite everywhere
+511c8ef3cdda: steer recorded project=repo
+next: boss steer list repo
+[exit 0]
+
+$ boss decide unclear 2 he said 'maybe later'; unclear if that is a no --round 1
+4e6b2ab7e4e1: marked unclear; re-asked next round
+next: boss decide ask
+[exit 0]
+
+$ boss decide add Publish the plugin to the catalog?
+9ca20f78836f: decision open
+next: boss decide ask
+[exit 0]
+
+$ boss 
+bin: ~/.t3/worktrees/hermes-boss/boss-d3e0cc0ba388/bin/boss
+description: Supervise T3 coding workers.
+captain: away since 23:21 (going to bed); don't ask him, anything he decides counts
+0 active tasks
+2 open decisions (round 1)
+2. Rename the CLI to captain?
+- Publish the plugin to the catalog? (not asked yet)
+next: queue decisions for /back; record his check-in words with boss log
+[exit 0]
+
+$ /back 
+Welcome back. You were away under a minute, since 23:21 (going to bed).
+While you were away (5 events):
+23:21 check-in: Checked in from phone: keep the docs PR moving, no rush on the rename
+23:21 decided: Use SQLite or Postgres for the ledger? -> SQLite
+23:21 steer (repo): Prefer SQLite everywhere
+23:21 marked unclear: Rename the CLI to captain? (he said 'maybe later'; unclear if that is a no)
+23:21 decision opened: Publish the plugin to the catalog?
+Tasks: 0 finished, 0 landed, 0 failed.
+2 open decisions (round 2; reply like "1 yes 2 no"):
+1. Rename the CLI to captain? (asked again; unclear last time: he said 'maybe later'; unclear if that is a no)
+2. Publish the plugin to the catalog?
+
+$ <pre_llm_call hook>
+{'context': 'boss: 2 need you (4e6b2ab7e4e1 decision, 9ca20f78836f decision) - run boss status'}
+
+$ boss decide close 1 yes --round 1
+error: refused
+message: round 1 is old; the latest is round 2
+next: boss decide ask, then use that round's numbers
+[exit 2]
+
+$ boss decide ask
+2 open decisions (round 3; reply like "1 yes 2 no"):
+1. Rename the CLI to captain? (asked again)
+2. Publish the plugin to the catalog? (asked again)
+next: boss decide close <n> "<captain words>"
+[exit 0]
+
+$ boss back
+You weren't marked away; nothing changed.
+2 open decisions (round 4; reply like "1 yes 2 no"):
+1. Rename the CLI to captain? (asked again)
+2. Publish the plugin to the catalog? (asked again)
+next: boss decide close <n> "<captain words>"
+[exit 0]
+
+$ boss decide list
+2 open decisions
+4e6b2ab7e4e1: Rename the CLI to captain? asked=4
+9ca20f78836f: Publish the plugin to the catalog? asked=3
+next: boss decide close <id> "<captain resolution>"
+[exit 0]
+
+$ cat $BOSS_HOME/captain.jsonl
+{"at": "2026-10-25T23:21:11.536550+00:00", "event": "ask", "items": ["a5399fd9e6a2", "4e6b2ab7e4e1", "872629ba9c46"], "reason": "ask"}
+{"at": "2026-10-25T23:21:11.770278+00:00", "event": "away", "note": "going to bed"}
+{"at": "2026-10-25T23:21:12.153823+00:00", "event": "log", "text": "Checked in from phone: keep the docs PR moving, no rush on the rename"}
+{"at": "2026-10-25T23:21:12.574369+00:00", "decision": "4e6b2ab7e4e1", "event": "unclear", "note": "he said 'maybe later'; unclear if that is a no"}
+{"at": "2026-10-25T23:21:12.922283+00:00", "event": "back"}
+{"at": "2026-10-25T23:21:12.926537+00:00", "event": "ask", "items": ["4e6b2ab7e4e1", "9ca20f78836f"], "reason": "back"}
+{"at": "2026-10-25T23:21:13.177982+00:00", "event": "ask", "items": ["4e6b2ab7e4e1", "9ca20f78836f"], "reason": "ask"}
+{"at": "2026-10-25T23:21:13.282842+00:00", "event": "ask", "items": ["4e6b2ab7e4e1", "9ca20f78836f"], "reason": "back"}

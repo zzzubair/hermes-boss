@@ -10,11 +10,12 @@ import tomllib
 from .setup import initialize, doctor, add_wake_arguments
 
 from . import __version__
-from .common import BossError, Redactor, compact, require_text
+from . import captain
+from .common import BossError, Redactor, compact, refuse, require_text
 from .config import Config, boss_home, flatten, display_key, key_parts, literal
 from .preferences import goal_path, notes_path
 from .service import Boss, ci_text
-from .state import Store
+from .state import Store, now
 
 
 class Parser(argparse.ArgumentParser):
@@ -121,25 +122,39 @@ def parser():
     steer.add_argument("--task", help="related task from this project")
     steer.add_argument("--replaces", metavar="STEER_ID", help="supersede an earlier steer in this project")
     steer.add_argument("--all", action="store_true", help="with 'list', include superseded/dropped steers and tombstones")
+    away = commands.add_parser("away", help="mark the captain away; only away/back change presence")
+    away.add_argument("note", nargs="*", help="optional note, e.g. going to bed")
+    commands.add_parser("back", help="mark the captain back; plain catch-up timeline and numbered decisions")
+    log = commands.add_parser("log", help="record what the captain said or decided in a check-in")
+    log.add_argument("text")
     decide = commands.add_parser("decide", help="record decisions that need the captain")
     decisions = decide.add_subparsers(dest="decision_command", required=True)
     add = decisions.add_parser("add", help="open a durable decision")
     add.add_argument("text")
     add.add_argument("--task", help="related task id")
-    listing = decisions.add_parser("list", help="list open captain decisions")
+    listing = decisions.add_parser("list", help="list open captain decisions with ids")
     listing.add_argument("--full", action="store_true", default=argparse.SUPPRESS, help="show complete text")
+    ask = decisions.add_parser("ask", help="number open decisions 1..N for the captain and record the round")
+    ask.add_argument("--requested", metavar="QUOTE", help="while away, only when the captain asked for the list")
     close = decisions.add_parser("close", help="record the captain's resolution; repeat is safe")
-    close.add_argument("id")
+    close.add_argument("id", help="decision id, or number from the latest ask round")
     close.add_argument("text")
+    close.add_argument("--round", type=int, help="ask round the captain answered; older rounds are refused")
+    unclear = decisions.add_parser("unclear", help="re-ask a decision next round with what was unclear")
+    unclear.add_argument("id", help="decision id, or number from the latest ask round")
+    unclear.add_argument("text", help="what was unclear about his answer")
+    unclear.add_argument("--round", type=int, help="ask round the captain answered; older rounds are refused")
     return root
 
 
 def decision_lines(store, full=False):
-    opened = [d for d in store.decisions() if not d.get("closed")]
+    opened = captain.open_decisions(store)
+    counts = captain.asked_counts(store.captain_events())
     lines = [f"{len(opened)} open decisions"]
     for d in opened:
         lines.append(f"{d['id']}: {compact(d['text'], None if full else 180)}" +
-                     (f" task={d['task']}" if d.get("task") else ""))
+                     (f" task={d['task']}" if d.get("task") else "") +
+                     (f" asked={counts[d['id']]}" if counts.get(d["id"]) else ""))
     return lines
 
 
@@ -149,7 +164,11 @@ def fleet(boss, full=False):
     home = str(Path.home())
     if executable.startswith(home + "/"):
         executable = "~" + executable[len(home):]
-    lines = [f"bin: {compact(executable)}", "description: Supervise T3 coding workers.", f"{len(tasks)} active tasks"]
+    events = boss.store.captain_events()
+    away = captain.presence(events)
+    lines = [f"bin: {compact(executable)}", "description: Supervise T3 coding workers.",
+             "captain: " + (f"away {captain.since_text(away)}; don't ask him, anything he decides counts" if away else "here"),
+             f"{len(tasks)} active tasks"]
     errors = []
     counts = {}
     for meta in tasks:
@@ -163,15 +182,18 @@ def fleet(boss, full=False):
         lines.append(f"{meta['id']}: {meta['project']} {state} {compact(meta['title'], None if full else 80)} auto_merge={str(meta.get('auto_merge', False)).lower()}")
     if counts:
         lines.append("states: " + " ".join(f"{k}={v}" for k, v in sorted(counts.items())))
-    lines.extend(decision_lines(boss.store, full))
+    view = captain.numbered_view(boss.store, events, full)
+    lines.extend(view)
     if errors:
         for exc in errors:
             lines.append(f"error: {exc.code} {compact(boss.redact(exc.message))}")
         lines.append("next: check host credentials/connectivity; boss status <id>")
     elif tasks:
         lines.append("next: boss status <id>")
-    elif any(not d.get("closed") for d in boss.store.decisions()):
-        lines.append('next: boss decide close <id> "<captain resolution>"')
+    elif len(view) > 1:
+        lines.append("next: queue decisions for /back; record his check-in words with boss log" if away else
+                     "next: boss decide ask" if any(line.endswith("(not asked yet)") for line in view) else
+                     'next: boss decide close <n> "<captain words>"')
     elif not boss.config.hosts:
         lines.append("next: boss init")
     else:
@@ -369,24 +391,44 @@ def dispatch(args, boss):
     if command == "settle":
         boss.settle(args.id, args.discard_approved)
         return [f"{args.id}: settled", "next: boss"], 0
+    if command == "away":
+        note = " ".join(args.note)
+        if note:
+            require_text(note, "away note", 300)
+        return captain.away(boss.store, note), 0
+    if command == "back":
+        return captain.back(boss.store), 0
+    if command == "log":
+        require_text(args.text, "check-in log", 20000)
+        boss.store.captain("log", text=args.text.strip())
+        return ["check-in logged", "next: boss"], 0
     if command == "decide":
         subcommand = args.decision_command
         if subcommand == "list":
             return decision_lines(boss.store, full) + ['next: boss decide close <id> "<captain resolution>"'], 0
+        if subcommand == "ask":
+            lines, record = captain.ask(boss.store, args.requested)
+            return lines + (['next: boss decide close <n> "<captain words>"'] if record else ["next: boss"]), 0
         require_text(args.text, "decision", 20000)
         if subcommand == "add":
             if args.task:
                 boss.store.load(args.task)
             decision_id = boss.store.new_id()
-            boss.store.decision({"id": decision_id, "text": args.text, "task": args.task, "closed": False})
-            return [f"{decision_id}: decision open", "next: boss decide list"], 0
-        record = next((d for d in boss.store.decisions() if d["id"] == args.id), None)
-        if not record:
-            raise BossError("usage", f"unknown decision {args.id}", "boss decide list", 1)
+            boss.store.decision({"id": decision_id, "text": args.text, "task": args.task, "closed": False,
+                                 "created_at": now()})
+            return [f"{decision_id}: decision open", "next: boss decide ask"], 0
+        record = captain.resolve(boss.store, args.id, args.round)
+        if subcommand == "unclear":
+            if record.get("closed"):
+                refuse("that decision is already answered; it is never asked again", "boss decide ask")
+            boss.store.captain("unclear", decision=record["id"], note=args.text.strip())
+            return [f"{record['id']}: marked unclear; re-asked next round", "next: boss decide ask"], 0
         if not record.get("closed"):
-            record.update(closed=True, resolution=args.text)
+            # Full authority whether or not the captain is away.
+            record.update(closed=True, resolution=args.text, closed_at=now())
             boss.store.decision(record)
-        return [f"{args.id}: decision closed", "next: boss"], 0
+            return [f"{record['id']}: decision closed", "next: boss"], 0
+        return [f"{record['id']}: decision already closed; kept the first answer", "next: boss"], 0
     raise BossError("usage", "unknown command", exit_code=1)
 
 

@@ -45,6 +45,12 @@ boss stop <id>
 boss decide list
 boss decide add "<captain decision needed>" --task <id>
 boss decide close <decision-id> "<captain resolution>"
+boss decide ask
+boss decide close <n> "<captain words>" --round <round>
+boss decide unclear <n> "<what was unclear>"
+boss away "<note>"
+boss log "<what the captain said or decided in a check-in>"
+boss back
 boss land <id> --approved "<captain's exact words>"
 boss settle <id>
 ```
@@ -79,6 +85,25 @@ steers distinctly, plus tombstones. Inactive, unknown, other-project and
 tombstone IDs are refused. `list` and `drop` are reserved verbs; for a T3
 project with either title, set `boss config set projects.alias.project_id '<T3 project ID>'`
 and use `alias` for all boss commands, including goals and steers.
+
+## Captain away and back
+
+Only the captain's `/away` (or `/afk`) and `/back` change his presence. Never
+infer it from chat and never run `boss away` or `boss back` yourself unless he
+used those words as a command. While a `boss: captain away` line is present:
+
+- Don't ask him anything. Act on your own judgement and queue decisions with
+  `boss decide add` for `/back`.
+- Every message from him is a check-in with full authority. If he decides,
+  approves or steers something, act on it exactly as if he were back
+  (`decide close`, `land --approved`, `steer`, `settle`). Record anything else
+  he says or decides with `boss log "<his words or a faithful summary>"`.
+
+When he answers a numbered list ("1 yes 3 no"), close each with
+`boss decide close <n> "<his words>" --round <round>`. Mark an answer you
+don't understand with `boss decide unclear <n> "<what was unclear>"`; skipped
+ones are asked again automatically. Use `boss decide ask` to show him a new
+numbered round when he is around.
 
 ## Guards
 
