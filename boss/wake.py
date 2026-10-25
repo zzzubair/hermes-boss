@@ -13,6 +13,7 @@ from .config import Config, boss_home
 CONSENT_KEY = "plugins.entries.boss.allow_gateway_injection"
 CONSENT_LINE = CONSENT_KEY + ": true"
 POLL_TIMEOUT = 30
+HEARTBEAT = "wake-heartbeat"
 _lock = threading.Lock()
 _loops = {}
 
@@ -43,12 +44,21 @@ class WakeLoop:
         self.refusal_logged = False
         self.thread = threading.Thread(target=self.run, name="boss-wake", daemon=True)
 
+    def beat(self, state):
+        """Liveness for boss doctor: a silent dead loop is the failure that matters."""
+        try:
+            path = self.home / HEARTBEAT
+            path.write_text(f"{datetime.now(timezone.utc).isoformat()} {os.getpid()} {state}\n")
+        except OSError:
+            pass
+
     def tick(self):
         # Discovery precedes host publication. Do not consume changed-only state until
         # Hermes has an injector, and never fall through to the interactive CLI queue.
         manager = self.ctx._manager
         if manager._cli_ref is not None or not manager.has_gateway_message_injector:
             return
+        self.beat("armed")
         result = subprocess.run(self.argv, env=self.env, capture_output=True, text=True,
                                 timeout=POLL_TIMEOUT, check=False)
         if result.returncode:

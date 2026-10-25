@@ -41,11 +41,10 @@ def on_pre_llm_call(**kwargs):
 
 def register(ctx):
     ctx.register_hook("pre_llm_call", on_pre_llm_call)
-    # The marker alone is inherited by subprocesses. Require the gateway module
-    # in THIS interpreter too, so CLI/one-shot children never start poll threads.
-    main_spec = getattr(sys.modules.get("__main__"), "__spec__", None)
-    gateway_loaded = "gateway.run" in sys.modules or getattr(main_spec, "name", None) == "gateway.run"
-    if (os.environ.get("_HERMES_GATEWAY") != "1" or not gateway_loaded or
+    # Plugins load before gateway.run is imported, so do not require it here.
+    # The loop polls nothing until the gateway publishes its injector, which
+    # CLI/one-shot children never do; a child with the inherited marker only idles.
+    if (os.environ.get("_HERMES_GATEWAY") != "1" or
             getattr(getattr(ctx, "_manager", None), "_cli_ref", None) is not None):
         return
     root = str(Path(__file__).resolve().parent.parent)
