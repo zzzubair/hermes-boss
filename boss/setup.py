@@ -12,7 +12,6 @@ import sys
 
 from .common import BossError, Redactor
 from .config import Config, boss_home, hermes_home
-from .preferences import read_rules
 from .state import atomic_write
 from .wake import CONSENT_KEY, CONSENT_LINE, target_configured
 
@@ -146,17 +145,8 @@ def doctor(boss):
     check("Python 3.12+", lambda: sys.version_info >= (3, 12), "install Python 3.12 or newer")
     check("gh auth", lambda: command(["gh", "auth", "status"]) is not None, "gh auth login")
     check("hosts", lambda: bool(boss.config.hosts), "boss init")
-    global_rules = {}
-    for path in [boss.store.home / "rules.md", *sorted((boss.store.home / "projects").glob("*.md"))]:
-        def lint(path=path):
-            sections, warnings = read_rules(path, "rules", boss.redact)
-            if path == boss.store.home / "rules.md":
-                global_rules.update((s.heading, s.text) for s in sections)
-            else:
-                warnings.extend(f"heading {s.heading or 'preamble'!r} is identical to global (pointless override)"
-                                for s in sections if global_rules.get(s.heading) == s.text)
-            lines.extend(f"warning: {path}: {warning}" for warning in warnings)
-        check(f"rules {path}", lint, f"edit {path}")
+    if (boss.store.home / "rules.md").is_file():
+        lines.append("info: rules.md is no longer sent to workers")
     for name, host in boss.config.hosts.items():
         token_key = host.get("token_env", "T3_MCP_TOKEN")
         check(f"host {name} token", lambda n=name: bool(boss.config.host(n)[1]),

@@ -183,7 +183,7 @@ class RoleTest(HermeticTestCase):
         self.assertIn("unsupported reasoningEffort=xhigh", output)
         self.assertFalse(self.fake.threads)
 
-    def test_merge_policy_and_project_rules_preserve_guards(self):
+    def test_merge_policy_preserves_guards_and_notes_stay_with_supervisor(self):
         self.configure('merge="never"\n')
         (self.home / "projects").mkdir()
         (self.home / "projects/repo.md").write_text("Run the formatter")
@@ -191,7 +191,8 @@ class RoleTest(HermeticTestCase):
         self.assertEqual(meta["merge"], "never")
         message = self.store.directory(meta["id"]).joinpath("brief.md").read_text()
         self.assertIn("Never merge. Never deploy.", message)
-        self.assertIn("Run the formatter", message)
+        self.assertNotIn("Run the formatter", message)
+        self.assertIn("Run the formatter", self.cli("project", "show", "repo")[1])
         code, output = self.cli("land", meta["id"], "--approved", "merge it")
         self.assertEqual(code, 2, output)
         self.assertIn("merge policy is never", output)

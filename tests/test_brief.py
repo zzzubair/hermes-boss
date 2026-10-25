@@ -1,63 +1,13 @@
-"""Compiled rules and preview behavior through the same boundary as spawn."""
+"""Worker context preview and supervisor-only notes through the CLI."""
 from pathlib import Path
 import subprocess
 from unittest.mock import patch
 
-from boss.common import BossError, Redactor
+from boss.common import BossError
 from boss.config import Config
-from boss.preferences import merged_rules
+from boss.preferences import BRIEF_LIMIT
 from tests import test_boss as harness
 from tests.support import HermeticTestCase
-
-
-class MergeTest(HermeticTestCase):
-    def rules(self, global_text, project_text):
-        (self.home / "rules.md").write_text(global_text)
-        (self.home / "projects").mkdir(exist_ok=True)
-        (self.home / "projects/repo.md").write_text(project_text)
-        return merged_rules(self.home, "repo", Redactor())
-
-    def test_replacement_keeps_global_order_then_project_only_sections(self):
-        sections = self.rules("## First\nkeep\n## Testing\nold\n### Unit tests\nobsolete\n## Last\nkeep too",
-                              "## New\nadded\n## Testing\nnew\n### Integration\nreplacement")
-        self.assertEqual([s.heading for s in sections], ["First", "Testing", "Last", "New"])
-        self.assertEqual(sections[1].text, "### Testing\nnew\n#### Integration\nreplacement")
-        self.assertNotIn("obsolete", "\n".join(s.text for s in sections))
-        self.assertEqual(sections[0].source, self.home / "rules.md")
-        self.assertEqual(sections[1].source, self.home / "projects/repo.md")
-
-    def test_preamble_replaces_as_a_whole_and_stays_distinct_from_named_heading(self):
-        sections = self.rules("old preamble\n## preamble\nnamed\n## Keep\nglobal",
-                              "new preamble\n## Extra\nproject")
-        self.assertEqual([s.heading for s in sections], [None, "preamble", "Keep", "Extra"])
-        self.assertEqual(sections[0].text, "new preamble")
-        self.assertNotIn("old preamble", "\n".join(s.text for s in sections))
-
-    def test_one_file_only_missing_preamble_and_empty_files_pass_through(self):
-        for global_text, project_text, expected in (
-            ("## Only\nglobal", "", ["Only"]),
-            ("", "## Only\nproject", ["Only"]),
-            ("global preamble\n## A\nbody", "## A\nnew", [None, "A"]),
-            ("\n", "", []),
-        ):
-            with self.subTest(global_text=global_text, project_text=project_text):
-                self.assertEqual([s.heading for s in self.rules(global_text, project_text)], expected)
-
-    def test_fenced_headings_stay_literal_and_do_not_replace_sections(self):
-        text = "## Example\n```md\n## Literal\n```\n~~~\n## Other literal\n~~~\n## Keep\nbody"
-        sections = self.rules(text, "## Literal\nreal section")
-        self.assertEqual([s.heading for s in sections], ["Example", "Keep", "Literal"])
-        self.assertIn("```md\n## Literal\n```", sections[0].text)
-        self.assertIn("~~~\n## Other literal\n~~~", sections[0].text)
-
-    def test_setext_closing_hashes_and_case_sensitive_names(self):
-        sections = self.rules("Testing\n-------\nold\n## testing\nkeep", "## Testing ##\nnew")
-        self.assertEqual([s.heading for s in sections], ["Testing", "testing"])
-        self.assertEqual(sections[0].text, "### Testing\nnew")
-
-    def test_empty_override_removes_the_inherited_body(self):
-        sections = self.rules("## Testing\nold instructions", "## Testing")
-        self.assertEqual(sections[0].text, "### Testing")
 
 
 class BriefTest(HermeticTestCase):
@@ -91,10 +41,11 @@ class BriefTest(HermeticTestCase):
                 self.assertEqual(preview, sent)
                 self.assertEqual(saved, sent)
                 self.assertEqual([line for line in sent.splitlines() if line.startswith("## ")],
-                                 ["## Rules", "## Project goal", "## Captain steers"])
-                for absent in ("old tests", "obsolete", "Project notes", "Project settings", "source:", "precedence", "win over", str(self.home)):
+                                 ["## Project goal", "## Captain steers"])
+                for absent in ("old tests", "obsolete", "new tests", "format", "stdlib", "## Rules", "source:",
+                               "Execution settings", "test_host:", "no_mistakes:", str(self.home)):
                     self.assertNotIn(absent, sent)
-                for present in ("new tests", "format", "stdlib", "test_host: workstation", "no_mistakes: true"):
+                for present in ("Small supervisor", "No LLM calls", "Never merge. Never deploy.", "T3 input requests"):
                     self.assertIn(present, sent)
 
     def test_brief_is_read_only_even_with_existing_ledger_and_lock(self):
@@ -124,7 +75,8 @@ class BriefTest(HermeticTestCase):
         with patch.dict(os.environ, {"BOSS_HOME": str(empty)}):
             code, output = self.cli("brief", "unregistered")
         self.assertEqual(code, 0, output)
-        self.assertIn("## Rules", output)
+        self.assertTrue(output.startswith("<task>\n\n### boss worker contract"))
+        self.assertNotIn("## Rules", output)
         self.assertFalse(empty.exists())
 
     def test_origin_annotates_only_effective_sections_and_never_changes_spawn(self):
@@ -133,22 +85,17 @@ class BriefTest(HermeticTestCase):
             stream.write('no_mistakes=true\n')
         code, output = self.cli("brief", "repo", "--origin")
         self.assertEqual(code, 0, output)
-        for source in (self.home / "rules.md", self.home / "projects/repo.md", self.home / "config.toml",
-                       self.home / "projects/repo.goal", self.home / "projects/repo.steers.jsonl",
+        for source in (self.home / "projects/repo.goal", self.home / "projects/repo.steers.jsonl",
                        Path(harness.__file__).parents[1] / "boss/service.py"):
             self.assertIn(f"<!-- source: {source} -->", output)
         self.assertNotIn("old tests", output)
+        self.assertNotIn(str(self.home / "rules.md"), output)
+        self.assertNotIn(str(self.home / "projects/repo.md"), output)
+        self.assertNotIn(str(self.home / "config.toml"), output)
         self.assertNotIn("source:", self.cli("brief", "repo")[1])
 
-    def test_invalid_role_and_secret_in_replaced_rules_are_refused(self):
+    def test_invalid_role_is_refused(self):
         self.assertEqual(self.cli("brief", "repo", "--worker", "missing")[0], 1)
-        (self.home / "rules.md").write_text("## Testing\n" + harness.TOKEN)
-        (self.home / "projects").mkdir()
-        (self.home / "projects/repo.md").write_text("## Testing\nsafe replacement")
-        for args in (("brief", "repo"), ("brief", "repo", "--origin"), ("spawn", "repo", "--title", "T")):
-            code, output = self.cli(*args)
-            self.assertEqual(code, 2, output)
-            self.assertNotIn(harness.TOKEN, output)
         self.assertFalse(self.fake.threads)
 
     def test_contract_cannot_be_replaced_by_a_rules_file(self):
@@ -161,8 +108,7 @@ class BriefTest(HermeticTestCase):
     def test_removed_config_fails_load_doctor_and_spawn_without_silent_drop(self):
         path = self.home / "config.toml"
         original = path.read_text()
-        for legacy, target in ((f'extra_rules=["{harness.TOKEN}"]\n', "<p>"),
-                               ('[projects."dotted.name"]\nextra_rules=[]\n', "dotted.name")):
+        for legacy in (f'extra_rules=["{harness.TOKEN}"]\n', '[projects."dotted.name"]\nextra_rules=[]\n'):
             path.write_text(legacy + original)
             with self.assertRaises(BossError) as caught:
                 Config(self.home, self.redact)
@@ -171,7 +117,7 @@ class BriefTest(HermeticTestCase):
                 code, output = self.cli(*args)
                 self.assertEqual(code, 1, output)
                 self.assertIn("extra_rules was removed", output)
-                self.assertIn(f"next: move the lines into {self.home}/projects/{target}.md", output)
+                self.assertIn("next: move codebase instructions into the repo's AGENTS.md", output)
                 self.assertNotIn(harness.TOKEN, output)
             self.assertEqual(path.read_text(), legacy + original)
         self.assertFalse(self.fake.calls)
@@ -186,25 +132,42 @@ class BriefTest(HermeticTestCase):
         with patch("boss.setup.install_paths", return_value=paths), patch("boss.setup.subprocess.run", side_effect=command), patch("boss.setup.wake_cron", return_value=False):
             return self.cli("doctor")
 
-    def test_lint_warnings_do_not_fail_doctor_and_include_unregistered_files(self):
-        (self.home / "rules.md").write_text("## Same\nbody\n## Duplicate\nfirst\n## Duplicate\nlast\n##\nunnamed\n## Empty")
-        (self.home / "projects").mkdir()
-        (self.home / "projects/unregistered.md").write_text("## Same\nbody")
+    def test_doctor_ignores_notes_and_reports_legacy_rules_once(self):
         code, output = self.doctor()
         self.assertEqual(code, 0, output)
-        for warning in ("empty heading", "empty heading 'Empty' (no content)", "duplicate heading 'Duplicate'", "identical to global (pointless override)"):
-            self.assertIn(warning, output)
-        self.assertIn("warning: " + str(self.home / "projects/unregistered.md"), output)
+        self.assertNotIn("rules.md", output)
+        (self.home / "rules.md").write_bytes(b"legacy secret\xff\0```" + harness.TOKEN.encode())
+        (self.home / "projects").mkdir(exist_ok=True)
+        (self.home / "projects/unregistered.md").write_bytes(b"invalid\xff\0```")
+        code, output = self.doctor()
+        self.assertEqual(code, 0, output)
+        self.assertEqual([line for line in output.splitlines() if "rules.md" in line],
+                         ["info: rules.md is no longer sent to workers"])
+        for absent in ("unregistered.md", "warning:", "fail: rules", harness.TOKEN):
+            self.assertNotIn(absent, output)
 
-    def test_unparsable_file_fails_doctor_and_dispatch(self):
+    def test_notes_and_legacy_rules_never_reach_or_block_workers(self):
         (self.home / "projects").mkdir()
-        path = self.home / "projects/repo.md"
-        for content in (b"## Heading\n```\nunclosed", b"invalid\xff", b"bad\0text"):
-            with self.subTest(content=content):
-                path.write_bytes(content)
-                code, output = self.doctor()
-                self.assertEqual(code, 1, output)
-                self.assertIn("fail: rules " + str(path), output)
-                self.assertNotEqual(self.cli("brief", "repo")[0], 0)
-                self.assertNotEqual(self.cli("spawn", "repo", "--title", "T")[0], 0)
-        self.assertFalse(self.fake.threads)
+        for content in (b"## Testing\nSHOULD_NOT_REACH_WORKER", b"## Heading\n```\nunclosed", b"invalid\xff",
+                        b"bad\0text", harness.TOKEN.encode(), b"x" * (BRIEF_LIMIT + 1)):
+            with self.subTest(content=content[:30]):
+                (self.home / "rules.md").write_bytes(content)
+                (self.home / "projects/repo.md").write_bytes(content)
+                code, preview = self.cli("brief", "repo")
+                self.assertEqual(code, 0, preview)
+                self.assertEqual(self.cli("brief", "repo", "--origin")[0], 0)
+                meta = self.spawn()
+                sent = [a["message"] for n, a in self.fake.calls if n == "t3_thread_launch"][-1]
+                self.assertEqual(sent, preview.replace("<task>", "investigate this", 1))
+                self.assertEqual(sent, (self.store.directory(meta["id"]) / "brief.md").read_text())
+                for absent in ("SHOULD_NOT_REACH_WORKER", "unclosed", "invalid", "bad\0text", harness.TOKEN, "x" * 100):
+                    self.assertNotIn(absent, sent)
+
+    def test_authored_task_text_is_preserved(self):
+        brief = "  Write the brief as intended.\n\n## Testing\nUse the repo instructions.\n```md\n## Literal\n```\n"
+        code, output = self.cli("spawn", "repo", "--title", "T", stdin=brief)
+        self.assertEqual(code, 0, output)
+        sent = next(a["message"] for n, a in self.fake.calls if n == "t3_thread_launch")
+        preview = self.cli("brief", "repo")[1]
+        self.assertEqual(sent, preview.replace("<task>", brief, 1))
+        self.assertTrue(sent.startswith(brief))
