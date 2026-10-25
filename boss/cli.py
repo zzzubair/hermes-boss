@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 import tomllib
 
-from .setup import initialize, doctor
+from .setup import initialize, doctor, add_wake_arguments
 
 from . import __version__
 from .common import BossError, Redactor, compact, require_text
@@ -37,7 +37,8 @@ def parser():
     init.add_argument("--name", default="local", help="host name to save")
     init.add_argument("--token-env", default="T3_MCP_TOKEN")
     init.add_argument("--force", action="store_true", help="update the named host and default in an existing config")
-    commands.add_parser("doctor", help="check local installation, host access and optional wake cron")
+    add_wake_arguments(init)
+    commands.add_parser("doctor", help="check installation, host access, wake target/consent and competing cron")
     host = commands.add_parser("host", help="manage explicit MCP endpoints")
     hosts = host.add_subparsers(dest="host_command", required=True)
     host_add = hosts.add_parser("add")
@@ -214,13 +215,13 @@ def dispatch(args, boss):
             overrides = {k: getattr(args, k) for k in ("host", "worker", "model", "effort", "kind", "merge", "delivery") if getattr(args, k) is not None}
             values, origins = config.effective(args.project, overrides)
             rows = [(path, value, origins[path]) for path, value in flatten(values)]
-            for section in ("hosts", "workers", "projects"):
+            for section in ("hosts", "workers", "projects", "wake"):
                 rows.extend((path, value, str(config.path)) for path, value in flatten({section: config.data.get(section, {})}))
             return [(f"{origin}\t" if args.origin else "") + f"{display_key(path)} = {literal(value)}"
                     for path, value, origin in sorted(rows)], 0
         if args.config_command == "get":
             values, _ = config.effective()
-            node = {**values, **{k: config.data.get(k, {}) for k in ("hosts", "workers", "projects")}}
+            node = {**values, **{k: config.data.get(k, {}) for k in ("hosts", "workers", "projects", "wake")}}
             for part in key_parts(args.key):
                 if not isinstance(node, dict) or part not in node:
                     raise BossError("config", f"unset key {args.key}", "boss config show --origin", 1)

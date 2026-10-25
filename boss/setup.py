@@ -9,10 +9,11 @@ import socket
 import subprocess
 import sys
 
-from .common import BossError
-from .config import hermes_home
+from .common import BossError, Redactor
+from .config import Config, boss_home, hermes_home
 from .preferences import read_rules
 from .state import atomic_write
+from .wake import CONSENT_KEY, CONSENT_LINE, target_configured
 
 
 DEFAULT_URL = "http://127.0.0.1:3773/mcp"
@@ -33,18 +34,70 @@ def wake_cron():
     if not path.exists():
         return False
     data = json.loads(path.read_text())
-    return any(job.get("name") == "boss-poll" and job.get("enabled", True) and job.get("state") not in ("paused", "completed") and not job.get("paused_at")
-               and not job.get("no_agent", False) and job.get("script") in ("boss-poll-gate.sh", str(hermes_home() / "scripts/boss-poll-gate.sh"))
-               and (hermes_home() / "scripts/boss-poll-gate.sh").is_file()
+    return any((job.get("name") in ("boss-poll", "boss-wake") or
+                job.get("script") in ("boss-poll-gate.sh", str(hermes_home() / "scripts/boss-poll-gate.sh")))
+               and job.get("enabled", True) and job.get("state") not in ("paused", "completed") and not job.get("paused_at")
+               and not job.get("no_agent", False)
                for job in data["jobs"])
+
+
+def add_wake_arguments(parser):
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--with-wake", action="store_true", help="configure plugin wake; never edit Hermes config")
+    modes.add_argument("--with-cron", action="store_true", help="install the legacy Hermes wake cron")
+    target = parser.add_mutually_exclusive_group()
+    target.add_argument("--wake-origin", help="SessionSource JSON object for the captain's chat")
+    target.add_argument("--wake-session-key", help="existing durable gateway routing key")
+    parser.add_argument("--wake-interval", type=int, help="poll interval in seconds; default 300")
+
+
+def wake_settings(config, args):
+    data = copy.deepcopy(config.data)
+    supplied = args.wake_origin is not None or args.wake_session_key is not None or args.wake_interval is not None
+    if supplied and not args.with_wake:
+        raise BossError("usage", "--wake-* options require --with-wake", exit_code=1)
+    if args.with_wake:
+        wake = data.setdefault("wake", {})
+        wake["enabled"] = True
+        wake["interval_seconds"] = args.wake_interval if args.wake_interval is not None else wake.get("interval_seconds", 300)
+        if args.wake_origin is not None:
+            try:
+                wake["origin"] = json.loads(args.wake_origin)
+            except ValueError:
+                raise BossError("usage", "--wake-origin must be a JSON object", exit_code=1) from None
+            wake.pop("session_key", None)
+        elif args.wake_session_key is not None:
+            wake["session_key"] = args.wake_session_key
+            wake.pop("origin", None)
+    config.validate(data)
+    if args.with_cron and data.get("wake", {}).get("enabled", True) and target_configured(data.get("wake", {})):
+        raise BossError("config", "plugin wake is configured; cron would compete for poll changes",
+                        "boss config set wake.enabled false; then retry --with-cron", 1)
+    return data
+
+
+def wake_instructions(data):
+    lines = [f"add to {hermes_home() / 'config.yaml'} under plugins > entries > boss:",
+             "  allow_gateway_injection: true", "exact setting: " + CONSENT_LINE,
+             "Hermes config unchanged; enable boss and restart the gateway after configuring wake."]
+    if not target_configured(data.get("wake", {})):
+        lines.append("wake target not configured: no thread; set wake.origin or wake.session_key, then run boss doctor")
+    return lines
 
 
 def initialize(boss, args):
     config = boss.config
-    if config.path.exists() and not args.force:
-        return [f"config exists: {config.path} (unchanged; --force permits updating the host)",
-                "next: boss host list; boss doctor"], 0
-    data = copy.deepcopy(config.data)
+    data = wake_settings(config, args)
+    if config.path.exists() and config.hosts and not args.force:
+        if args.with_wake:
+            config.write(data)
+        lines = [f"config exists: {config.path} (host unchanged; --force permits updating the host)",
+                 "next: boss host list; boss doctor"]
+        if args.with_wake:
+            lines.extend(wake_instructions(data))
+        if args.with_cron:
+            lines.extend(install_cron())
+        return lines, 0
     data.setdefault("hosts", {})[args.name] = {"url": args.url or DEFAULT_URL, "token_env": args.token_env}
     data["default_host"] = args.name
     config.validate(data)
@@ -58,9 +111,14 @@ def initialize(boss, args):
         config.data = prior
         config._load()
     config.write(data)
-    return [f"configured: {config.path}", f"host: {args.name} ({len(projects)} projects)",
-            "next: hermes plugins enable boss", "next: boss doctor; boss project list",
-            "optional wake-up: ./install.sh --with-cron"], 0
+    lines = [f"configured: {config.path}", f"host: {args.name} ({len(projects)} projects)",
+             "next: hermes plugins enable boss", "next: boss doctor; boss project list",
+             "optional wake-up: boss init --with-wake --wake-session-key <key>"]
+    if args.with_wake:
+        lines.extend(wake_instructions(data))
+    if args.with_cron:
+        lines.extend(install_cron())
+    return lines, 0
 
 
 def doctor(boss):
@@ -121,14 +179,46 @@ def doctor(boss):
         return any(p.get("name") == "boss" and p.get("status") == "enabled" for p in plugins)
     check("plugin enabled", enabled, "hermes plugins enable boss")
     check("skill installed", lambda: (paths["skills"] / "boss/SKILL.md").is_file(), "./install.sh")
+    wake = boss.config.data.get("wake", {})
+    requested = "wake" in boss.config.data and wake.get("enabled", True)
+
+    def wake_target():
+        if not target_configured(wake):
+            raise ValueError("no target configured; no wake thread starts")
+        return True
+
+    lines.append("plugin wake: " + ("requested" if requested else "disabled"))
+    check("wake target", wake_target,
+          "boss init --with-wake --wake-session-key <gateway key> or --wake-origin '<JSON>'", required=requested)
+    check("wake gateway consent", lambda: json.loads(command(["hermes", "config", "get", CONSENT_KEY, "--json"])) is True,
+          "add " + CONSENT_LINE + " in the profile's config.yaml", required=requested)
+    check("single wake source", lambda: not (requested and target_configured(wake) and wake_cron()),
+          "pause/remove the boss-wake or boss-poll cron manually, or set wake.enabled false")
     check("wake cron", wake_cron, "./install.sh --with-cron; keep the Hermes gateway running", required=False)
     return lines, 1 if failures else 0
 
 
+def install_cron():
+    if not shutil.which("hermes"):
+        raise BossError("config", "--with-cron needs hermes on PATH", exit_code=1)
+    root = Path(__file__).resolve().parent.parent
+    script = hermes_home() / "scripts/boss-poll-gate.sh"
+    assignments = {k: v for k, v in os.environ.items() if k in ("BOSS_HOME", "XDG_CONFIG_HOME", "HERMES_HOME")}
+    assignments.setdefault("HERMES_HOME", str(hermes_home()))
+    invocation = ["env", *(f"{k}={v}" for k, v in assignments.items()), sys.executable,
+                  str(root / "bin/boss"), "poll", "--hermes-gate"]
+    atomic_write(script, "#!/bin/sh\nexec " + shlex.join(invocation) + "\n")
+    if wake_cron():
+        return ["wake cron exists (unchanged)"]
+    subprocess.run(["hermes", "cron", "create", "*/5 * * * *", CRON_PROMPT,
+                    "--name", "boss-poll", "--script", script.name, "--deliver", "local"], check=True)
+    return ["installed legacy boss-poll cron"]
+
+
 def install(argv=None):
     import argparse
-    parser = argparse.ArgumentParser(description="Install boss links; Hermes config changes only with --with-cron.")
-    parser.add_argument("--with-cron", action="store_true")
+    parser = argparse.ArgumentParser(description="Install boss links and optional wake settings. Hermes config.yaml is never edited.")
+    add_wake_arguments(parser)
     parser.add_argument("--hermes-home")
     for name in ("bin", "skills", "agent-skills", "plugins"):
         parser.add_argument("--" + name + "-dir")
@@ -149,6 +239,13 @@ def install(argv=None):
     for target, source in targets:
         if target.exists() and not target.is_symlink():
             parser.error(f"{target} exists and is not a symlink")
+    config = None
+    if args.with_wake or args.with_cron or any(v is not None for v in (args.wake_origin, args.wake_session_key, args.wake_interval)):
+        try:
+            config = Config(boss_home(), Redactor())
+            data = wake_settings(config, args)
+        except BossError as exc:
+            parser.error(config.redact(exc.message) if config else exc.code + ": invalid boss config")
     for target, source in targets:
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.is_symlink():
@@ -157,21 +254,12 @@ def install(argv=None):
         print(f"installed: {target}")
     print("enable plugin (opt-in): hermes plugins enable boss")
     print("next: boss init")
+    if args.with_wake:
+        config.write(data)
+        print("configured wake: " + str(config.path))
+        print("\n".join(wake_instructions(data)))
     if args.with_cron:
-        if not shutil.which("hermes"):
-            parser.error("--with-cron needs hermes on PATH")
-        script = hermes_home() / "scripts/boss-poll-gate.sh"
-        # Carry explicit homes into cron, where the interactive shell env may be absent.
-        assignments = {k: v for k, v in os.environ.items() if k in ("BOSS_HOME", "XDG_CONFIG_HOME", "HERMES_HOME")}
-        assignments.setdefault("HERMES_HOME", str(hermes_home()))
-        invocation = ["env", *(f"{k}={v}" for k, v in assignments.items()), sys.executable,
-                      str(root / "bin/boss"), "poll", "--hermes-gate"]
-        atomic_write(script, "#!/bin/sh\nexec " + shlex.join(invocation) + "\n")
-        if wake_cron():
-            print("wake cron exists: boss-poll (unchanged)")
-        else:
-            subprocess.run(["hermes", "cron", "create", "*/5 * * * *", CRON_PROMPT,
-                            "--name", "boss-poll", "--script", script.name, "--deliver", "local"], check=True)
+        print("\n".join(install_cron()))
     return 0
 
 
