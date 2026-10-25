@@ -1,0 +1,11 @@
+......................................................................................warning: projects.repo.auto_merge is deprecated; use merge = "auto"
+.........................warning: projects.repo.auto_merge is deprecated; use merge = "auto"
+..warning: projects.repo.auto_merge is deprecated; use merge = "auto"
+warning: projects.repo.auto_merge is deprecated; use merge = "auto"
+warning: projects.repo.auto_merge is deprecated; use merge = "auto"
+warning: projects.repo.auto_merge is deprecated; use merge = "auto"
+.........................................................................
+----------------------------------------------------------------------
+Ran 186 tests in 27.006s
+
+OK

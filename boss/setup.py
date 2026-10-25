@@ -11,7 +11,7 @@ import subprocess
 import sys
 
 from .common import BossError, Redactor
-from .config import Config, boss_home, hermes_home
+from .config import Config, boss_home, hermes_home, literal
 from .state import atomic_write
 from .wake import CONSENT_KEY, CONSENT_LINE, target_configured
 
@@ -162,6 +162,9 @@ def doctor(boss):
                 socket.getaddrinfo(hostname, None)
                 return hostname
             check(f"host {name} SSH", resolve_ssh, f"configure {host['ssh']} in ~/.ssh/config and check DNS")
+    for level, text, fix in rule_findings(boss):
+        failures += level == "fail"
+        lines.append(f"{level}: {text}" + (f"; fix: {fix}" if fix else ""))
     paths = install_paths()
     check("plugin installed", lambda: (paths["plugins"] / "boss/plugin.yaml").is_file(), "./install.sh")
 
@@ -197,6 +200,62 @@ def doctor(boss):
           required=requested and target_configured(wake))
     check("wake cron", wake_cron, "./install.sh --with-cron; keep the Hermes gateway running", required=False)
     return lines, 1 if failures else 0
+
+
+def rule_findings(boss):
+    """Lint worker rules: unknown models on the live host, roles that break them, empty lists."""
+    config, findings, known, seen = boss.config, [], {}, set()
+    scopes = [None, *config.projects]
+    checked = False
+    for scope in scopes:
+        rules = config.project(scope).get("rules", {}) if scope else config.data.get("rules", {})
+        prefix = f"projects.{scope}.rules" if scope else "rules"
+        host = config.effective(scope)[0]["host"]
+        for key, allowed in rules.items():
+            checked = True
+            if not allowed:
+                findings.append(("warn", f"{prefix}.{key} is empty; every {key.split('_')[0]} spawn needs --override",
+                                 f"list allowed models or boss config unset {prefix}.{key}"))
+            for entry in allowed:
+                instance, model = entry.split(":", 1)
+                if not host:
+                    findings.append(("warn", f"{prefix}.{key}: cannot check {entry} without a host", "boss init"))
+                    continue
+                if (host, entry) not in known:
+                    try:
+                        catalog = boss.client(host).call("orchestrator_capabilities", search=model)
+                        known[host, entry] = any(p["providerInstanceId"] == instance and any(m["id"] == model for m in p["models"])
+                                                 for p in catalog["providers"])
+                    except BossError as exc:
+                        known[host, entry] = exc
+                result = known[host, entry]
+                if isinstance(result, BossError):
+                    findings.append(("optional", f"{prefix}.{key}: cannot check {entry} on host {host}: {result.message}",
+                                     f"boss host test {shlex.quote(host)}"))
+                elif not result:
+                    findings.append(("fail", f"{prefix}.{key}: {entry} is not in host {host}'s live T3 catalog",
+                                     "use providerInstanceId:model from orchestrator_capabilities"))
+        for role in config.roles(scope):
+            values, origins = config.effective(scope, {"worker": role})
+            where = f"role {role}" + (f" in project {scope}" if scope else "")
+            kinds = values.get("kinds")
+            if kinds is not None:
+                checked = True
+                if values["kind"] not in kinds and ("kinds", role, values["kind"], tuple(kinds)) not in seen:
+                    seen.add(("kinds", role, values["kind"], tuple(kinds)))
+                    findings.append(("fail", f"{where}: default kind {values['kind']} is not in kinds {literal(kinds)}",
+                                     f"set kind or kinds in {origins[('kinds',)]}"))
+            for kind in kinds if kinds is not None else [values["kind"]]:
+                allowed = values.get("rules", {}).get(kind + "_models")
+                model = values.get("model")
+                if allowed is None or not model or model in allowed or (role, model, kind, tuple(allowed)) in seen:
+                    continue
+                seen.add((role, model, kind, tuple(allowed)))
+                findings.append(("fail", f"{where}: model {model} breaks rules.{kind}_models {literal(allowed)}",
+                                 f"change {origins[('model',)]} or {origins[('rules', kind + '_models')]}"))
+    if checked and not any(level == "fail" for level, _, _ in findings):
+        findings.insert(0, ("ok", "worker rules", ""))
+    return findings
 
 
 def install_cron():

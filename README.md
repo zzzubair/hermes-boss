@@ -106,7 +106,7 @@ existing locations and formats.
 Effective settings come from built-in defaults, the user file, a project's
 settings, the selected role, and explicit CLI flags. Defaults are
 `delivery = "direct-PR"`, `merge = "approved"`, `kind = "ship"`,
-`no_mistakes = false`, with no default host or role.
+`no_mistakes = false`, with no default host, role or worker rules.
 Unknown keys and invalid types fail with the full key path, including settings
 for projects that are not currently being spawned.
 
@@ -203,6 +203,43 @@ Bare model IDs remain accepted on `spawn --model` when unambiguous. Stored
 the host's real model catalog, sends exact options, and verifies the returned
 selection. A mismatch requests an interruption and reports the task for review.
 
+## Worker rules
+
+Rules the captain sets once are enforced by `boss spawn`, not left to notes.
+Nothing is restricted until you add them.
+
+```toml
+[workers.astra]
+kind = "scout"
+kinds = ["scout"]          # astra may only run report-only scout tasks
+
+[rules]
+ship_models = ["claudeAgent:claude-opus-5-5"]
+scout_models = ["claudeAgent:claude-opus-5-5", "codex:gpt-6.1-sol"]
+
+[projects.my-project.rules]
+scout_models = ["codex:gpt-6.1-sol"]   # replaces only the global scout list here
+```
+
+`kinds` is a role field and merges like the other role fields. `ship_models`
+and `scout_models` list `providerInstanceId:model` entries; a project list
+replaces only the same key from `[rules]`. Spawn resolves the model through the
+live catalog first, so bare `--model` IDs, role models and T3 project defaults
+are all checked. With a list set, an unknown model (T3 picks its default) is
+refused too. An empty list refuses every spawn of that kind.
+
+A spawn that breaks a rule exits 2 before anything is written or launched,
+names each broken rule with its origin, and suggests a fix. When the captain
+explicitly allows it, add `--override "<captain's exact words>"`; the words and
+the broken rules are saved on the task under `override` and shown by
+`boss status <id>`. `--override` on a spawn that breaks no rule is a usage error.
+
+`config show --origin`, `project show` and `boss brief` (on stderr, so the
+preview still matches the sent brief) print the effective rules. Rules are
+never sent to workers. `boss doctor` checks rule models against each host's
+live catalog, flags roles whose own model or default kind breaks the rules,
+and warns about empty lists.
+
 ## Project policy and worker briefs
 
 `merge` is supervisor policy: `never` blocks `boss land`, `approved` requires
@@ -268,6 +305,8 @@ record a project steer. `--replaces` supersedes an earlier steer without
 rewriting its history. `spawn` requires a nonblank, single-line `--fits` when
 a project has a goal or active steers. It saves the explanation with the task.
 Boss does not ask an LLM to judge it; the captain resolves unclear choices.
+Spawn also refuses tasks that break the [worker rules](#worker-rules) unless
+`--override` carries the captain's exact words.
 
 ### Retracting a steer
 

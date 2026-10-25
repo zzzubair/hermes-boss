@@ -18,6 +18,9 @@ DEFAULTS = {"default_host": "", "delivery": "direct-PR", "merge": "approved",
 SETTINGS = {"host": str, "worker": str, "model": str, "effort": str, "kind": str,
             "delivery": str, "merge": str, "auto_merge": bool, "test_host": str,
             "no_mistakes": bool, "model_selection": dict}
+# Allow-lists of instance:model per task kind. Unset means no restriction.
+RULES = {"ship_models": list, "scout_models": list}
+ROLE = {**{k: SETTINGS[k] for k in ("host", "model", "effort", "kind")}, "kinds": list}
 
 
 def boss_home():
@@ -136,6 +139,11 @@ class Config:
                     self.fail(path, "must be one of " + ", ".join(choices[key]))
                 if key == "model" and not legacy_selection and (":" not in value or any(not p for p in value.split(":", 1))):
                     self.fail(path, "must be instance:model")
+                if key == "kinds" and any(item not in choices["kind"] for item in value):
+                    self.fail(path, "must list only " + ", ".join(choices["kind"]))
+                if key in RULES and any(type(item) is not str or ":" not in item or any(not p for p in item.split(":", 1))
+                                        for item in value):
+                    self.fail(path, "must list instance:model strings")
                 if key == "model_selection":
                     # Legacy explicit model selections remain readable.
                     fields(value, {"model": str, "instanceId": str, "options": dict}, path, legacy_selection=True)
@@ -153,7 +161,9 @@ class Config:
                 key = host.get("token_env", "T3_MCP_TOKEN")
                 self.redact.add(self.file_credentials.get(key))
                 self.redact.add(self.credentials.get(key))
-        fields(data, {"default_host": str, "default_worker": str, "hosts": dict, "projects": dict, "workers": dict, "wake": dict, **{k: v for k, v in SETTINGS.items() if k != "worker"}})
+        fields(data, {"default_host": str, "default_worker": str, "hosts": dict, "projects": dict, "workers": dict, "wake": dict,
+                      "rules": dict, **{k: v for k, v in SETTINGS.items() if k != "worker"}})
+        fields(data.get("rules", {}), RULES, "rules")
         wake = data.get("wake", {})
         fields(wake, {"enabled": bool, "interval_seconds": int, "origin": dict, "session_key": str}, "wake")
         if wake.get("interval_seconds", 300) <= 0:
@@ -190,15 +200,15 @@ class Config:
             if ssh and (not re.fullmatch(r"[A-Za-z0-9_@.:-]+", ssh) or ssh.startswith("-")):
                 self.fail(prefix + ".ssh", "invalid ssh destination")
         for name, worker in data.get("workers", {}).items():
-            fields(worker, {k: SETTINGS[k] for k in ("host", "model", "effort", "kind")}, "workers." + name)
+            fields(worker, ROLE, "workers." + name)
         for name, project in data.get("projects", {}).items():
             project_name(name)
-            fields(project, {**SETTINGS, "project_id": str, "repository": str, "workers": dict}, "projects." + name)
+            fields(project, {**SETTINGS, "project_id": str, "repository": str, "workers": dict, "rules": dict}, "projects." + name)
+            fields(project.get("rules", {}), RULES, f"projects.{name}.rules")
         hosts, workers = data.get("hosts", {}), data.get("workers", {})
-        role_schema = {k: SETTINGS[k] for k in ("host", "model", "effort", "kind")}
         for name, project in data.get("projects", {}).items():
             for role, settings in project.get("workers", {}).items():
-                fields(settings, role_schema, f"projects.{name}.workers.{role}")
+                fields(settings, ROLE, f"projects.{name}.workers.{role}")
         tables = [("", data), *(("workers." + k, v) for k, v in workers.items())]
         for name, project in data.get("projects", {}).items():
             tables.append(("projects." + name, project))
@@ -268,8 +278,8 @@ class Config:
             values.update(copy.deepcopy(layer))
         overrides = {k: v for k, v in (overrides or {}).items() if v is not None}
         apply(DEFAULTS, "built-in")
-        apply(self.normalized({k: v for k, v in self.data.items() if k not in ("hosts", "projects", "workers", "wake")}), str(self.path))
-        project = self.normalized({k: v for k, v in (self.project(name) if name else {}).items() if k != "workers"})
+        apply(self.normalized({k: v for k, v in self.data.items() if k not in ("hosts", "projects", "workers", "wake", "rules")}), str(self.path))
+        project = self.normalized({k: v for k, v in (self.project(name) if name else {}).items() if k not in ("workers", "rules")})
         apply(project, f"{self.path} [projects.{name}]")
         roles = self.roles(name)
         role = overrides.get("worker")
@@ -287,10 +297,33 @@ class Config:
                 apply(self.project(name).get("workers", {}).get(role, {}), f"{self.path} [projects.{name}.workers.{role}]")
             apply({"worker": role}, role_origin)
         apply(overrides, "CLI")
+        # Rules merge per key: a project list replaces only that kind's global list.
+        rules = {}
+        for layer, origin in ((self.data.get("rules", {}), f"{self.path} [rules]"),
+                              (self.project(name).get("rules", {}) if name else {}, f"{self.path} [projects.{name}.rules]")):
+            for key, allowed in layer.items():
+                rules[key] = list(allowed)
+                origins[("rules", key)] = origin
+        if rules:
+            values["rules"] = rules
         if not values.get("host"):
             values["host"] = values["default_host"]
             origins[("host",)] = origins[("default_host",)]
         return values, origins
+
+    def violations(self, values, origins, model):
+        """Deterministic captain rules for one spawn; model is instance:model, or None for T3's own default."""
+        found = []
+        kind, kinds = values["kind"], values.get("kinds")
+        if kinds is not None and kind not in kinds:
+            found.append(f"role {values['worker']} may run only {', '.join(kinds) or 'no'} tasks, not {kind} "
+                         f"(kinds from {origins[('kinds',)]})")
+        key = kind + "_models"
+        allowed = values.get("rules", {}).get(key)
+        if allowed is not None and model not in allowed:
+            found.append(f"{'model ' + model if model else 'T3 default model'} is not allowed for {kind} tasks; "
+                         f"rules.{key} = {literal(allowed)} (from {origins[('rules', key)]})")
+        return found
 
     def write(self, data):
         self.validate(data)
