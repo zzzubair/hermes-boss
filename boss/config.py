@@ -115,14 +115,14 @@ class Config:
         raise BossError("config", f"{key}: {message}", f"edit {self.path}", 1)
 
     def validate(self, data):
-        def fields(table, schema, prefix="", *, legacy_selection=False, project=None):
+        def fields(table, schema, prefix="", *, legacy_selection=False):
             if not isinstance(table, dict):
                 self.fail(prefix, "must be a table")
             for key, value in table.items():
                 path = prefix + "." + key if prefix else key
                 if key == "extra_rules":
                     raise BossError("config", f"{path}: extra_rules was removed",
-                                    f"move the lines into {self.home}/projects/{project or '<p>'}.md and remove {path} from {self.path}", 1)
+                                    f"move codebase instructions into the repo's AGENTS.md and remove {path} from {self.path}", 1)
                 if key not in schema:
                     self.fail(path, "unknown key")
                 expected = schema[key]
@@ -193,12 +193,12 @@ class Config:
             fields(worker, {k: SETTINGS[k] for k in ("host", "model", "effort", "kind")}, "workers." + name)
         for name, project in data.get("projects", {}).items():
             project_name(name)
-            fields(project, {**SETTINGS, "project_id": str, "repository": str, "workers": dict}, "projects." + name, project=name)
+            fields(project, {**SETTINGS, "project_id": str, "repository": str, "workers": dict}, "projects." + name)
         hosts, workers = data.get("hosts", {}), data.get("workers", {})
         role_schema = {k: SETTINGS[k] for k in ("host", "model", "effort", "kind")}
         for name, project in data.get("projects", {}).items():
             for role, settings in project.get("workers", {}).items():
-                fields(settings, role_schema, f"projects.{name}.workers.{role}", project=name)
+                fields(settings, role_schema, f"projects.{name}.workers.{role}")
         tables = [("", data), *(("workers." + k, v) for k, v in workers.items())]
         for name, project in data.get("projects", {}).items():
             tables.append(("projects." + name, project))

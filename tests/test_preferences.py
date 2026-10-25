@@ -142,7 +142,8 @@ class PreferenceTest(unittest.TestCase):
             meta = self.spawn()
         self.assertEqual(meta["project_source"], "registry + T3 lookup")
         message = (self.store.directory(meta["id"]) / "brief.md").read_text()
-        self.assertIn("no_mistakes: false", message)
+        self.assertFalse(meta["no_mistakes"])
+        self.assertNotIn("no_mistakes:", message)
 
     def test_composed_brief_order_and_sent_saved_identity(self):
         (self.home / "rules.md").write_text("## General\nGLOBAL_ONLY")
@@ -154,85 +155,52 @@ class PreferenceTest(unittest.TestCase):
         message = (self.store.directory(meta["id"]) / "brief.md").read_text()
         sent = next(a["message"] for n, a in self.fake.calls if n == "t3_thread_launch")
         self.assertEqual(message, sent)
-        sections = ["investigate this", "## Rules", "GLOBAL_ONLY", "NOTES_ONLY", "### Execution settings", "test_host: wsl",
-                    "no_mistakes: true", "### boss worker contract"]
+        sections = ["investigate this", "### boss worker contract"]
         offsets = [message.index(s) for s in sections]
         self.assertEqual(offsets, sorted(offsets))
+        for absent in ("GLOBAL_ONLY", "NOTES_ONLY", "## Rules", "Execution settings", "test_host:", "no_mistakes:"):
+            self.assertNotIn(absent, message)
         self.assertNotIn("win over", message)
         self.assertLessEqual(len(message), BRIEF_LIMIT)
 
-    def test_empty_layers_are_skipped(self):
+    def test_empty_notes_do_not_change_the_brief(self):
         (self.home / "rules.md").write_text("  \n")
         (self.home / "projects").mkdir()
         (self.home / "projects/repo.md").write_text("\n")
         meta = self.spawn()
         message = (self.store.directory(meta["id"]) / "brief.md").read_text()
-        self.assertEqual(message, "investigate this\n\n## Rules" + footer("ship", "direct-PR"))
+        self.assertEqual(message, "investigate this" + footer("ship", "direct-PR"))
         self.assertNotIn("## Project settings", message)
         self.assertNotIn("## Project notes", message)
 
-    def test_layer_limit_names_the_layer_before_any_launch_or_ledger(self):
-        (self.home / "projects").mkdir()
-        for label, path in (("global rules", self.home / "rules.md"), ("project notes", self.home / "projects/repo.md")):
-            path.write_text("x" * BRIEF_LIMIT)
-            code, output = self.cli("spawn", "repo", "--title", "T")
-            self.assertEqual(code, 1, output)
-            self.assertIn(label + " layer", output)
-            self.assertIn("115000", output)
-            path.unlink()
+    def test_composed_limit_refuses_before_any_launch_or_ledger(self):
         code, output = self.cli("spawn", "repo", "--title", "T", stdin="x" * BRIEF_LIMIT)
         self.assertEqual(code, 1, output)
-        self.assertIn("rules layer", output)
+        self.assertIn("worker contract layer", output)
         self.assertEqual(self.store.tasks(), [])
         self.assertFalse(self.fake.threads)
 
     def test_exact_composed_limit_and_one_over(self):
         contract = footer("ship", "direct-PR")
-        brief = "x" * (BRIEF_LIMIT - len(contract) - len("\n\n## Rules"))
-        composed = compose_brief(brief, self.home, "repo", {}, contract, self.redact)
+        brief = "x" * (BRIEF_LIMIT - len(contract))
+        composed = compose_brief(brief, self.home, "repo", contract, self.redact)
         self.assertEqual(len(composed), BRIEF_LIMIT)
         with self.assertRaises(BossError):
-            compose_brief(brief + "x", self.home, "repo", {}, contract, self.redact)
+            compose_brief(brief + "x", self.home, "repo", contract, self.redact)
 
     def test_limit_is_applied_after_redaction_expands_task_text(self):
         self.redact.add("short-secret")
         # A short credential can be smaller than its replacement marker.
         self.redact.add("xy")
         with self.assertRaises(BossError) as caught:
-            compose_brief("xy" * 20000, self.home, "repo", {}, footer("ship", "direct-PR"), self.redact)
+            compose_brief("xy" * 20000, self.home, "repo", footer("ship", "direct-PR"), self.redact)
         self.assertIn("task brief layer", caught.exception.message)
-
-    def test_oversized_rendered_settings_name_the_settings_layer(self):
-        with self.assertRaises(BossError) as caught:
-            compose_brief("task", self.home, "repo", {"test_host": "x" * BRIEF_LIMIT},
-                          footer("ship", "direct-PR"), self.redact)
-        self.assertIn("project settings layer", caught.exception.message)
-
-    def test_secret_in_rules_or_notes_refuses_without_echo_or_mutation(self):
-        (self.home / "projects").mkdir()
-        for label, path in (("global rules", self.home / "rules.md"), ("project notes", self.home / "projects/repo.md")):
-            path.write_text("Do something with " + TOKEN)
-            code, output = self.cli("spawn", "repo", "--title", "T")
-            self.assertEqual(code, 2, output)
-            self.assertIn(label + " layer contains a token", output)
-            self.assertNotIn(TOKEN, output)
-            path.unlink()
-        self.assertFalse(self.fake.threads)
-        self.assertEqual(self.store.tasks(), [])
-
-    def test_custom_token_variable_is_also_checked_in_layer_files(self):
-        config = self.home / "config.toml"
-        config.write_text(config.read_text().replace("T3_TEST_MCP_TOKEN", "AUTH_VALUE"))
-        (self.home / "rules.md").write_text(TOKEN)
-        with patch.dict(os.environ, {"AUTH_VALUE": TOKEN}):
-            code, output = self.cli("spawn", "repo", "--title", "T")
-        self.assertEqual(code, 2, output)
-        self.assertNotIn(TOKEN, output)
 
     def test_show_sources_and_list_markers(self):
         (self.home / "rules.md").write_text("global")
         (self.home / "projects").mkdir()
-        (self.home / "projects/repo.md").write_text("project")
+        notes = "## Testing\nSupervisor context\n```\nUnclosed fence is fine here.\n" + TOKEN
+        (self.home / "projects/repo.md").write_text(notes)
         self.fake.projects.append({**self.fake.projects[0], "id": "other", "title": "other"})
         code, output = self.cli("project", "list", "--host", "test")
         self.assertEqual(code, 0, output)
@@ -241,8 +209,10 @@ class PreferenceTest(unittest.TestCase):
         self.assertIn("other: other registry=false notes=false", output)
         shown = self.cli("project", "show", "repo")[1]
         self.assertIn("registry: " + str(self.home / "config.toml"), shown)
-        self.assertIn("rules: " + str(self.home / "rules.md"), shown)
+        self.assertNotIn("rules:", shown)
         self.assertIn("notes: " + str(self.home / "projects/repo.md"), shown)
+        self.assertIn("Supervisor notes (not sent to workers)\n" + notes.replace(TOKEN, "[REDACTED]"), shown)
+        self.assertNotIn(TOKEN, shown)
 
     def test_show_unlisted_project_and_defaults(self):
         self.unlisted()
@@ -250,7 +220,7 @@ class PreferenceTest(unittest.TestCase):
             code, shown = self.cli("project", "show", "repo")
         self.assertEqual(code, 0, shown)
         for text in ("source: T3 lookup", "auto_merge: false", "no_mistakes: false", "test_host: unset",
-                     "registry: absent", "rules: absent", "notes: absent"):
+                     "registry: absent", "notes: absent"):
             self.assertIn(text, shown)
 
     def test_project_add_appends_exact_prefix_and_refuses_duplicate(self):

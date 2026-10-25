@@ -62,8 +62,8 @@ For an existing worker, record the steer with `--task`, then send it.
 
 Use `boss goal` to show or replace the project goal. Before spawning, read it
 and `boss steer list`, then supply a one-line `--fits` explanation when either
-has content. The goal and active steers follow the compiled rules in the worker
-brief, inside the existing size and secret checks. `--fits` is saved on the
+has content. The goal and active steers are included in the worker brief,
+inside the existing size and secret checks. `--fits` is saved on the
 task. Reconcile unclear task choices with the captain.
 
 Use `--replaces` when the captain changes an earlier steer. History stays
@@ -132,9 +132,6 @@ change a live job without the captain's authority. The fallback gate calls no
 LLM, prints `{"wakeAgent": false}` when quiet/on error, and logs redacted errors
 under `logs/poll.log`. Never use `--no-agent` for a waking cron.
 
-Keep code conventions in the repository's AGENTS.md; keep supervisor
-preferences in boss.
-
 ## Portable settings and roles
 
 `HERMES_HOME` selects the Hermes profile, including credentials, plugins and
@@ -150,13 +147,16 @@ explicit model, effort, host and kind flags win. Read `project show` or
 unsupported live model options fail loudly. The resolved role is saved on the task.
 
 Keep policy in project settings: `merge`, `delivery`, `test_host`, and
-`no_mistakes`. Put written instructions in `rules.md` and `projects/<p>.md`.
-Boss replaces matching global headings with whole project sections, including
-nested headings; the preamble follows the same rule. Workers receive one Rules
-section without source or precedence notes. Use read-only `boss brief` to inspect
-the exact spawn brief with a task placeholder, or `--origin` for source files.
-`boss doctor` warns about empty/duplicate headings and pointless overrides;
-unparsable files fail. Removed config keys fail with migration hints.
-Workers always obey the worktree contract
+`no_mistakes`. These are supervisor preferences; put any relevant instructions
+in the task's brief. Workers always obey the worktree contract
 and never merge or deploy. `answer` accepts the exact request/question ID
 printed by status. Multi-question requests still need a complete answer object.
+
+## Writing briefs
+
+The supervisor writes each task's brief and resolves conflicting instructions.
+Keep codebase rules in the repo's `AGENTS.md` and supervisor notes in
+`projects/<p>.md`. Read notes with `boss project show <p>` under
+"Supervisor notes (not sent to workers)". Boss never sends these notes to workers.
+Use read-only `boss brief <p> [--worker ROLE]` to preview the task placeholder,
+goal, active steers and fixed contract; `--origin` annotates context sources.

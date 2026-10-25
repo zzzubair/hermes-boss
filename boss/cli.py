@@ -72,7 +72,7 @@ def parser():
     spawn.add_argument("--model", help="model id or providerInstanceId:model")
     spawn.add_argument("--effort", help="exact effort value supported by that model")
     spawn.add_argument("--fits", metavar="TEXT", help="one line reconciling this task with the project goal and active steers")
-    brief = commands.add_parser("brief", help="print the compiled worker brief with a <task> placeholder; read-only")
+    brief = commands.add_parser("brief", help="preview worker context and contract with a <task> placeholder; read-only")
     brief.add_argument("project")
     brief.add_argument("--worker", help="named worker preset")
     brief.add_argument("--origin", action="store_true", help="annotate sections with their source files")
@@ -107,8 +107,8 @@ def parser():
     project_add.add_argument("--merge", choices=("never", "approved", "auto"))
     project_add.add_argument("--worker")
     project_add.add_argument("--auto-merge", action="store_true", default=None, help="supervisor preference only; workers never merge")
-    project_add.add_argument("--test-host", help="preferred host for tests; rendered in briefs")
-    project_add.add_argument("--no-mistakes", action="store_true", default=None, help="render no_mistakes: true in briefs")
+    project_add.add_argument("--test-host", help="preferred host for tests; supervisor reference")
+    project_add.add_argument("--no-mistakes", action="store_true", default=None, help="save no_mistakes: true for the supervisor")
     project_show = projects.add_parser("show", help="show effective settings and preference sources")
     project_show.add_argument("name")
     goal = commands.add_parser("goal", help="show or set a project's goal")
@@ -284,7 +284,6 @@ def dispatch(args, boss):
                              test_host=args.test_host, no_mistakes=args.no_mistakes)
             return [f"{compact(args.name)}: registered", f"next: boss project show {compact(args.name)}"], 0
         settings, _, source = boss.resolve_project(args.name)
-        rules = boss.store.home / "rules.md"
         notes = notes_path(boss.store.home, args.name)
         lines = [f"project: {compact(args.name)}", f"source: {source}",
                  f"host: {settings['host']}", f"project_id: {settings['project_id']}",
@@ -299,12 +298,13 @@ def dispatch(args, boss):
             if key in effective:
                 lines.append(f"{key}: {literal(effective[key])} origin={origins[(key,)]}")
         lines.append(f"registry: {boss.config.path}" if args.name in boss.config.projects else "registry: absent")
-        lines.append(f"rules: {rules}" if rules.is_file() else "rules: absent")
         lines.append(f"notes: {notes}" if notes.is_file() else "notes: absent")
         goal = boss.store.goal(args.name)
         steers = boss.store.steers(args.name)
         lines.append(f"goal: {goal_path(boss.store.home, args.name)}" if goal else "goal: absent")
         lines.append(f"active_steers: {len(steers)}")
+        if notes.is_file():
+            lines.extend(["", "Supervisor notes (not sent to workers)", notes.read_text(encoding="utf-8"), ""])
         return lines + [f'next: boss spawn {compact(args.name)} --title "<task>" --brief-file <file>'], 0
     if command == "spawn":
         if args.brief_file and args.brief_file != "-":

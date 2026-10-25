@@ -100,7 +100,7 @@ The config file is selected in this order:
 
 A fresh install writes the XDG file. Config files are selected, not combined.
 The ledger stays at `$BOSS_HOME` or `~/.boss`, independently of XDG config.
-Tasks, decisions, rules, project notes, goals and append-only steers keep their
+Tasks, decisions, project notes, goals and append-only steers keep their
 existing locations and formats.
 
 Effective settings come from built-in defaults, the user file, a project's
@@ -215,28 +215,21 @@ with a warning. Supplying both keys in the same block is an error.
 `delivery` is `direct-PR` or `local-only`. Direct-PR ship workers commit, push
 and open exactly one PR against the origin default branch. Local-only workers
 commit locally and return a `BOSS_REPORT:`. Scouts investigate and return a
-report with a clean worktree. `test_host` and `no_mistakes` are worker instructions.
+report with a clean worktree. `test_host` and `no_mistakes` are supervisor
+preferences; include any relevant instructions in the task's brief.
 
-Boss compiles `$BOSS_HOME/rules.md` and `projects/<name>.md` before dispatch.
-A project `## Testing` replaces the entire global `## Testing`, including
-nested headings. Other sections keep global order, followed by project-only
-sections. Text before the first heading is a preamble with the same replacement
-rule. Heading names are case-sensitive. ATX (`## Heading`) and Setext headings
-are supported; headings inside fenced code are literal text.
+## Writing briefs
 
-Workers receive task text, one `## Rules` section with the compiled instructions,
-execution settings and worker contract, then the goal and active steers. Rules
-headings become subsections. Workers receive no source or precedence notes.
-The contract always applies. The composed brief has a 115,000-character limit;
-secret-bearing rules, notes, goals and steers are refused, even if replaced.
+The supervisor writes each task's brief and resolves conflicting instructions.
+Keep codebase rules in the repo's `AGENTS.md`. Keep supervisor notes in
+`$BOSS_HOME/projects/<p>.md`; `boss project show <p>` prints them under
+"Supervisor notes (not sent to workers)". Boss never sends these notes to workers.
 
-`boss brief <project> [--worker ROLE]` prints that exact brief with `<task>` in
-place of the task text. `--origin` annotates sections with their source files
-for inspection. It writes nothing and needs no T3 connection. `boss doctor`
-warns about empty or duplicate headings and identical project overrides.
-Invalid UTF-8, NUL characters and unclosed code fences fail the check.
-Configs containing the removed `extra_rules` key are refused with a `next:` hint
-to move their lines into `projects/<p>.md` and remove the key.
+`boss brief <project> [--worker ROLE]` previews spawn's message with `<task>` in
+place of the task text, followed by the goal, active steers and fixed contract.
+`--origin` annotates context sources. The preview writes nothing and needs no T3
+connection. The composed brief has a 115,000-character limit; secret-bearing
+goals and steers are refused, and task text is redacted.
 
 ## Commands and guards
 

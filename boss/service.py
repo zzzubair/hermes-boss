@@ -20,6 +20,7 @@ def footer(kind, delivery, *, origin=False):
         "Stay on the assigned branch. Never rename it or switch to another branch.",
         "Commit as the repository's configured Git user. Never change Git identity or add AI co-author trailers or agent credit.",
         "Never merge. Never deploy. Report through this thread to boss.",
+        "Ask questions through T3 input requests.",
     ]
     if kind == "scout":
         rules.append("Scout: investigate and write a report. Do not open a PR. Leave the worktree clean. "
@@ -170,13 +171,11 @@ class Boss:
     def worker_brief(self, name, brief="<task>", *, worker=None, settings=None, goal=None, steers=None, origin=False):
         if settings is None:
             settings, _ = self.config.effective(name, {"worker": worker})
-        configured = {k: v for k, v in settings.items() if k == "test_host" or
-                      (k == "no_mistakes" and (k in self.config.data or k in self.config.project(name)))}
-        return compose_brief(brief, self.store.home, name, configured,
+        return compose_brief(brief, self.store.home, name,
                              footer(settings["kind"], settings["delivery"], origin=origin), self.redact,
                              goal=self.store.goal(name) if goal is None else goal,
                              steers=self.store.steers(name) if steers is None else steers,
-                             origin=origin, settings_source=self.config.path)
+                             origin=origin)
 
     def spawn(self, project_name, title, brief, kind=None, host=None, model=None, effort=None, fits=None, worker=None):
         require_text(title, "title", 300)

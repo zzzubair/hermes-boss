@@ -353,10 +353,12 @@ class SteeringTest(unittest.TestCase):
         message = (directory / "brief.md").read_text()
         sent = next(a["message"] for n, a in self.fake.calls if n == "t3_thread_launch")
         self.assertEqual(message, sent)
-        sections = ["investigate this", "## Rules", "NOTES_ONLY", "### Execution settings", "### boss worker contract",
-                    "## Project goal\nMobile-first app", "## Captain steers", active + ": No PostHog"]
+        sections = ["investigate this", "## Project goal\nMobile-first app", "## Captain steers",
+                    active + ": No PostHog", "### boss worker contract"]
         offsets = [message.index(section) for section in sections]
         self.assertEqual(offsets, sorted(offsets))
+        for absent in ("GLOBAL_ONLY", "NOTES_ONLY", "## Rules", "Execution settings", "test_host:", "no_mistakes:"):
+            self.assertNotIn(absent, message)
         self.assertNotIn("Use PostHog", message)
         self.assertIn("Never merge. Never deploy.", message)
         # Later edits affect future workers, leaving the dispatched brief intact.
@@ -404,12 +406,12 @@ class SteeringTest(unittest.TestCase):
     def test_exact_composed_limit_includes_steering_sections(self):
         kwargs = {"goal": "Goal", "steers": [{"id": "s1", "text": "Steer"}]}
         contract = footer("ship", "direct-PR")
-        original = compose_brief("x", self.home, "repo", {}, contract, self.redact, **kwargs)
+        original = compose_brief("x", self.home, "repo", contract, self.redact, **kwargs)
         brief = "x" * (BRIEF_LIMIT - len(original) + 1)
-        message = compose_brief(brief, self.home, "repo", {}, contract, self.redact, **kwargs)
+        message = compose_brief(brief, self.home, "repo", contract, self.redact, **kwargs)
         self.assertEqual(len(message), BRIEF_LIMIT)
         with self.assertRaises(BossError):
-            compose_brief(brief + "x", self.home, "repo", {}, contract, self.redact, **kwargs)
+            compose_brief(brief + "x", self.home, "repo", contract, self.redact, **kwargs)
 
     def test_hand_edited_context_secrets_refuse_with_or_without_fits(self):
         self.cli("goal", "repo", "Safe goal")
