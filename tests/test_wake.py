@@ -185,14 +185,27 @@ class WakeTest(HermeticTestCase):
             start.assert_not_called()
 
         self.ctx._manager._cli_ref = None
-        with patch.dict(os.environ, {"_HERMES_GATEWAY": "1"}), \
-                patch("boss.wake.start_gateway_wake") as start:
-            plugin.register(self.ctx)
-            start.assert_not_called()
         with patch.dict(sys.modules, {"gateway.run": SimpleNamespace()}), \
                 patch("boss.wake.start_gateway_wake") as start:
             plugin.register(self.ctx)
             start.assert_not_called()
+
+    def test_gateway_marker_starts_wake_before_gateway_run_is_imported(self):
+        # Real Hermes loads plugins before importing gateway.run (regression: wake never ran).
+        modules = {k: v for k, v in sys.modules.items() if k != "gateway.run"}
+        with patch.dict(os.environ, {"_HERMES_GATEWAY": "1"}), patch.dict(sys.modules, modules, clear=True), \
+                patch("boss.wake.start_gateway_wake") as start:
+            plugin.register(self.ctx)
+            start.assert_called_once_with(self.ctx)
+
+    def test_armed_tick_writes_heartbeat_and_unarmed_does_not(self):
+        heartbeat = self.home / "wake-heartbeat"
+        self.ctx._manager.has_gateway_message_injector = False
+        self.tick("")
+        self.assertFalse(heartbeat.exists())
+        self.ctx._manager.has_gateway_message_injector = True
+        self.tick("")
+        self.assertIn("armed", heartbeat.read_text())
 
     def test_gateway_as_python_module_is_recognized(self):
         with patch.dict(os.environ, {"_HERMES_GATEWAY": "1"}), \

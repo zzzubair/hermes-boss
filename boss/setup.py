@@ -1,5 +1,6 @@
 """Portable first-run setup and read-only environment checks."""
 import copy
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -194,6 +195,16 @@ def doctor(boss):
           "add " + CONSENT_LINE + " in the profile's config.yaml", required=requested)
     check("single wake source", lambda: not (requested and target_configured(wake) and wake_cron()),
           "pause/remove the boss-wake or boss-poll cron manually, or set wake.enabled false")
+    def wake_alive():
+        from .wake import HEARTBEAT
+        text = (boss.config.home / HEARTBEAT).read_text().split()
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(text[0])).total_seconds()
+        limit = 2 * wake.get("interval_seconds", 300) + 60
+        if age > limit:
+            raise ValueError(f"last armed poll {int(age)}s ago (limit {limit}s)")
+        return True
+    check("wake loop alive", wake_alive, "restart the Hermes gateway; then rerun boss doctor",
+          required=requested and target_configured(wake))
     check("wake cron", wake_cron, "./install.sh --with-cron; keep the Hermes gateway running", required=False)
     return lines, 1 if failures else 0
 
