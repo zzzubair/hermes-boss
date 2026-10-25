@@ -353,9 +353,8 @@ class SteeringTest(unittest.TestCase):
         message = (directory / "brief.md").read_text()
         sent = next(a["message"] for n, a in self.fake.calls if n == "t3_thread_launch")
         self.assertEqual(message, sent)
-        sections = ["investigate this", "## Rules", "## Project settings", "## Project notes",
-                    "## Project goal\nMobile-first app", "## Captain steers", active + ": No PostHog",
-                    "## boss worker contract"]
+        sections = ["investigate this", "## Rules", "NOTES_ONLY", "### Execution settings", "### boss worker contract",
+                    "## Project goal\nMobile-first app", "## Captain steers", active + ": No PostHog"]
         offsets = [message.index(section) for section in sections]
         self.assertEqual(offsets, sorted(offsets))
         self.assertNotIn("Use PostHog", message)

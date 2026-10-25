@@ -23,6 +23,8 @@ boss host test <host>
 boss config show --origin --project <name>
 boss project list
 boss project show <name>
+boss brief <project> --origin
+boss brief <project> --worker <role>
 boss project add <name> --host <host>
 boss goal <project> "<project goal>"
 boss goal <project>
@@ -60,9 +62,9 @@ For an existing worker, record the steer with `--task`, then send it.
 
 Use `boss goal` to show or replace the project goal. Before spawning, read it
 and `boss steer list`, then supply a one-line `--fits` explanation when either
-has content. The goal and active steers enter the worker brief after project
-notes, inside the existing size and secret checks. `--fits` is saved on the
-task. Boss does not judge conflicts; resolve unclear choices with the captain.
+has content. The goal and active steers follow the compiled rules in the worker
+brief, inside the existing size and secret checks. `--fits` is saved on the
+task. Reconcile unclear task choices with the captain.
 
 Use `--replaces` when the captain changes an earlier steer. History stays
 append-only; `--all` shows superseded records. Goals and steers are local and
@@ -147,7 +149,14 @@ explicit model, effort, host and kind flags win. Read `project show` or
 `config show --origin --project <name>` before dispatching. Unknown roles and
 unsupported live model options fail loudly. The resolved role is saved on the task.
 
-Keep policy in project settings: `merge`, `delivery`, `test_host`,
-`no_mistakes`, and `extra_rules`. Workers always obey the worktree contract
+Keep policy in project settings: `merge`, `delivery`, `test_host`, and
+`no_mistakes`. Put written instructions in `rules.md` and `projects/<p>.md`.
+Boss replaces matching global headings with whole project sections, including
+nested headings; the preamble follows the same rule. Workers receive one Rules
+section without source or precedence notes. Use read-only `boss brief` to inspect
+the exact spawn brief with a task placeholder, or `--origin` for source files.
+`boss doctor` warns about empty/duplicate headings and pointless overrides;
+unparsable files fail. Removed config keys fail with migration hints.
+Workers always obey the worktree contract
 and never merge or deploy. `answer` accepts the exact request/question ID
 printed by status. Multi-question requests still need a complete answer object.

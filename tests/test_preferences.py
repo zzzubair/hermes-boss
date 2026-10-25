@@ -145,7 +145,7 @@ class PreferenceTest(unittest.TestCase):
         self.assertIn("no_mistakes: false", message)
 
     def test_composed_brief_order_and_sent_saved_identity(self):
-        (self.home / "rules.md").write_text("GLOBAL_ONLY")
+        (self.home / "rules.md").write_text("## General\nGLOBAL_ONLY")
         (self.home / "projects").mkdir()
         (self.home / "projects/repo.md").write_text("NOTES_ONLY")
         with (self.home / "config.toml").open("a") as f:
@@ -154,11 +154,11 @@ class PreferenceTest(unittest.TestCase):
         message = (self.store.directory(meta["id"]) / "brief.md").read_text()
         sent = next(a["message"] for n, a in self.fake.calls if n == "t3_thread_launch")
         self.assertEqual(message, sent)
-        sections = ["investigate this", "## Rules", "GLOBAL_ONLY", "## Project settings", "test_host: wsl",
-                    "no_mistakes: true", "## Project notes", "NOTES_ONLY", "## boss worker contract"]
+        sections = ["investigate this", "## Rules", "GLOBAL_ONLY", "NOTES_ONLY", "### Execution settings", "test_host: wsl",
+                    "no_mistakes: true", "### boss worker contract"]
         offsets = [message.index(s) for s in sections]
         self.assertEqual(offsets, sorted(offsets))
-        self.assertIn("Project settings and project notes win over global rules", message)
+        self.assertNotIn("win over", message)
         self.assertLessEqual(len(message), BRIEF_LIMIT)
 
     def test_empty_layers_are_skipped(self):
@@ -167,8 +167,7 @@ class PreferenceTest(unittest.TestCase):
         (self.home / "projects/repo.md").write_text("\n")
         meta = self.spawn()
         message = (self.store.directory(meta["id"]) / "brief.md").read_text()
-        self.assertEqual(message, "investigate this" + footer("ship", "direct-PR"))
-        self.assertNotIn("## Rules", message)
+        self.assertEqual(message, "investigate this\n\n## Rules" + footer("ship", "direct-PR"))
         self.assertNotIn("## Project settings", message)
         self.assertNotIn("## Project notes", message)
 
@@ -183,13 +182,13 @@ class PreferenceTest(unittest.TestCase):
             path.unlink()
         code, output = self.cli("spawn", "repo", "--title", "T", stdin="x" * BRIEF_LIMIT)
         self.assertEqual(code, 1, output)
-        self.assertIn("task brief layer", output)
+        self.assertIn("rules layer", output)
         self.assertEqual(self.store.tasks(), [])
         self.assertFalse(self.fake.threads)
 
     def test_exact_composed_limit_and_one_over(self):
         contract = footer("ship", "direct-PR")
-        brief = "x" * (BRIEF_LIMIT - len(contract))
+        brief = "x" * (BRIEF_LIMIT - len(contract) - len("\n\n## Rules"))
         composed = compose_brief(brief, self.home, "repo", {}, contract, self.redact)
         self.assertEqual(len(composed), BRIEF_LIMIT)
         with self.assertRaises(BossError):
