@@ -494,8 +494,8 @@ python3 scripts/check_ambient.py
 python3 scripts/check_wake.py
 ```
 
-GitHub Actions runs the unittest suite on Ubuntu and macOS with Python 3.12
-and 3.13, and records a fresh-install transcript in each job's logs. The fresh
+CI is Linux-only, using Ubuntu with Python 3.12 and 3.13.
+Each job records a fresh-install transcript in its logs. The fresh
 install check uses a temporary HOME, a stdlib HTTP MCP server and fake
 GitHub/Hermes commands. It runs the real installer and separate CLI processes,
 including init, doctor, a fake role spawn, and wake/quiet/error gate transitions.
