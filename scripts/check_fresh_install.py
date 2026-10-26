@@ -113,7 +113,7 @@ def run(transcript=print):
             assert "Never merge. Never deploy." in launch["message"]
             # Nothing polls: there is no poll command, and boss is inactive until a session owns it.
             assert "invalid choice: 'poll'" in command([boss, "poll"], expected=1, label="boss poll (removed)")
-            env["HERMES_SESSION_KEY"] = "agent:main:discord:dm:captain"
+            env["HERMES_SESSION_KEY"] = "agent:main:discord:dm:owner"
             command([boss, "send", task_id, "hello"], expected=2, label="boss send (Hermes session, boss not open; refused)")
             command([boss, "own", "--label", "Discord DM"], label="boss own --label 'Discord DM'")
             command([boss, "own", "status"], label="boss own status")

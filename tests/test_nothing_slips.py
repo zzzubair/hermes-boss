@@ -13,7 +13,7 @@ from plugin import DEAF, on_pre_llm_call
 from tests import test_boss as harness
 
 
-OWNER = "agent:captain"
+OWNER = "agent:owner"
 
 
 class NothingSlipsTest(unittest.TestCase):
@@ -116,7 +116,7 @@ class NothingSlipsTest(unittest.TestCase):
         # Someone else's session, or a subagent of the owner, never gets it.
         self.assertNotIn(DEAF, (on_pre_llm_call(session_id="agent:other", user_message="boss?") or {}).get("context", ""))
         self.assertIsNone(on_pre_llm_call(session_id="child", parent_session_id=OWNER, user_message="hi"))
-        # It is the only line: open items never ride on the captain's own message.
+        # It is the only line: open items never ride on the person's own message.
         self.completed(meta, "BOSS: done: shipped")
         self.fleet()
         self.assertEqual(on_pre_llm_call(session_id=OWNER, user_message="hi"), {"context": DEAF})
@@ -139,7 +139,7 @@ class NothingSlipsTest(unittest.TestCase):
         finally:
             os.close(probe)
 
-    def test_away_never_rides_on_the_captains_message(self):
+    def test_away_never_rides_on_the_persons_message(self):
         self.own()
         self.spawn()
         with patch.dict(os.environ, {"HERMES_SESSION_KEY": OWNER}):

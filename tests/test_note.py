@@ -43,7 +43,7 @@ class NoteTest(HermeticTestCase):
         return Inbox(self.home).take(Store(self.home, self.redact).load, "watch", "Hermes app")
 
     def notes(self):
-        path = self.home / "captain.jsonl"
+        path = self.home / "user.jsonl"
         return [r for r in map(json.loads, path.read_text().splitlines()) if r["event"] == "note"] if path.exists() else []
 
     def test_a_session_that_does_not_own_boss_hands_the_owner_a_note(self):

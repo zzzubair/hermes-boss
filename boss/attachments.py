@@ -1,4 +1,4 @@
-"""Captain images for workers: checked here, uploaded to the worker's T3 host, attached by id."""
+"""Images for workers: checked here, uploaded to the worker's T3 host, attached by id."""
 from pathlib import Path
 
 from .common import BossError

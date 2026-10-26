@@ -268,7 +268,7 @@ class WakeTest(HermeticTestCase):
         return [r for r in Inbox(self.home).records() if r["event"] == event]
 
     def test_pushed_event_reaches_owner_session_once(self):
-        self.own("agent:captain", "Discord DM")
+        self.own("agent:owner", "Discord DM")
         ctx = Context(self.home / "profile")
         self.listen(ctx)
         self.assertEqual(self.push.subscriptions[0]["tag"], "orchestration.subscribeShell")
@@ -282,7 +282,7 @@ class WakeTest(HermeticTestCase):
         self.assertEqual(self.reads(), reads + 1)
         self.assertEqual(len(ctx.messages), 1)
         content, target = ctx.messages[0]
-        self.assertEqual(target, {"role": "user", "session_key": "agent:captain"})
+        self.assertEqual(target, {"role": "user", "session_key": "agent:owner"})
         self.assertEqual(content, f"[boss inbox]\nFix thing: finished: three callers found\n{NOTE}")
         self.assertNotIn(self.task["id"], content)
         # T3 pushes the same completion several times and re-snapshots; still one wake, no re-read.
@@ -299,7 +299,7 @@ class WakeTest(HermeticTestCase):
         self.assertEqual([r["via"] for r in self.inbox_log("acked")], ["inject", "inject"])
 
     def test_failed_read_is_logged_and_the_next_push_reads_again(self):
-        self.own("agent:captain", "Discord DM")
+        self.own("agent:owner", "Discord DM")
         ctx = Context(self.home / "profile")
         self.listen(ctx)
         self.fake.failure = "t3_thread_read"
@@ -319,14 +319,14 @@ class WakeTest(HermeticTestCase):
         self.send(updated(self.state("failed")))
         self.assertEqual(len(self.held()), 1)
         self.assertEqual(ctx.messages, [])
-        self.own("agent:captain", "Hermes app")  # claiming pokes the listener
+        self.own("agent:owner", "Hermes app")  # claiming pokes the listener
         self.assertEqual(len(ctx.messages), 1)
-        self.assertEqual(ctx.messages[0][1]["session_key"], "agent:captain")
+        self.assertEqual(ctx.messages[0][1]["session_key"], "agent:owner")
         self.assertIn("failed", ctx.messages[0][0])
         self.assertEqual(self.held(), [])
 
     def test_refused_injection_is_held_then_delivered_when_owner_returns_or_new_owner_claims(self):
-        self.own("agent:captain", "Discord DM")
+        self.own("agent:owner", "Discord DM")
         ctx = Context(self.home / "profile", accepted=False)
         self.listen(ctx)
         self.send(updated(self.state("completed")))
@@ -350,42 +350,42 @@ class WakeTest(HermeticTestCase):
         last = json.loads((self.home / "wake-last.json").read_text())
         self.assertEqual((last["owner"], last["result"]), ("Telegram DM", "delivered"))
 
-    def test_owner_turn_start_adds_nothing_to_the_captains_message(self):
-        # Hermes shows turn-start context inside the captain's own bubble: the inbox waits for boss watch.
-        self.own("agent:captain", "Hermes CLI")
+    def test_owner_turn_start_adds_nothing_to_the_persons_message(self):
+        # Hermes shows turn-start context inside the person's own bubble: the inbox waits for boss watch.
+        self.own("agent:owner", "Hermes CLI")
         ctx = Context(self.home / "profile", accepted=False)
         listener = self.listen(ctx)
         self.send(updated(self.state("completed")))
         self.assertEqual(len(ctx.messages), 1)
         hook = plugin.turn_hook(Context(self.home / "profile"))
         with patch("boss.wake.start_wake", return_value=listener):
-            self.assertIsNone(hook(session_id="agent:captain", user_message="hi"))
+            self.assertIsNone(hook(session_id="agent:owner", user_message="hi"))
             self.assertTrue(listener.reached("pokes", self.poked + 1, WAIT))  # turn start still sweeps
-            self.assertIsNone(hook(session_id="agent:captain", user_message="again"))
+            self.assertIsNone(hook(session_id="agent:owner", user_message="again"))
             self.assertTrue(listener.reached("pokes", self.poked + 2, WAIT))
             self.assertTrue(plugin_busy(self.home))  # the owner-turn bookkeeping still runs
-            with patch.dict(os.environ, {"HERMES_SESSION_KEY": "agent:captain"}):
-                self.assertIsNone(hook(session_id="child", parent_session_id="agent:captain", user_message="sub"))
+            with patch.dict(os.environ, {"HERMES_SESSION_KEY": "agent:owner"}):
+                self.assertIsNone(hook(session_id="child", parent_session_id="agent:owner", user_message="sub"))
         self.assertEqual(len(ctx.messages), 1)  # the owner's turn is running: the listener never injects into it
         self.assertEqual(self.inbox_log("acked"), [])
         self.assertEqual(len(self.held()), 1)
 
     def test_idle_injection_is_off_by_default(self):
-        # An injected message shows as if the captain sent it, so only boss watch delivers by default.
+        # An injected message shows as if you sent it, so only boss watch delivers by default.
         self.inject = False
-        self.own("agent:captain", "Hermes app")
+        self.own("agent:owner", "Hermes app")
         ctx = Context(self.home / "profile")
         self.listen(ctx)
         self.completed(self.task, "BOSS: done: shipped")
         self.send(updated(self.state("completed")))
-        with patch.dict(os.environ, {"HERMES_SESSION_KEY": "agent:captain"}):
+        with patch.dict(os.environ, {"HERMES_SESSION_KEY": "agent:owner"}):
             self.cli("away", "lunch")  # pokes the listener too
         self.assertEqual(ctx.messages, [])
         self.assertEqual(self.inbox_log("acked"), [])
-        with patch.dict(os.environ, {"HERMES_SESSION_KEY": "agent:captain"}):
+        with patch.dict(os.environ, {"HERMES_SESSION_KEY": "agent:owner"}):
             code, output = self.cli("watch")
         self.assertEqual(code, 0, output)
-        self.assertIn("Fix thing: finished: shipped\nCaptain went away at ", output)
+        self.assertIn("Fix thing: finished: shipped\nAway mode on at ", output)
         self.assertEqual([r["via"] for r in self.inbox_log("acked")], ["watch"])
 
     def watching(self):
@@ -398,7 +398,7 @@ class WakeTest(HermeticTestCase):
         """Start the owner's top-level turn through the real pre_llm_call hook; returns its context result."""
         hook = plugin.turn_hook(Context(self.home / "profile"))
         with patch("boss.wake.start_wake", return_value=listener), \
-                patch.dict(os.environ, {"HERMES_SESSION_KEY": "agent:captain"}):
+                patch.dict(os.environ, {"HERMES_SESSION_KEY": "agent:owner"}):
             result = hook(session_id=session, task_id="t", turn_id="turn-1", user_message="hi", parent_session_id="")
         # The owner's turn start pokes the listener to sweep; wait until that is done.
         self.poked += 1
@@ -407,7 +407,7 @@ class WakeTest(HermeticTestCase):
 
     def tool(self, session="sess-1", result='{"output": "ok"}'):
         """One tool result through transform_tool_result, with the keywords Hermes passes."""
-        with patch.dict(os.environ, {"HERMES_SESSION_KEY": "agent:captain"}):
+        with patch.dict(os.environ, {"HERMES_SESSION_KEY": "agent:owner"}):
             return plugin.on_tool_result(tool_name="terminal", args={}, result=result, session_id=session, task_id="t",
                                          tool_call_id="call-1", turn_id="turn-1", api_request_id="", duration_ms=3,
                                          status="ok", error_type=None, error_message=None)
@@ -418,7 +418,7 @@ class WakeTest(HermeticTestCase):
         self.assertTrue(self.listener.reached("pokes", self.poked, WAIT))
 
     def test_worker_finishing_mid_turn_is_seen_in_the_same_turn(self):
-        self.own("agent:captain", "Hermes app")
+        self.own("agent:owner", "Hermes app")
         self.watching()
         ctx = Context(self.home / "profile")
         listener = self.listen(ctx)
@@ -439,7 +439,7 @@ class WakeTest(HermeticTestCase):
         self.assertEqual([r["via"] for r in self.inbox_log("acked")], ["tool"])
 
     def test_worker_finishing_after_the_last_tool_call_is_injected_once_the_turn_ends(self):
-        self.own("agent:captain", "Hermes app")
+        self.own("agent:owner", "Hermes app")
         ctx = Context(self.home / "profile")
         listener = self.listen(ctx)
         self.owner_turn(listener)
@@ -451,16 +451,16 @@ class WakeTest(HermeticTestCase):
         self.assertTrue(plugin_busy(self.home))
         self.turn_end(session_id="sess-1", completed=True)
         self.assertEqual(ctx.messages, [(f"[boss inbox]\nFix thing: blocked: no GitHub token on this host\n{NOTE}",
-                                         {"role": "user", "session_key": "agent:captain"})])
+                                         {"role": "user", "session_key": "agent:owner"})])
         self.assertEqual([r["via"] for r in self.inbox_log("acked")], ["inject"])
         # A gateway /stop ends the turn the same way (agent_loop_stopped names the session key).
         self.owner_turn(listener)
         self.assertTrue(plugin_busy(self.home))
-        self.turn_end(session_key="agent:captain", platform="discord", reason="stop")
+        self.turn_end(session_key="agent:owner", platform="discord", reason="stop")
         self.assertFalse(plugin_busy(self.home))
 
     def test_replied_answered_and_merged_items_are_dropped_not_delivered(self):
-        self.own("agent:captain", "Hermes app")
+        self.own("agent:owner", "Hermes app")
         ctx = Context(self.home / "profile", accepted=False)
         self.listen(ctx)
         # Already replied to: boss send after the event arrived handles it. Sends are marked [boss].
@@ -474,7 +474,7 @@ class WakeTest(HermeticTestCase):
         self.send(updated(self.state("waiting", run="run-2", request={"id": "req-1", "kind": "user-input"}), 2))
         self.assertEqual(self.cli("answer", self.task["id"], "req-1", "REST")[0], 0)
         ctx.accepted = True
-        self.own("agent:captain", "Hermes app")  # re-opening pokes the listener
+        self.own("agent:owner", "Hermes app")  # re-opening pokes the listener
         self.assertEqual(len(ctx.messages), 2)  # only the two refused attempts; nothing stale went out
         self.assertEqual(sorted(r["reason"] for r in self.inbox_log("dropped")),
                          ["already handled: boss replied to or reviewed the worker after this", "question already answered"])
@@ -487,13 +487,13 @@ class WakeTest(HermeticTestCase):
         self.gh.pr["state"] = "MERGED"
         Boss(self.config(), self.store, Redactor(), github=self.gh).snapshot(self.store.load(self.task["id"]))
         ctx.accepted = True
-        self.own("agent:captain", "Hermes app")
+        self.own("agent:owner", "Hermes app")
         self.assertEqual(len(ctx.messages), 3)
         self.assertEqual(self.inbox_log("dropped")[-1]["reason"], "PR merged")
         self.assertEqual(self.held(), [])
 
     def test_cli_process_never_injects(self):
-        self.own("agent:captain", "Discord DM")
+        self.own("agent:owner", "Discord DM")
         ctx = Context(self.home / "profile", gateway=False, cli=object())
         self.listen(ctx)
         self.send(updated(self.state("completed")))
@@ -501,7 +501,7 @@ class WakeTest(HermeticTestCase):
         self.assertEqual(ctx.messages, [])
 
     def test_settled_task_is_ignored(self):
-        self.own("agent:captain", "Discord DM")
+        self.own("agent:owner", "Discord DM")
         meta = self.store.load(self.task["id"])
         meta["settled"] = True
         self.store.save(meta, "settled")
@@ -543,7 +543,7 @@ class WakeTest(HermeticTestCase):
         self.assertTrue(listener.reached("streams", 1, WAIT))
 
     def test_dropped_stream_reconnects_and_snapshot_covers_the_gap(self):
-        self.own("agent:captain", "Discord DM")
+        self.own("agent:owner", "Discord DM")
         ctx = Context(self.home / "profile")
         with patch("boss.wake.backoff", return_value=0.01):
             listener = self.listen(ctx)
@@ -615,7 +615,7 @@ class WakeTest(HermeticTestCase):
         return updated(shell("someone-elses-thread", updatedAt=stamp(self.now)), sequence)
 
     def test_running_worker_quiet_too_long_wakes_once_per_stall(self):
-        self.own("agent:captain", "Discord DM")
+        self.own("agent:owner", "Discord DM")
         ctx = Context(self.home / "profile")
         self.clocked(ctx)
         words = "Running the full suite in one blocking wait, then I open the PR. " * 3
@@ -631,11 +631,11 @@ class WakeTest(HermeticTestCase):
         self.assertEqual(self.reads(), reads + 1)
         tail = "..." + " ".join(words.split())[-117:]
         self.assertEqual(ctx.messages, [(f"[boss inbox]\nFix thing: no progress for 25 min (last: {tail})\n{NOTE}",
-                                         {"role": "user", "session_key": "agent:captain"})])
+                                         {"role": "user", "session_key": "agent:owner"})])
         # One wake per stall: more pushes, a poke and a re-snapshot neither read nor wake again.
         self.now = T0 + 40 * 60
         self.send(self.other(4), snapshot(self.state("running", updatedAt=stamp(T0))))
-        self.own("agent:captain", "Discord DM")
+        self.own("agent:owner", "Discord DM")
         self.assertEqual((self.reads(), len(ctx.messages)), (reads + 1, 1))
         # Progress resets the clock; a new stall later is a new wake.
         self.send(updated(self.state("running", updatedAt=stamp(self.now)), 5))
@@ -647,7 +647,7 @@ class WakeTest(HermeticTestCase):
 
     def test_a_restart_counts_quiet_time_from_t3_and_stall_minutes_is_configurable(self):
         Config(self.home, Redactor()).change("wake.stall_minutes", 5)
-        self.own("agent:captain", "Discord DM")
+        self.own("agent:owner", "Discord DM")
         ctx = Context(self.home / "profile")
         self.clocked(ctx)
         # The listener's first sight of a thread (a fresh start's snapshot): T3's own updatedAt says it went quiet.
@@ -658,7 +658,7 @@ class WakeTest(HermeticTestCase):
 
     def test_zero_stall_minutes_turns_the_check_off_and_a_waiting_worker_is_never_stalled(self):
         Config(self.home, Redactor()).change("wake.stall_minutes", 0)
-        self.own("agent:captain", "Discord DM")
+        self.own("agent:owner", "Discord DM")
         ctx = Context(self.home / "profile")
         self.clocked(ctx)
         self.send(updated(self.state("running", updatedAt=stamp(T0)), 1))
@@ -667,7 +667,7 @@ class WakeTest(HermeticTestCase):
         self.assertEqual(ctx.messages, [])
 
     def test_a_stall_read_that_finds_the_turn_finished_reports_that_instead(self):
-        self.own("agent:captain", "Discord DM")
+        self.own("agent:owner", "Discord DM")
         ctx = Context(self.home / "profile")
         self.clocked(ctx)
         self.send(updated(self.state("running", updatedAt=stamp(T0)), 1))
@@ -677,7 +677,7 @@ class WakeTest(HermeticTestCase):
         self.assertEqual(ctx.messages[0][0], f"[boss inbox]\nFix thing: finished: three callers found\n{NOTE}")
 
     def test_paused_worker_past_its_until_time_wakes_once_as_stalled(self):
-        self.own("agent:captain", "Discord DM")
+        self.own("agent:owner", "Discord DM")
         ctx = Context(self.home / "profile")
         self.clocked(ctx)
         self.completed(self.task, "Deploy queued.\nBOSS: paused: the staging deploy until 12:30 UTC")
@@ -693,11 +693,11 @@ class WakeTest(HermeticTestCase):
         self.assertEqual(ctx.messages[1][0], "[boss inbox]\nFix thing: no progress for 40 min "
                                              f"(last: paused, waiting on the staging deploy until 12:30 UTC)\n{NOTE}")
         self.send(self.other(4))
-        self.own("agent:captain", "Discord DM")
+        self.own("agent:owner", "Discord DM")
         self.assertEqual((len(ctx.messages), self.reads()), (2, reads))  # once, and the line needed no T3 read
 
     def test_paused_worker_that_resumes_is_not_reported_when_its_until_passes(self):
-        self.own("agent:captain", "Discord DM")
+        self.own("agent:owner", "Discord DM")
         ctx = Context(self.home / "profile")
         self.clocked(ctx)
         self.completed(self.task, "BOSS: paused: CI until 12:10 UTC")
@@ -708,7 +708,7 @@ class WakeTest(HermeticTestCase):
         self.assertEqual(len(ctx.messages), 1)
 
     def test_pr_merged_in_a_pushed_shell_wakes_once(self):
-        self.own("agent:captain", "Discord DM")
+        self.own("agent:owner", "Discord DM")
         ctx = Context(self.home / "profile")
         self.listen(ctx)
         self.gh.pr["title"] = "Fix the thing"
@@ -716,7 +716,7 @@ class WakeTest(HermeticTestCase):
         self.completed(self.task, f"BOSS: done: {harness.URL}")
         self.send(updated(self.state("completed", pullRequests=[linked("open")]), 1))
         self.assertIn(f'finished, PR "Fix the thing" {harness.URL}', ctx.messages[0][0])
-        # The captain merges on GitHub; T3 syncs its copy and pushes the same run with a new PR state.
+        # You merge on GitHub; T3 syncs its copy and pushes the same run with a new PR state.
         self.gh.pr["state"] = "MERGED"
         self.send(updated(self.state("completed", pullRequests=[linked("merged")]), 2))
         self.assertEqual(ctx.messages[1][0], f"[boss inbox]\nFix thing: PR merged {harness.URL}\n{NOTE}")
@@ -726,7 +726,7 @@ class WakeTest(HermeticTestCase):
         self.assertEqual((len(ctx.messages), self.reads()), (2, reads))
 
     def test_pr_closed_without_merging_wakes_once(self):
-        self.own("agent:captain", "Discord DM")
+        self.own("agent:owner", "Discord DM")
         ctx = Context(self.home / "profile")
         self.listen(ctx)
         self.fake.prs = [harness.URL]
@@ -737,7 +737,7 @@ class WakeTest(HermeticTestCase):
         self.assertEqual(ctx.messages[1][0], f"[boss inbox]\nFix thing: PR closed {harness.URL}\n{NOTE}")
 
     def test_pr_landed_by_boss_itself_is_not_announced(self):
-        self.own("agent:captain", "Discord DM")
+        self.own("agent:owner", "Discord DM")
         ctx = Context(self.home / "profile")
         self.listen(ctx)
         self.fake.prs = [harness.URL]
@@ -751,8 +751,8 @@ class WakeTest(HermeticTestCase):
         self.assertFalse(any(r.get("kind", "").startswith("pr-") for r in Inbox(self.home).records()))
 
     def test_pr_merged_on_github_is_found_at_the_owner_turn_start_when_t3s_copy_is_stale(self):
-        # Seen live: T3 often keeps a PR "open" after the captain merges it on GitHub.
-        self.own("agent:captain", "Hermes app")
+        # Seen live: T3 often keeps a PR "open" after you merge it on GitHub.
+        self.own("agent:owner", "Hermes app")
         self.watching()
         ctx = Context(self.home / "profile")
         listener = self.clocked(ctx)
@@ -821,7 +821,7 @@ class WakeTest(HermeticTestCase):
         self.assertTrue(self.push.connected(2))
 
     def test_a_host_out_of_touch_for_ten_minutes_says_so_once_and_once_more_when_back(self):
-        self.own("agent:captain", "Hermes app")
+        self.own("agent:owner", "Hermes app")
         self.watching()
         ctx = Context(self.home / "profile")
         since = datetime.fromtimestamp(T0).astimezone().strftime("%H:%M")
@@ -840,11 +840,11 @@ class WakeTest(HermeticTestCase):
             self.come_back(listener)
         self.assertEqual([i["line"] for i in self.held()], ["back in touch with test"])
         self.assertEqual(self.tool(), '{"output": "ok"}\n\n[boss inbox]\nback in touch with test\n' + NOTE)
-        self.assertNotIn("captain", (self.home / "inbox.jsonl").read_text())
+        self.assertNotIn("agent:owner", (self.home / "inbox.jsonl").read_text())
 
     def test_a_host_back_before_anyone_saw_it_was_lost_leaves_nothing_to_read(self):
         self.inject = False  # the default: an idle owner sees the inbox at its next turn
-        self.own("agent:captain", "Hermes app")
+        self.own("agent:owner", "Hermes app")
         self.watching()
         ctx = Context(self.home / "profile")
         with patch("boss.wake.backoff", return_value=0.01):
@@ -860,7 +860,7 @@ class WakeTest(HermeticTestCase):
         Config(self.home, Redactor()).change("wake.host_down_minutes", 0)
         with self.assertRaises(BossError):
             Config(self.home, Redactor()).change("wake.host_down_minutes", -1)
-        self.own("agent:captain", "Hermes app")
+        self.own("agent:owner", "Hermes app")
         ctx = Context(self.home / "profile")
         with patch("boss.wake.backoff", return_value=0.01):
             listener = self.lose_touch(ctx)

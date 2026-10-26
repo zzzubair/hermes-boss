@@ -1,4 +1,4 @@
-"""Docs-only PRs land under fast_land_docs without the captain; machine-only links are flagged."""
+"""Docs-only PRs land under fast_land_docs without asking; machine-only links are flagged."""
 import unittest
 
 from boss.common import BossError
@@ -56,7 +56,7 @@ class MachineLinkTest(unittest.TestCase):
     def test_contract_asks_ship_workers_for_phone_links(self):
         for delivery in ("direct-PR", "local-only"):
             text = footer("ship", delivery)
-            self.assertIn("tailnet (*.ts.net) or preview URL the captain can open on his phone", text)
+            self.assertIn("tailnet (*.ts.net) or preview URL that opens on a phone", text)
             self.assertIn("Never link localhost, 127.0.0.1 or a bare host:port", text)
 
 
@@ -102,12 +102,12 @@ class FastLandDocsTest(HermeticTestCase):
         self.assertEqual(len(self.gh.merges), 1)
         self.assertEqual(self.store.load(meta["id"])["landed"]["approved"], FAST_LAND_DOCS)
 
-    def test_captain_words_are_kept_when_given(self):
+    def test_approving_words_are_kept_when_given(self):
         meta = self.docs_pr("fast_land_docs = true\n")
         self.assertEqual(self.cli("land", meta["id"], "--approved", "ship the docs")[0], 0)
         self.assertEqual(self.store.load(meta["id"])["landed"]["approved"], "ship the docs")
 
-    def test_a_pr_touching_anything_but_markdown_still_needs_the_captain_and_green_checks(self):
+    def test_a_pr_touching_anything_but_markdown_still_needs_approval_and_green_checks(self):
         meta = self.docs_pr("fast_land_docs = true\n")
         # ["docs/new.md", "boss/old.py"] is how files() reports a rename from .py to .md.
         for paths in (["README.md", "boss/cli.py"], ["notes.md.bak"], ["docs/new.md", "boss/old.py"], []):
@@ -115,7 +115,7 @@ class FastLandDocsTest(HermeticTestCase):
                 self.gh.paths = paths
                 code, output = self.cli("land", meta["id"])
                 self.assertEqual(code, 2, output)
-                self.assertIn("landing requires the captain's words", output)
+                self.assertIn("landing needs approving words", output)
                 self.gh.pr["statusCheckRollup"] = [{"status": "IN_PROGRESS"}]
                 self.assertEqual(self.cli("land", meta["id"], "--approved", "merge it")[0], 2)
                 self.gh.pr["statusCheckRollup"] = [{"conclusion": "SUCCESS"}]
@@ -138,7 +138,7 @@ class FastLandDocsTest(HermeticTestCase):
         meta = self.docs_pr("fast_land_docs = true\n", 'merge = "never"\n')
         code, output = self.cli("land", meta["id"])
         self.assertEqual(code, 2)
-        self.assertIn("landing requires the captain's words", output)
+        self.assertIn("landing needs approving words", output)
         self.assertIn("merge policy is never", self.cli("land", meta["id"], "--approved", "yes")[1])
         self.assertEqual(self.gh.merges, [])
 
@@ -164,7 +164,7 @@ class FastLandDocsTest(HermeticTestCase):
         self.configure("fast_land_docs = true\n")
         code, output = self.cli("land", meta["id"])
         self.assertEqual(code, 2)
-        self.assertIn("he answered: no", output)
+        self.assertIn("the answer was: no", output)
         self.assertNotIn("docs-only PR", self.cli("status", meta["id"])[1])
         self.assertEqual(self.gh.merges, [])
 
@@ -174,14 +174,14 @@ class FastLandDocsTest(HermeticTestCase):
         self.assertIn("worker must stop", self.cli("land", meta["id"])[1])
         scout = self.spawn("--kind", "scout")
         self.completed(scout)
-        self.assertIn("landing requires the captain's words", self.cli("land", scout["id"])[1])
+        self.assertIn("landing needs approving words", self.cli("land", scout["id"])[1])
         self.assertEqual(self.gh.merges, [])
 
     def test_docs_only_pr_is_never_raised_as_a_decision(self):
         meta = self.docs_pr("fast_land_docs = true\n")
         code, output = self.cli("decide", "add", "Merge the docs PR?", "--task", meta["id"])
         self.assertEqual(code, 2)
-        self.assertIn("never a captain decision", output)
+        self.assertIn("it never needs a decision", output)
         self.assertIn(f"boss land {meta['id']}", output)
         self.assertEqual(self.store.decisions(), [])
         self.assertEqual(self.cli("decide", "add", "Rename the project?")[0], 0)
@@ -198,10 +198,10 @@ class FastLandDocsTest(HermeticTestCase):
         meta = self.docs_pr("fast_land_docs = true\n")
         self.gh.pr["statusCheckRollup"] = [{"status": "IN_PROGRESS"}]
         output = self.cli("status", meta["id"])[1]
-        self.assertIn(f"next: boss land {meta['id']} (docs-only PR under fast_land_docs; no need to ask the captain)", output)
+        self.assertIn(f"next: boss land {meta['id']} (docs-only PR under fast_land_docs; no need to ask)", output)
         self.gh.paths = ["boss/cli.py"]
         self.gh.pr["statusCheckRollup"] = [{"conclusion": "SUCCESS"}]
-        self.assertIn(f'next: boss land {meta["id"]} --approved "<captain quote>"', self.cli("status", meta["id"])[1])
+        self.assertIn(f'next: boss land {meta["id"]} --approved "<exact words>"', self.cli("status", meta["id"])[1])
 
 
 class WakeLineTest(HermeticTestCase):
@@ -219,7 +219,7 @@ class WakeLineTest(HermeticTestCase):
     own = wake.WakeTest.own
 
     def finish(self, report):
-        self.own("agent:captain", "Discord DM")
+        self.own("agent:owner", "Discord DM")
         ctx = wake.Context(self.home / "profile")
         self.listen(ctx)
         self.fake.prs = [URL]
@@ -233,7 +233,7 @@ class WakeLineTest(HermeticTestCase):
         path.write_text(path.read_text() + "fast_land_docs = true\n")
         self.gh.paths = ["README.md"]
         content = self.finish(f"Docs updated.\nBOSS: done: {URL}")
-        self.assertIn(f"Fix thing: finished, PR {URL}; docs only, so boss can land it without asking the captain", content)
+        self.assertIn(f"Fix thing: finished, PR {URL}; docs only, so boss can land it without asking", content)
 
     def test_a_failed_docs_check_still_delivers_the_wake(self):
         path = self.home / "config.toml"

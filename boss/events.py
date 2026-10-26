@@ -1,6 +1,6 @@
 """What a worker thread needs from boss right now, from one snapshot view.
 
-Workers end every turn with one status line (Firstmate's protocol):
+Workers end every turn with one status line:
 
     BOSS: done: <PR url | one-line report>
     BOSS: needs-decision: <question>
@@ -14,7 +14,7 @@ permission prompt says the worker is waiting now; a question also carries its
 answerable request ids. A turn that ends with no status line is ended_unclear,
 surfaced with the worker's last words, never swallowed.
 
-pr_events() says which of the task's PRs merged or closed (often by the captain
+pr_events() says which of the task's PRs merged or closed (often by hand
 on GitHub, not by boss), so the supervisor can settle the task at once. The wake
 listener builds 'stalled' events itself, from how long a thread was quiet.
 """

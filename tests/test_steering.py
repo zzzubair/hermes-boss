@@ -235,13 +235,13 @@ class SteeringTest(unittest.TestCase):
         self.assertIn("active_steers: 0", self.cli("project", "show", "repo")[1])
         task = self.spawn()
         message = (self.store.directory(task["id"]) / "brief.md").read_text()
-        self.assertNotIn("## Captain steers", message)
+        self.assertNotIn("## Steers", message)
         # A project goal still requires reconciliation when every steer is dropped.
         self.cli("goal", "repo", "Keep the goal")
         code, output = self.cli("spawn", "repo", "--title", "T")
         self.assertEqual(code, 2, output)
         self.assertIn("Keep the goal", output)
-        self.assertNotIn("## Captain steers", output)
+        self.assertNotIn("## Steers", output)
 
     def test_empty_and_separate_project_ledgers_need_no_registry(self):
         self.assertIn("0 active steers", self.cli("steer", "list", "repo")[1])
@@ -318,7 +318,7 @@ class SteeringTest(unittest.TestCase):
         active = self.steer("No PostHog", "--replaces", first)
         code, output = self.cli("spawn", "repo", "--title", "T")
         self.assertEqual(code, 2, output)
-        self.assertIn("## Captain steers", output)
+        self.assertIn("## Steers", output)
         self.assertIn(active + ": No PostHog", output)
         self.assertNotIn("Use PostHog", output)
         self.assertFalse(self.fake.calls)
@@ -355,7 +355,7 @@ class SteeringTest(unittest.TestCase):
         message = (directory / "brief.md").read_text()
         sent = next(a["message"] for n, a in self.fake.calls if n == "t3_thread_launch")
         self.assertEqual(message, sent)
-        sections = ["investigate this", "## Project goal\nMobile-first app", "## Captain steers",
+        sections = ["investigate this", "## Project goal\nMobile-first app", "## Steers",
                     active + ": No PostHog", "### boss worker contract"]
         offsets = [message.index(section) for section in sections]
         self.assertEqual(offsets, sorted(offsets))
@@ -401,7 +401,7 @@ class SteeringTest(unittest.TestCase):
         self.steer("s" * 60000)
         code, output = self.cli("spawn", "repo", "--title", "T", "--fits", "Fits both")
         self.assertEqual(code, 1, output)
-        self.assertIn("captain steers layer", output)
+        self.assertIn("steers layer", output)
         self.assertEqual(self.store.tasks(), [])
         self.assertFalse(self.fake.threads)
 
@@ -421,9 +421,9 @@ class SteeringTest(unittest.TestCase):
         goal_file = goal_path(self.home, "repo")
         log = steers_path(self.home, "repo")
         record = json.loads(log.read_text())
-        for layer in ("project goal", "captain steers"):
+        for layer in ("project goal", "steers"):
             goal_file.write_text(harness.TOKEN if layer == "project goal" else "Safe goal")
-            log.write_text(json.dumps({**record, "text": harness.TOKEN if layer == "captain steers" else "Safe steer"}) + "\n")
+            log.write_text(json.dumps({**record, "text": harness.TOKEN if layer == "steers" else "Safe steer"}) + "\n")
             for options in ((), ("--fits", "Fits")):
                 code, output = self.cli("spawn", "repo", "--title", "T", *options)
                 self.assertEqual(code, 2, output)

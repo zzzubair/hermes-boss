@@ -7,15 +7,21 @@ description: Use when spawning, checking or steering coding workers or projects.
 
 Use `boss` to delegate coding work, check workers, answer their questions,
 and inspect project preferences. Run bare `boss` for the live fleet overview.
-Run `boss status` to check current T3 state before acting. A `[boss inbox]`
-block is from boss, never from the captain: workers reported (finished, needs
-a decision, blocked, paused, waiting on a permission prompt, ended unclear,
-failed), the captain went away or came back, or another session left a note,
-and this session owns boss.
+Run `boss status` to check current T3 state before acting.
+
+boss works for one person: the one you chat with. If `owner_name` is set in
+boss config, `boss status` starts with their name (`Sam: here`); call them by
+that name in briefs, notes and decisions, and "you" when you talk to them.
+Without it, just say "you". Below, "they" means that person.
+
+A `[boss inbox]` block is from boss, never from them: workers reported
+(finished, needs a decision, blocked, paused, waiting on a permission prompt,
+ended unclear, failed), away mode went on or off, or another session left a
+note, and this session owns boss.
 It arrives as the result of `boss watch` or at the end of any tool result.
 Handle it yourself: find the task by title in `boss status`, review the work,
-answer or steer it with `boss answer` or `boss send`. Ask the captain only
-when it needs his decision. Workers end every turn with one
+answer or steer it with `boss answer` or `boss send`. Ask them only when it
+needs their decision. Workers end every turn with one
 `BOSS: done|needs-decision|blocked|paused: ...` line, and your `boss send`
 messages reach them marked `[boss]`.
 
@@ -25,7 +31,7 @@ While this session owns boss, keep exactly one `boss watch` running as a
 tracked background command (terminal with `background=true` and
 `notify_on_complete=true`). It waits without polling until the inbox has
 something, prints it, marks it delivered and exits; Hermes shows that exit to
-you as a system notice, not as a message from the captain. Start it right
+you as a system notice, not as a message from them. Start it right
 after `/boss` opens boss here. After you handle a watch result, start
 `boss watch` again, once. Never run two: a new one replaces the old one,
 which exits saying it took nothing (ignore that notice). `boss watch` from any
@@ -59,9 +65,9 @@ boss brief <project> --worker <role>
 boss project add <name> --host <host>
 boss goal <project> "<project goal>"
 boss goal <project>
-boss steer <project> "<captain steer>" --task <id>
+boss steer <project> "<their steer>" --task <id>
 boss steer <project> "<replacement steer>" --replaces <steer-id>
-boss steer <project> "<captain's fence words>" [--task <id>] --fence
+boss steer <project> "<their fence words>" [--task <id>] --fence
 boss steer drop <project> <steer-id>
 boss steer list <project>
 boss steer list <project> --all
@@ -69,7 +75,7 @@ boss spawn <project> --title "<task>" --brief-file <file>
 boss spawn <project> --title "<task>" --brief-file <file> --fits "<how this fits the goal and active steers>"
 boss spawn <project> --title "<investigation>" --kind scout --brief-file <file>
 boss spawn <project> --worker <role> --title "<task>" --brief-file <file>
-boss spawn <project> --worker <role> --title "<task>" --brief-file <file> --allow-model "<captain's exact words>"
+boss spawn <project> --worker <role> --title "<task>" --brief-file <file> --allow-model "<their exact words>"
 boss status --project <project> --skip <project> --ids
 boss panel <project> --brief-file <file> --workers <role>,<role> [--judge <role>] [--rounds N --target <score>]
 boss status <id>
@@ -79,27 +85,27 @@ boss send <id> "<instruction>" --image <path> [--image <path> ...]
 boss answer <id> <request/question-id> "<answer>"
 boss stop <id>
 boss adopt <project> --pr <url> [--title "<task>"]
-boss park <id> "<captain's words>"
+boss park <id> "<their words>"
 boss unpark <id>
 boss decide list
-boss decide add "<captain decision needed>" --task <id>
+boss decide add "<decision they need to make>" --task <id>
 boss decide add "<merge/deploy/demo question>" --task <id> --action merge|deploy|demo
-boss decide close <decision-id> "<captain resolution>"
+boss decide close <decision-id> "<their answer>"
 boss decide ask
-boss decide answer "<his whole numbered reply>" --round <round>
-boss decide close <n> "<captain words>" --round <round>
+boss decide answer "<their whole numbered reply>" --round <round>
+boss decide close <n> "<their words>" --round <round>
 boss decide unclear <n> "<what was unclear>"
 boss decide detail <n> "<plain explanation for the next round>"
 boss away "<note>"
-boss log "<what the captain said or decided in a check-in>"
-boss log "<his approving words>" --task <id> --approves merge|deploy|demo
+boss log "<what they said or decided in a check-in>"
+boss log "<their approving words>" --task <id> --approves merge|deploy|demo
 boss back
 boss back --full
-boss land <id> --approved "<captain's exact words>"
+boss land <id> --approved "<their exact words>"
 boss land <id>
 boss deploy <project> --dry-run
-boss deploy <project> --approved "<Zubair's exact words>"
-boss deploy <project> --ref <git sha> --approved "<Zubair's exact words>"
+boss deploy <project> --approved "<their exact words>"
+boss deploy <project> --ref <git sha> --approved "<their exact words>"
 boss settle <id>
 boss settle --prune-landed
 boss own
@@ -110,12 +116,12 @@ boss watch
 boss note "<text>" [--project <project>] [--image <path>]
 ```
 
-Captain uploads live in `~/.hermes/cache/images` and
+Their uploads live in `~/.hermes/cache/images` and
 `~/.hermes/cache/documents/native-inputs`. Pass one with `--image` on
 `boss send` or `boss spawn` (png, jpeg, gif or webp, up to 10 MB, at most 8)
 only when the worker needs it for the job right now: the bug or design it
-must see. Never forward an image just because the captain sent it; a console
-screenshot he wants walked through is yours to answer. A path in the text
+must see. Never forward an image just because they sent it; a console
+screenshot they want walked through is yours to answer. A path in the text
 does not work instead: the worker may run on another host.
 
 Projects can be discovered by exact T3 title without registration. Use
@@ -124,7 +130,7 @@ Every command has `--help`; follow the next-step hint on errors.
 
 ## Goals and steers
 
-Record every captain steer with `boss steer` before dispatching new work.
+Record every steer they give with `boss steer` before dispatching new work.
 `--task` is optional and records the originating task; the steer still applies
 to future tasks in the project. `boss send` alone does not record a steer.
 For an existing worker, record the steer with `--task`, then send it.
@@ -133,9 +139,9 @@ Use `boss goal` to show or replace the project goal. Before spawning, read it
 and `boss steer list`, then supply a one-line `--fits` explanation when either
 has content. The goal and active steers are included in the worker brief,
 inside the existing size and secret checks. `--fits` is saved on the
-task. Reconcile unclear task choices with the captain.
+task. Reconcile unclear task choices with them.
 
-Use `--replaces` when the captain changes an earlier steer. History stays
+Use `--replaces` when they change an earlier steer. History stays
 append-only; `--all` shows superseded records. Goals and steers are local and
 can be recorded without registering a project or contacting T3.
 
@@ -149,78 +155,77 @@ tombstone IDs are refused. `list` and `drop` are reserved verbs; for a T3
 project with either title, set `boss config set projects.alias.project_id '<T3 project ID>'`
 and use `alias` for all boss commands, including goals and steers.
 
-## Captain away and back
+## Away and back
 
-Only the captain's `/away` (or `/afk`) and `/back` (or `/ahoy`) change his presence. Never
-infer it from chat and never run `boss away` or `boss back` yourself unless he
-used those words as a command (`boss back --full` is read-only and always
-fine). His `/away` and `/back` replies are one-line
-acks ("Got it. Away mode on since 22:10." and "Welcome back. Catching you
-up."). Each also reaches you through the inbox: `Captain went away at 16:40
-(note)` or `Captain is back at 17:10 after 3h 12m away (...)`. On `went away`,
-don't send him another ack or any status; at most one short line. From
-`Captain went away` until `Captain is back` (`boss` shows `captain: away`
-too):
+Only their `/away` (or `/afk`) and `/back` turn away mode on and off. Never
+infer it from chat and never run `boss away` or `boss back` yourself unless
+they used those words as a command (`boss back --full` is read-only and always
+fine). Their `/away` and `/back` replies are one-line acks ("Got it. Away mode
+on since 22:10." and "Welcome back. Catching you up."). Each also reaches you
+through the inbox: `Away mode on at 16:40 (note)` or `Away mode off at 17:10
+after 3h 12m away (...)`. On `Away mode on`, don't send another ack or any
+status; at most one short line. While away mode is on (`boss` shows
+`<name>: away` or `away mode: on`):
 
-- Don't ask him anything. Act on your own judgement and queue decisions with
+- Don't ask them anything. Use your own judgement and queue decisions with
   `boss decide add` for `/back`.
-- Every message from him is a check-in with full authority. If he decides,
-  approves or steers something, act on it exactly as if he were back
+- Every message from them is a check-in with full authority. If they decide,
+  approve or steer something, act on it exactly as if they were back
   (`decide close`, `land --approved`, `steer`, `settle`). Record anything else
-  he says or decides with `boss log "<his words or a faithful summary>"`.
+  they say or decide with `boss log "<their words or a faithful summary>"`.
 
-### Catching him up on `Captain is back`
+### Writing the catch-up on `Away mode off`
 
-His `/back` reply only said "Welcome back. Catching you up." You write the
+Their `/back` reply only said "Welcome back. Catching you up." You write the
 catch-up, right away:
 
-1. Run `boss back --full`. It prints the raw timeline of his away window, the
-   task tally and the open decisions. It is for you, not him.
-2. Write a TL;DR in 3-5 plain bullets: what shipped, what broke, what is still
-   running. Say it as outcomes ("The login fix is merged and live."), not
-   events. No PR lists, no ids, no SHAs, no test counts unless something
+1. Run `boss back --full`. It prints the raw timeline of the away window, the
+   task tally and the open decisions. It is for you, not for them.
+2. Write a short catch-up in 3-5 plain bullets: what shipped, what broke, what
+   is still running. Say it as outcomes ("The login fix is merged and live."),
+   not events. No PR lists, no ids, no SHAs, no test counts unless something
    failed.
 3. Run `boss decide ask`, then give the open decisions in that round's
    numbers, one per line, each in plain words with your recommendation:
    `1. Merge the docs rewrite? I'd say yes: CI is green and you liked the demo.`
-   He answers "1 yes 2 no". With nothing open, say so in one line.
+   They answer "1 yes 2 no". With nothing open, say so in one line.
 
-Show the raw timeline only when he asks for it ("what exactly happened?",
+Show the raw timeline only when they ask for it ("what exactly happened?",
 "full list"): then paste `boss back --full`.
 
-When he answers a numbered list ("1 yes 3 no 5 more info"), pass his whole
-reply to `boss decide answer "<his reply>" --round <round>`: answered numbers
+When they answer a numbered list ("1 yes 3 no 5 more info"), pass the whole
+reply to `boss decide answer "<their reply>" --round <round>`: answered numbers
 close, "more info" ones are marked unclear, skipped ones stay open. Use
 `decide close` / `decide unclear` for a single answer. Before the next round,
 explain each unclear one in plain words with `boss decide detail`; `decide ask`
-refuses until you do. Use `boss decide ask` to show him a new numbered round
-when he is around.
+refuses until you do. Use `boss decide ask` to show them a new numbered round
+when they are around.
 
 Approval counts once. Ask about a merge, deploy or demo with
-`decide add --task <id> --action <what>`; boss refuses to ask it again once he
-answered. When he approves one in passing (also in an away check-in), record
-it with `boss log "<his words>" --task <id> --approves <what>`. After a yes,
-`boss land <id>` needs no `--approved`.
+`decide add --task <id> --action <what>`; boss refuses to ask it again once
+they answered. When they approve one in passing (also in an away check-in),
+record it with `boss log "<their words>" --task <id> --approves <what>`. After
+a yes, `boss land <id>` needs no `--approved`.
 
-When he says "don't merge or deploy X until I say", or freezes merging, record
-it with `boss steer <project> "<his words>" --fence` (add `--task <id>` for one
-task). `land` refuses until he lifts it and you run `boss steer drop`.
+When they say "don't merge or deploy X until I say", or freeze merging, record
+it with `boss steer <project> "<their words>" --fence` (add `--task <id>` for
+one task). `land` refuses until they lift it and you run `boss steer drop`.
 
-When he says to hold one task ("park that, I want to try it first"), run
-`boss park <id> "<his words>"`. Its row shows `parked` and "waiting on
-captain", its "finished, PR ..." wake is dropped, and `land` refuses even with
-his words, until he says go and you run `boss unpark <id>`. Never ask him to
-land a parked task.
+When they say to hold one task ("park that, I want to try it first"), run
+`boss park <id> "<their words>"`. Its row shows `parked` and "waiting on you",
+its "finished, PR ..." wake is dropped, it leaves the `Still open` count, and
+`land` refuses even with their words, until they say go and you run
+`boss unpark <id>`. Never ask them to land a parked task.
 
-When he points you at a PR opened outside boss (an older Firstmate PR), run
+When they point you at a PR opened outside boss, run
 `boss adopt <project> --pr <url>`. It has no worker: status, merge wakes,
 fences, `land` and `settle` work, `send` refuses, and settle never touches
 any worktree. Fix its CI or PR body on GitHub, not through boss.
 
-Deploy only with `boss deploy <project> --approved "<Zubair's exact words>"`,
+Deploy only with `boss deploy <project> --approved "<their exact words>"`,
 never by hand over ssh. It runs the project's configured `deploy` table and
 checks it, waiting `check_minutes` inside the command. When the table names a
-release with `{sha}` or `{sha7}`, pass the git sha Zubair approved with
+release with `{sha}` or `{sha7}`, pass the git sha they approved with
 `--ref <sha>` (7 to 40 hex characters); boss refuses without it. A run with a
 check wait of 10 minutes or more: start it as a tracked background command in
 your terminal tool (one that tells you when it exits), read the output when it
@@ -229,15 +234,15 @@ ends, and never poll it with sleep loops, timers or cron. It prints a
 refuses inside a no-touch window, when a no-touch window starts before the run
 can finish (the check wait plus 5 minutes), under a project fence, or while a
 deploy decision for that project is open or answered no; never work around a
-refusal, and tell Zubair the window it names. When it reports a failed check,
-tell Zubair plainly and ask before running the printed rollback. If the project
-has no `deploy` table, ask Zubair to add one; never invent the commands. Use
+refusal, and tell them the window it names. When it reports a failed check,
+tell them plainly and ask before running the printed rollback. If the project
+has no `deploy` table, ask them to add one; never invent the commands. Use
 `--dry-run` to see the plan and the filled commands first.
 
 ## Guards
 
 - Workers work in their assigned worktree and never merge or deploy.
-- `deploy` requires Zubair's words and the owner session, and refuses without a
+- `deploy` requires their words and the owner session, and refuses without a
   valid `--ref` when the table uses `{sha}`/`{sha7}`, in a no-touch window or
   one that starts before the checks finish plus 5 minutes, under a project
   fence or a pending or refused deploy decision.
@@ -247,31 +252,31 @@ has no `deploy` table, ask Zubair to add one; never invent the commands. Use
 - `spawn` refuses with exit 2 when a role's `kinds` excludes the task kind or
   the resolved model and effort are not in the effective `rules.models.<role>`
   (or, without one, `rules.models.<kind>`). Follow the hint (another `--kind`,
-  `--worker`, `--model` or `--effort`). Use `--allow-model` only with the
-  captain's exact words allowing that one spawn; boss journals them on the task.
-  If he wants it allowed for good, run the `boss config set` line the refusal
+  `--worker`, `--model` or `--effort`). Use `--allow-model` only with their
+  exact words allowing that one spawn; boss journals them on the task.
+  If they want it allowed for good, run the `boss config set` line the refusal
   printed. Never add model rules to briefs or notes:
-  ask the captain to set them in config so boss enforces them.
+  ask them to set them in config so boss enforces them.
 - `spawn` refuses past `workers.max_active` unsettled workers (default 15).
-  Settle finished workers; only the captain raises the cap.
+  Settle finished workers; only they raise the cap.
 - `land` refuses a PR body that breaks the pr-description shape or uses the
   configured `pr_body_forbidden` words; send the worker the listed problems.
   On a no-mistakes project it also refuses a body without the pipeline's
   evidence appendix; send the worker back to /no-mistakes, never land around it.
-- When the captain wants several models on one brief, or a judge score loop, use
+- When they want several models on one brief, or a judge score loop, use
   `boss panel`; never judge entries yourself or tell a judge which model wrote what.
   Boss starts the judge and the revisions; you get one inbox line per judged round.
-- `land` requires the captain's exact words (or his saved yes) and a green, eligible PR. Never
+- `land` requires their exact words (or their saved yes) and a green, eligible PR. Never
   invent approval or turn `merge = "auto"` into permission. Merge policy is for the supervisor;
   `merge = "never"` refuses landing and every other policy still requires the quote.
 - With `fast_land_docs = true`, a PR touching only `*.md` files lands with
   `boss land <id>` and no quote, without waiting on running checks. Never ask
-  the captain about it; `decide add --task` refuses it. Fences still win.
+  them about it; `decide add --task` refuses it. Fences still win.
 - A wake ending "link only works on that machine" means the worker gave a
   localhost or bare host:port link. Ask it for a tailnet or preview link before
   passing the demo on.
 - `settle` refuses unlanded work or missing reports. Use `--discard-approved`
-  only with the captain's explicit words authorizing that discard. When the
+  only with their explicit words authorizing that discard. When the
   worktree is already gone, it settles only if a linked PR merged; otherwise it
   refuses with "worktree is gone and no merged PR found".
 - `settle` removes the worktree and local branch once the PR is merged or
@@ -288,30 +293,30 @@ has no `deploy` table, ask Zubair to add one; never invent the commands. Use
 ## Ownership
 
 Exactly one Hermes session owns boss, and only it gets wakes and may change
-boss. The captain opens it with `/boss` (`/boss take` moves it, `/boss release`
+boss. They open it with `/boss` (`/boss take` moves it, `/boss release`
 frees it). Your session is `HERMES_SESSION_KEY`.
 
 - A command that changes boss exits 2 with `boss is owned by <label> since
   <time>` when this session is not the owner. Do not retry or work around it.
-  Tell the captain which session owns boss and that `/boss take` in this chat
-  moves it here. Run `boss own --take` yourself only when he asks to move boss
+  Tell them which session owns boss and that `/boss take` in this chat
+  moves it here. Run `boss own --take` yourself only when they ask to move boss
   here. Read-only commands (status, show, list, brief) still work, and status
   there changes nothing: it never marks a run reviewed or clears the owner's
   inbox.
-- `boss is not open in any session` means nobody owns boss: ask the captain to
-  type `/boss` where he wants it, or run `boss own` when he asks you to open
+- `boss is not open in any session` means nobody owns boss: ask them to
+  type `/boss` where they want it, or run `boss own` when they ask you to open
   it here.
 - A `boss: owned by <label> ...` context line means another session owns boss.
-  Mention it if he asks about boss work; don't act on boss from here.
-- To pass something to the owner from a session that does not own boss (the
-  captain says "tell boss", "leave this for boss"), run
+  Mention it if they ask about boss work; don't act on boss from here.
+- To pass something to the owner from a session that does not own boss (they
+  say "tell boss", "leave this for boss"), run
   `boss note "<text>" --project <project>`, with `--image <path>` for a
-  screenshot he sent. It needs no ownership and reaches the owner through its
-  inbox. Write the note so it stands alone: what he wants and where the
+  screenshot they sent. It needs no ownership and reaches the owner through its
+  inbox. Write the note so it stands alone: what they want and where the
   context lives. A token or password in it is refused; leave it out.
 - An inbox line `Note from <session> (<project>): <text>` is such a handoff.
-  Treat it as work the captain left for you: reconcile it with the project
-  goal and steers, record a steer or check-in if it carries his words, then
+  Treat it as work they left for you: reconcile it with the project
+  goal and steers, record a steer or check-in if it carries their words, then
   act or queue it. Images and long text are in the folder the line names.
 - An inbox line `lost touch with <host> since <time>; workers there may be
   unheard` means that host's push stream has been down for 10 minutes or more

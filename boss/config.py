@@ -30,7 +30,7 @@ MAX_ACTIVE = 15
 # Unset means no restriction. ship_models/scout_models are the deprecated spelling of models.ship/scout.
 RULES = {"models": dict, "ship_models": list, "scout_models": list}
 ROLE = {**{k: SETTINGS[k] for k in ("host", "model", "effort", "kind")}, "kinds": list}
-# [projects.<name>.deploy]: how the supervisor deploys on the captain's word (boss deploy).
+# [projects.<name>.deploy]: how the supervisor deploys on explicit approval (boss deploy).
 DEPLOY = {"host": str, "command": str, "check": str, "rollback": str, "check_minutes": int, "no_touch": list,
           "auto_rollback": bool}
 
@@ -152,6 +152,8 @@ class Config:
         self.workers = roles_table(self.data)
         self.max_active = self.data.get("workers", {}).get("max_active", MAX_ACTIVE)
         self.default_host = self.data.get("default_host", "")
+        # The person boss works for, by name in briefs and supervisor text; unset means "you" and plain wording.
+        self.owner_name = self.data.get("owner_name") or None
 
     def fail(self, key, message):
         raise BossError("config", f"{key}: {message}", f"edit {self.path}", 1)
@@ -180,6 +182,8 @@ class Config:
                     self.fail(path, "must be instance:model")
                 if key == "kinds" and any(item not in choices["kind"] for item in value):
                     self.fail(path, "must list only " + ", ".join(choices["kind"]))
+                if key == "owner_name" and (len(value) > 60 or value != " ".join(value.split())):
+                    self.fail(path, "must be one line of at most 60 characters, e.g. a first name")
                 if key == "pr_body_forbidden" and any(type(item) is not str or not item.strip() for item in value):
                     self.fail(path, "must list nonempty strings")
                 if key in RULES and expected is list and any(rule_entry(item) is None for item in value):
@@ -205,7 +209,7 @@ class Config:
                     key = host.get(name, default)
                     self.redact.add(self.file_credentials.get(key))
                     self.redact.add(self.credentials.get(key))
-        fields(data, {"default_host": str, "default_worker": str, "hosts": dict, "projects": dict, "workers": dict, "wake": dict,
+        fields(data, {"default_host": str, "default_worker": str, "owner_name": str, "hosts": dict, "projects": dict, "workers": dict, "wake": dict,
                       "rules": dict, **{k: v for k, v in SETTINGS.items() if k != "worker"}})
         roles = set(roles_table(data)) | {r for p in data.get("projects", {}).values() if isinstance(p, dict)
                                           for r in p.get("workers", {}) if isinstance(p.get("workers"), dict)}
@@ -398,7 +402,7 @@ class Config:
         return values, origins
 
     def violations(self, name, values, origins, model, effort):
-        """Deterministic captain rules for one spawn; model is instance:model, or None for T3's own default.
+        """Deterministic worker rules for one spawn; model is instance:model, or None for T3's own default.
 
         Each broken rule comes with a spawn retry that passes it and the one config change that
         allows this spawn from now on (None when there is none)."""

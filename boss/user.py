@@ -1,8 +1,9 @@
-"""Captain presence, numbered decision rounds and the /back timeline the supervisor catches him up from.
+"""Away mode, numbered decision rounds and the /back timeline the supervisor writes the catch-up from.
 
-Only `away` and `back` change presence. Everything the captain says in between is a
-check-in with full authority; the supervisor records it and never asks him things.
-Captain-facing text carries no task ids or commit SHAs.
+Only `away` and `back` change away mode. Everything said in between is a check-in
+with full authority; the supervisor records it and asks nothing. boss names the
+person it works for by config owner_name, else says "you" or nothing.
+Text they see carries no task ids or commit SHAs.
 """
 from datetime import datetime, timezone
 import re
@@ -14,7 +15,7 @@ from .common import BossError, refuse
 STATUS_WORDS = {"completed": "finished", "failed": "failed", "rolled_back": "failed",
                 "interrupted": "stopped", "cancelled": "stopped", "waiting": "waiting for input"}
 GROUP_AFTER = 12
-# Things the captain approves once: his answer about one of these for a task is final.
+# Things approved once: the answer about one of these for a task is final.
 ACTIONS = ("merge", "deploy", "demo")
 # "1 yes 3 no 5 more info": a number from the round, at the start or after a space or separator.
 ANSWER_NUMBER = re.compile(r"(?:^|(?<=[\s/;,]))(\d{1,3})(?:[.):]\s*|\s+|$)")
@@ -30,9 +31,14 @@ def now():
 
 
 def plain(value, limit=240):
-    """One line of plain words for the captain; no JSON quoting."""
+    """One line of plain words; no JSON quoting."""
     text = " ".join(str(value).split())
     return text if limit is None or len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
+def named(name, with_name, plain):
+    """with_name, its {name} filled in, when config sets owner_name; otherwise the plain wording."""
+    return with_name.replace("{name}", name) if name else plain
 
 
 def plural(count, word):
@@ -76,14 +82,15 @@ def since_text(away):
 
 
 def away(store, note):
-    current = presence(store.captain_events())
+    current = presence(store.user_events())
     if current:
         return [f"Got it. Away mode is already on {since_text(current)}; nothing changed.", "next: boss back"]
-    record = store.captain("away", note=" ".join(note.split()) or None)
+    record = store.user_event("away", note=" ".join(note.split()) or None)
     note = " ".join(str(record.get("note") or "").split())
-    tell(store, record, f"Captain went away at {clock(record['at'])}" + (f" ({plain(note, 80)})" if note else "") +
-         ". Don't ask him anything until /back: act on your own judgement and queue decisions for /back."
-         " Anything he says or decides in a check-in counts in full; record it with boss log.")
+    tell(store, record, f"Away mode on at {clock(record['at'])}" + (f" ({plain(note, 80)})" if note else "") + ". " +
+         named(store.name, "Don't ask {name} anything until /back", "Ask nothing until /back") +
+         ": use your own judgement and queue decisions for /back. Anything " +
+         named(store.name, "{name} says or decides", "said or decided") + " meanwhile counts in full; record it with boss log.")
     return [f"Got it. Away mode on {since_text(record)}.", "next: boss back"]
 
 
@@ -107,7 +114,7 @@ def note(store, text, sender, project=None, paths=()):
         if len(head) + len(body) + len(where) > LINE_CHARS:
             body = plain(body, max(LINE_CHARS - len(head) - len(where), 40))
         body += where
-    record = store.captain("note", text=text.strip(), sender=sender, project=project,
+    record = store.user_event("note", text=text.strip(), sender=sender, project=project,
                           images=len(images), saved=str(saved) if saved else None)
     tell(store, record, head + body)
     return record
@@ -115,8 +122,8 @@ def note(store, text, sender, project=None, paths=()):
 
 def tell(store, record, line):
     """The supervisor hears of /away and /back through the owner's inbox, like any worker event."""
-    from .inbox import Inbox  # inbox -> state -> captain: import late
-    Inbox(store.home, store.redact).hold(f"captain:{record['event']}:{record['at']}", None, "captain", line)
+    from .inbox import Inbox  # inbox -> state -> user: import late
+    Inbox(store.home, store.redact).hold(f"user:{record['event']}:{record['at']}", None, "user", line)
 
 
 # Decisions -------------------------------------------------------------------
@@ -169,10 +176,11 @@ def about(store, decision):
 
 def ask(store, requested=None, *, reason="ask"):
     """Number every open decision 1..N and record that round."""
-    events = store.captain_events()
+    events = store.user_events()
     if presence(events) and reason == "ask" and not (requested and requested.strip()):
-        refuse("the captain is away; do not ask him, queue decisions for /back",
-               'boss decide ask --requested "<his words>" only when he asks for the list')
+        refuse(named(store.name, "{name} is away; don't ask, queue decisions for /back",
+                     "away mode is on; don't ask, queue decisions for /back"),
+               'boss decide ask --requested "<the exact request>" only when the list is asked for')
     decisions = open_decisions(store)
     counts, marks = asked_counts(events), unclear_marks(events)
     if not decisions:
@@ -180,10 +188,10 @@ def ask(store, requested=None, *, reason="ask"):
     vague = [d for d in decisions if d["id"] in marks and needs_detail(d, marks[d["id"]])]
     if vague and reason == "ask":
         raise BossError("refused", f"{plural(len(vague), 'unclear answer')} {'needs' if len(vague) == 1 else 'need'} more detail before asking again",
-                        'boss decide detail <id> "<plain explanation of what he is choosing>"', 2,
-                        context=[f"{d['id']}: {plain(d['text'], 160)} (he said: {plain(marks[d['id']]['note'], 160)})"
+                        'boss decide detail <id> "<plain explanation of the choice>"', 2,
+                        context=[f"{d['id']}: {plain(d['text'], 160)} (answer: {plain(marks[d['id']]['note'], 160)})"
                                  for d in vague])
-    record = store.captain("ask", items=[d["id"] for d in decisions], reason=reason,
+    record = store.user_event("ask", items=[d["id"] for d in decisions], reason=reason,
                            **({"requested": requested.strip()} if requested and requested.strip() else {}))
     number = len(rounds(events)) + 1
     lines = [f"{plural(len(decisions), 'open decision')} (round {number}; reply like \"1 yes 2 no\"):"]
@@ -211,7 +219,7 @@ def verdict(words):
 
 
 def close(store, decision, words, **extra):
-    """Record his answer; the first answer is final."""
+    """Record the answer; the first answer is final."""
     if decision.get("closed"):
         return False
     decision.update({"closed": True, "resolution": words, "closed_at": now(), "verdict": verdict(words), **extra})
@@ -241,19 +249,19 @@ def add_decision(store, text, task=None, action=None):
 
 
 def approval(store, task, action="merge"):
-    """His latest answer on doing action for task, or None."""
+    """The latest answer on doing action for task, or None."""
     answers = [d for d in store.decisions() if d.get("closed") and d.get("task") == task and d.get("action") == action]
     return max(answers, key=lambda d: d.get("closed_at") or "", default=None)
 
 
 def approve(store, task, action, words):
-    """An approval he gives in passing, here or in a check-in, closes the matching decision for good."""
+    """An approval given in passing, here or in a check-in, closes the matching decision for good."""
     meta = store.load(task)
     closed = [d for d in store.decisions() if d.get("task") == task and d.get("action") == action
               and close(store, d, words, verdict="yes")]
     latest = approval(store, task, action)
     if not closed and (latest is None or latest.get("verdict") != "yes"):
-        # Nothing was open, or he changed an earlier no: his newer words win.
+        # Nothing was open, or an earlier no changed: the newer words win.
         record = {"id": store.new_id(), "text": f"{action} {plain(meta['title'], 200)}", "task": task,
                   "action": action, "closed": False, "created_at": now()}
         close(store, record, words, verdict="yes")
@@ -270,7 +278,7 @@ def add_detail(store, decision, text):
 
 
 def parse_answers(reply, count):
-    """{number: his words} for numbers 1..count, read in increasing order."""
+    """{number: words} for numbers 1..count, read in increasing order."""
     found, last = [], 0
     for match in ANSWER_NUMBER.finditer(reply):
         number = int(match[1])
@@ -283,7 +291,7 @@ def parse_answers(reply, count):
 
 def answer(store, reply, round_number=None):
     """Apply a reply like "1 yes 3 no 5 more info" to the latest round."""
-    asked = rounds(store.captain_events())
+    asked = rounds(store.user_events())
     if not asked:
         refuse("no ask round yet, so numbers mean nothing", "boss decide ask")
     if round_number is not None and round_number != len(asked):
@@ -292,8 +300,8 @@ def answer(store, reply, round_number=None):
     items = asked[-1]["items"]
     parts = {n: words for n, words in parse_answers(reply, len(items)).items() if words}
     if not parts:
-        refuse(f"no numbered answers for round {len(asked)} (1..{len(items)}) in his reply",
-               'boss decide close <n> "<his words>" for an answer without numbers')
+        refuse(f"no numbered answers for round {len(asked)} (1..{len(items)}) in that reply",
+               'boss decide close <n> "<exact words>" for an answer without numbers')
     decisions = {d["id"]: d for d in store.decisions()}
     done = {"closed": [], "unclear": [], "already answered": []}
     for number, words in sorted(parts.items()):
@@ -301,7 +309,7 @@ def answer(store, reply, round_number=None):
         if decision.get("closed"):
             done["already answered"].append(number)
         elif UNCLEAR.search(words):
-            store.captain("unclear", decision=decision["id"], note=words)
+            store.user_event("unclear", decision=decision["id"], note=words)
             done["unclear"].append(number)
         else:
             close(store, decision, words)
@@ -335,7 +343,7 @@ def resolve(store, reference, round_number=None):
         return decisions[reference]
     if not re.fullmatch(r"[1-9][0-9]{0,3}", reference):
         raise BossError("usage", f"unknown decision {reference}", "boss decide list", 1)
-    asked = rounds(store.captain_events())
+    asked = rounds(store.user_events())
     if not asked:
         refuse("no ask round yet, so numbers mean nothing", "boss decide ask")
     if round_number is not None and round_number != len(asked):
@@ -369,7 +377,7 @@ def task_events(store):
             elif event == "adopted":
                 words.append(("started", "adopted a PR opened outside boss: " + title(current)))
             elif event == "parked":
-                words.append(("parked", f"parked: {title(current)}; his words: {plain(current['parked']['words'], 200)}"))
+                words.append(("parked", f"parked: {title(current)}; your words: {plain(current['parked']['words'], 200)}"))
             elif event == "unparked":
                 words.append(("unparked", "unparked: " + title(current)))
             elif event == "launch_unknown":
@@ -433,7 +441,7 @@ def decision_events(store):
     return rows
 
 
-def captain_rows(store, events):
+def user_rows(store, events):
     decisions = {d["id"]: d for d in store.decisions()}
     rows = []
     for record in events:
@@ -464,7 +472,7 @@ def captain_rows(store, events):
 
 
 def timeline(store, start, end, events):
-    rows = [*task_events(store), *steer_events(store), *decision_events(store), *captain_rows(store, events)]
+    rows = [*task_events(store), *steer_events(store), *decision_events(store), *user_rows(store, events)]
     window = [(parse(at), kind, text) for at, kind, text in rows if start <= parse(at) <= end]
     # Stable sort keeps same-instant records in source order.
     return sorted(window, key=lambda row: row[0])
@@ -486,7 +494,7 @@ def timeline_lines(rows):
 
 
 def last_window(events):
-    """(away record, back record or None) for the latest away window, or None if he was never away."""
+    """(away record, back record or None) for the latest away window, or None if away mode never ran."""
     window, away = None, None
     for record in events:
         if record["event"] == "away" and away is None:
@@ -502,28 +510,29 @@ def tally(rows):
 
 
 def back(store):
-    """/back: a one-line ack for him; the window and a pointer to the timeline go to the supervisor's inbox."""
-    events = store.captain_events()
+    """/back: a one-line ack in chat; the window and a pointer to the timeline go to the supervisor's inbox."""
+    events = store.user_events()
     current = presence(events)
     if current is None:
         return ["Welcome back. You weren't marked away; nothing changed.", "next: boss"]
-    record = store.captain("back")
+    record = store.user_event("back")
     start, end = parse(current["at"]), parse(record["at"])
     rows = timeline(store, start, end, events)
     open_count = len(open_decisions(store))
-    tell(store, record, f"Captain is back at {clock(record['at'])} after {duration(start, end)} away "
+    tell(store, record, f"Away mode off at {clock(record['at'])} after {duration(start, end)} away "
          f"({since_text(current)}): {plural(len(rows), 'event')}, tasks {tally(rows)}, "
-         f"{plural(open_count, 'open decision')}. Away mode is off. Catch him up now: read boss back --full, then "
-         "write the TL;DR and the open decisions as the boss skill says. Never paste the timeline.")
+         f"{plural(open_count, 'open decision')}. " +
+         named(store.name, "Catch {name} up now", "Write the catch-up now") + ": read boss back --full, then "
+         "write the short catch-up and the open decisions as the boss skill says. Never paste the timeline.")
     return ["Welcome back. Catching you up.", "next: boss back --full"]
 
 
 def full(store):
     """boss back --full, read-only: the raw timeline of the latest away window (so far, if still away)."""
-    events = store.captain_events()
+    events = store.user_events()
     window = last_window(events)
     if window is None:
-        return ["The captain hasn't been away yet; nothing to catch up on.", "next: boss"]
+        return ["Away mode has not run yet, so there is nothing to catch up on.", "next: boss"]
     away_record, back_record = window
     start = parse(away_record["at"])
     end = parse(back_record["at"]) if back_record else datetime.now(timezone.utc)

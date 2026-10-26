@@ -131,24 +131,24 @@ class InboxTest(HermeticTestCase):
 
 class TurnMarkTest(HermeticTestCase):
     def test_busy_only_for_the_owners_running_turn(self):
-        self.assertFalse(owner_busy(self.home, "agent:captain"))
-        turn_started(self.home, "agent:captain", "sess-1")
-        self.assertTrue(owner_busy(self.home, "agent:captain"))
+        self.assertFalse(owner_busy(self.home, "agent:owner"))
+        turn_started(self.home, "agent:owner", "sess-1")
+        self.assertTrue(owner_busy(self.home, "agent:owner"))
         self.assertFalse(owner_busy(self.home, "agent:phone"))
         self.assertFalse(turn_ended(self.home, session_id="sess-other"))
-        self.assertTrue(owner_busy(self.home, "agent:captain"))
+        self.assertTrue(owner_busy(self.home, "agent:owner"))
         self.assertTrue(turn_ended(self.home, session_id="sess-1"))
-        self.assertFalse(owner_busy(self.home, "agent:captain"))
+        self.assertFalse(owner_busy(self.home, "agent:owner"))
 
     def test_a_crashed_turn_does_not_block_idle_delivery_forever(self):
-        turn_started(self.home, "agent:captain", "sess-1")
+        turn_started(self.home, "agent:owner", "sess-1")
         record = json.loads((self.home / inbox.TURN).read_text())
         (self.home / inbox.TURN).write_text(json.dumps({**record, "pid": 2 ** 22 + 12345}))
         with patch("os.kill", side_effect=ProcessLookupError):
-            self.assertFalse(owner_busy(self.home, "agent:captain"))
+            self.assertFalse(owner_busy(self.home, "agent:owner"))
         old = (datetime.now(timezone.utc) - inbox.TURN_STALE - timedelta(minutes=1)).isoformat()
         (self.home / inbox.TURN).write_text(json.dumps({**record, "pid": os.getpid(), "at": old}))
-        self.assertFalse(owner_busy(self.home, "agent:captain"))
+        self.assertFalse(owner_busy(self.home, "agent:owner"))
 
 
 if __name__ == "__main__":

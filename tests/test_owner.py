@@ -39,7 +39,7 @@ class OwnerTest(HermeticTestCase):
         return code, output.getvalue(), errors.getvalue()
 
     def events(self):
-        return [json.loads(line) for line in (self.home / "captain.jsonl").read_text().splitlines()]
+        return [json.loads(line) for line in (self.home / "user.jsonl").read_text().splitlines()]
 
     def test_claim_reopen_refuse_take_release(self):
         code, output, _ = self.cli("own", "--label", "Discord DM", key="agent:discord")
@@ -118,7 +118,7 @@ class OwnerTest(HermeticTestCase):
         Inbox(self.home).hold("finished:run-1", meta["id"], "finished", "Fix thing: finished", run="run-1")
         live = lambda: [i["key"] for i in triage(self.store.load, Inbox(self.home).open_items())[0]]
         before = self.ledger()
-        # Another Hermes session, or any shell (a firstmate check, the captain's terminal), sees it all...
+        # Another Hermes session, or any shell (your terminal), sees it all...
         for key in ("agent:app", None):
             for args in (("status", meta["id"]), ("status", meta["id"], "--full"), ("status",), ()):
                 code, output, _ = self.cli(*args, key=key)
@@ -186,7 +186,7 @@ class OwnerTest(HermeticTestCase):
     def test_slash_command_claims_refuses_takes_and_tells_the_previous_owner(self):
         ctx = Context(self.home / "profile")
         handler = plugin.boss_command(ctx)
-        source = type("Source", (), {"chat_type": "dm", "chat_name": "captain"})()
+        source = type("Source", (), {"chat_type": "dm", "chat_name": "owner"})()
         self.assertIn("boss is open in Discord DM", handler("", session_key="agent:discord", platform="discord", source=source))
         refused = handler("", session_key="agent:tui", platform="tui")
         self.assertRegex(refused, r"^boss is owned by Discord DM since \d\d:\d\d\. Run /boss take \(or boss own --take\) to move it here\.$")

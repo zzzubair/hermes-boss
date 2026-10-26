@@ -13,7 +13,7 @@ import shlex
 import subprocess
 from time import sleep
 
-from . import captain
+from . import user
 from . import owner
 from .common import BossError, refuse, require_text
 
@@ -81,7 +81,7 @@ def release(deploy, project, ref):
                    f"boss deploy {project} --ref <git sha> ...")
         return deploy
     if not REF.fullmatch(ref):
-        refuse(f"--ref must be a git sha of 7 to 40 hex characters, not {captain.plain(ref, 60)}",
+        refuse(f"--ref must be a git sha of 7 to 40 hex characters, not {user.plain(ref, 60)}",
                f"boss deploy {project} --ref <git sha> ...")
     if not used:
         refuse(f"--ref changes nothing: the {project} deploy table has no {{sha}} or {{sha7}}",
@@ -103,23 +103,23 @@ def blockers(store, project, deploy, at):
     """Plain reasons boss may not deploy right now; empty when it may."""
     found = [f"{window} UTC is a no-touch window for {project}" for window in deploy["no_touch"] if inside(window, at)]
     minutes = run_minutes(deploy)
-    wait = f"{captain.plural(deploy['check_minutes'], 'minute')} of checks plus " if deploy.get("check") and deploy["check_minutes"] else ""
+    wait = f"{user.plural(deploy['check_minutes'], 'minute')} of checks plus " if deploy.get("check") and deploy["check_minutes"] else ""
     found += [f"the {window} UTC no-touch window for {project} starts at {window[:5]} UTC, before this run can finish "
               f"({wait}a {MARGIN}-minute margin, so until {at + timedelta(minutes=minutes):%H:%M} UTC)"
               for window in deploy["no_touch"] if starts_within(window, at, minutes)]
-    found += [f"you fenced {project}: {captain.plain(s['text'], 200)}"
+    found += [f"you fenced {project}: {user.plain(s['text'], 200)}"
               for s in store.steers(project) if s.get("fence") and s.get("task") is None]
     asks = [d for d in store.decisions() if d.get("action") == "deploy"]
     for meta in store.tasks():
         mine = [d for d in asks if d.get("task") == meta["id"]] if meta["project"] == project else []
         if any(not d.get("closed") for d in mine):
-            found.append(f"the deploy question about {captain.plain(meta['title'], 120)} is still open")
+            found.append(f"the deploy question about {user.plain(meta['title'], 120)} is still open")
             continue
-        # The latest answer wins, as in captain.approval.
+        # The latest answer wins, as in user.approval.
         answer = max(mine, key=lambda d: d.get("closed_at") or "", default=None)
         if answer is not None and answer.get("verdict") == "no":
-            found.append(f"you said no to deploying {captain.plain(meta['title'], 120)}: "
-                         f"{captain.plain(answer['resolution'], 160)}")
+            found.append(f"you said no to deploying {user.plain(meta['title'], 120)}: "
+                         f"{user.plain(answer['resolution'], 160)}")
     return found
 
 
@@ -168,7 +168,7 @@ def run(boss, project, approved, dry_run, session_key, out, ref=None):
         if deploy.get("ref"):
             out(f"release: {deploy['ref']} ({{sha7}} = {deploy['ref'][:7]})")
         out(f"deploy: {deploy['command']}")
-        later = f" and after {captain.plural(deploy['check_minutes'], 'minute')}" if deploy["check_minutes"] else ""
+        later = f" and after {user.plural(deploy['check_minutes'], 'minute')}" if deploy["check_minutes"] else ""
         out("check: " + (f"{deploy['check']} now{later}" if deploy.get("check") else "none"))
         out("rollback: " + (deploy.get("rollback") or "none") + (" (runs by itself on a failed check)" if deploy["auto_rollback"] else ""))
         for reason in found:
@@ -178,8 +178,8 @@ def run(boss, project, approved, dry_run, session_key, out, ref=None):
     if not approved or not approved.strip():
         refuse("deploying needs your exact words", f'boss deploy {project}{again} --approved "<your exact words>"')
     require_text(approved, "your words", 2000)
-    if captain.verdict(approved) == "no":
-        refuse(f"your words say no: {captain.plain(approved, 200)}", "deploy only on a yes")
+    if user.verdict(approved) == "no":
+        refuse(f"your words say no: {user.plain(approved, 200)}", "deploy only on a yes")
     if not session_key:
         refuse("boss deploy runs only in the Hermes session that owns boss", "run it from the owner session")
     with store.locked():
@@ -188,7 +188,7 @@ def run(boss, project, approved, dry_run, session_key, out, ref=None):
         if found:
             raise BossError("refused", f"not deploying {project}", "never work around it: wait out the window or get a new yes (boss steer drop lifts a fence once you lift it)", 2,
                             context=["reason: " + reason for reason in found])
-        store.captain("deploy", phase="start", project=project, approved=approved.strip(), host=deploy["host"],
+        store.user_event("deploy", phase="start", project=project, approved=approved.strip(), host=deploy["host"],
                       **({"ref": deploy["ref"]} if deploy.get("ref") else {}))
     out(f"deploying {project}{' at ' + deploy['ref'][:7] if deploy.get('ref') else ''} on {deploy['host']}...")
     code = remote(deploy["host"], deploy["command"], redact, out)
@@ -199,11 +199,11 @@ def run(boss, project, approved, dry_run, session_key, out, ref=None):
     elif not check(deploy, project, redact, out, "right away"):
         result, ok = "deployed, but the check failed right away", False
     elif deploy["check_minutes"]:
-        minutes = captain.plural(deploy["check_minutes"], "minute")
+        minutes = user.plural(deploy["check_minutes"], "minute")
         due = datetime.now(timezone.utc) + timedelta(minutes=deploy["check_minutes"])
         # One line a minute, flushed, so a tracked background run shows it is alive.
         for left in range(deploy["check_minutes"], 0, -1):
-            out(f"waiting {captain.plural(left, 'more minute')} before the second check (due {due:%H:%M} UTC)...")
+            out(f"waiting {user.plural(left, 'more minute')} before the second check (due {due:%H:%M} UTC)...")
             sleep(60)
         ok = check(deploy, project, redact, out, f"after {minutes}")
         result = f"deployed; check passed right away and after {minutes}" if ok else \
@@ -219,7 +219,7 @@ def run(boss, project, approved, dry_run, session_key, out, ref=None):
         else:
             out(f"rollback (not run): ssh {deploy['host']} {shlex.quote(deploy['rollback'])}")
     with store.locked(wait=True):
-        store.captain("deploy", phase="done", project=project, ok=ok, result=result,
+        store.user_event("deploy", phase="done", project=project, ok=ok, result=result,
                       **({"rolled_back": rolled == 0} if rolled is not None else {}))
     out(f"{project}: {result}.")
     if ok:

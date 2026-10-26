@@ -42,7 +42,7 @@ class BriefTest(HermeticTestCase):
                 self.assertEqual(preview, sent)
                 self.assertEqual(saved, sent)
                 self.assertEqual([line for line in sent.splitlines() if line.startswith("## ")],
-                                 ["## Project goal", "## Captain steers"])
+                                 ["## Project goal", "## Steers"])
                 for absent in ("old tests", "obsolete", "new tests", "format", "stdlib", "## Rules", "source:",
                                "Execution settings", "test_host:", "no_mistakes:", str(self.home)):
                     self.assertNotIn(absent, sent)

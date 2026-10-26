@@ -3,7 +3,7 @@
 The owner's inbox (boss/inbox.py) reaches its model through `boss watch`, a tracked
 background command whose exit Hermes shows as a system notice, and appended to a
 tool result mid-turn (transform_tool_result). Nothing goes into turn-start context
-or an injected message by default: Hermes shows both as if the captain sent them.
+or an injected message by default: Hermes shows both as if the person in chat sent them.
 With tasks active and no watch running, the owner's first tool result each turn
 says to start one.
 Turn start and end hooks keep the on-disk busy mark the listener checks.
@@ -184,7 +184,7 @@ def turn_end_hook(**kwargs):
 def on_pre_llm_call(**kwargs):
     """Hermes passes turn metadata as kwargs and accepts {context: text} or None.
 
-    The app shows this context inside the captain's own message, so the owner gets
+    The app shows this context inside the person's own message, so the owner gets
     at most the one-line dead-listener warning; inbox items, away state and the
     open count reach the supervisor through boss watch instead.
     """
@@ -216,7 +216,7 @@ def run(argv, session_key="", surface=""):
     env = {k: v for k, v in os.environ.items() if k not in ("HERMES_SESSION_KEY", "HERMES_SESSION_PLATFORM")}
     if session_key:
         env.update(HERMES_SESSION_KEY=session_key, HERMES_SESSION_PLATFORM=surface or "")
-    # Never drop his command because another boss command holds the ledger: wait for it.
+    # Never drop a typed command because another boss command holds the ledger: wait for it.
     env["BOSS_WAIT_FOR_LEDGER"] = "1"
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=60, check=False, env=env)
@@ -328,10 +328,10 @@ def register(ctx):
         command("boss", boss_command(ctx), description="Open boss in this session: it gets wakes and a catch-up",
                 args_hint="[take|release|status]")
         # Only these two commands change presence; other chat is a check-in.
-        command("away", on_away, description="Captain away: no questions, decisions queue for /back", args_hint="[note]")
+        command("away", on_away, description="You are away: boss asks nothing and saves decisions for /back", args_hint="[note]")
         command("afk", on_away, description="Alias for /away", args_hint="[note]")
-        command("back", on_back, description="Captain back: a short catch-up and the open decisions")
-        command("ahoy", on_back, description="Alias for /back")
+        command("back", on_back, description="You are back: a short catch-up and the open decisions")
+        command("ahoy", on_back, description="Alias for /back")  # old name, kept working; not documented
     # Plugins load before the gateway marks itself (_HERMES_GATEWAY), so never gate
     # on it. Host processes (gateway, TUI, desktop) start the listener now; any
     # other process that later proves it can inject starts it from its first turn.

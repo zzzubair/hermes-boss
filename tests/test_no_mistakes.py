@@ -249,7 +249,7 @@ class NoMistakesTest(HermeticTestCase):
         self.gh.paths = ["README.md"]
         code, output = self.cli("land", meta["id"])
         self.assertEqual(code, 2, output)
-        self.assertIn("landing requires the captain's words", output)
+        self.assertIn("landing needs approving words", output)
         self.gh.pr["body"] = EVIDENCE_BODY
         code, output = self.cli("land", meta["id"])
         self.assertEqual(code, 0, output)

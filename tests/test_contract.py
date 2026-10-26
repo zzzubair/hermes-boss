@@ -74,7 +74,7 @@ class ContractTest(HermeticTestCase):
         self.steer("Rule ship: Mobile-first; test on WSL")
         self.steer("rule direct-PR: PR body follows the pr-description shape")
         self.steer("rule scout: Cite file paths")
-        heading = "Standing rules from the captain. Follow every one:"
+        heading = "Standing rules. Follow every one:"
         ship = self.sent()
         self.assertIn(heading + "\n- No secrets in logs\n- Mobile-first; test on WSL\n"
                       "- PR body follows the pr-description shape\n", self.contract(ship))
@@ -82,7 +82,7 @@ class ContractTest(HermeticTestCase):
         self.assertIn(heading + "\n- No secrets in logs\n- PR body follows the pr-description shape\n"
                       "- Cite file paths\n", self.contract(scout))
         for message in (ship, scout, self.brief(), self.brief("--worker", "scout")):
-            steers = message.split("## Captain steers", 1)[1].split("### boss worker contract", 1)[0]
+            steers = message.split("## Steers", 1)[1].split("### boss worker contract", 1)[0]
             self.assertIn("Keep it small", steers)
             self.assertNotIn("rule", steers.lower())
             self.assertEqual(message.count("No secrets in logs"), 1)
@@ -113,6 +113,6 @@ class ContractTest(HermeticTestCase):
         self.steer("rule ui: phone first")
         message = self.brief()
         self.assertNotIn("Standing rules", message)
-        steers = message.split("## Captain steers", 1)[1]
+        steers = message.split("## Steers", 1)[1]
         self.assertIn("rules: keep the old naming", steers)
         self.assertIn("rule ui: phone first", steers)

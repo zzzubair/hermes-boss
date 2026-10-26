@@ -53,7 +53,7 @@ class ModelRulesTest(HermeticTestCase):
             self.assertNotIn("kinds", output)
             self.assertEqual(errors, "")
         self.assertNotIn("rules", self.cli("project", "show", "repo")[1])
-        code, output = self.cli("spawn", "repo", "--title", "T", "--allow-model", "captain said so")
+        code, output = self.cli("spawn", "repo", "--title", "T", "--allow-model", "go ahead, just this once")
         self.assertEqual(code, 1, output)
         self.assertIn("--allow-model applies only when a worker rule refuses the spawn", output)
 
@@ -62,7 +62,7 @@ class ModelRulesTest(HermeticTestCase):
         output = self.refused("--worker", "astra", "--kind", "ship")
         self.assertIn("role astra may run only scout tasks, not ship", output)
         self.assertIn("[workers.astra]", output)
-        self.assertIn('next: retry with --kind scout or another --worker / --allow-model "<captain\'s exact words>"', output)
+        self.assertIn('next: retry with --kind scout or another --worker / --allow-model "<exact words>"', output)
         self.assertIn("to allow it from now on: boss config set workers.astra.kinds '[\"scout\", \"ship\"]'", output)
         meta = self.spawn("--worker", "astra")
         self.assertEqual((meta["worker"], meta["kind"]), ("astra", "scout"))
@@ -88,7 +88,7 @@ class ModelRulesTest(HermeticTestCase):
         # The ship list does not restrict scouts.
         self.assertEqual(self.spawn("--kind", "scout", "--model", "codex:gpt-test")["kind"], "scout")
 
-    def test_override_records_captain_words_and_violations(self):
+    def test_override_records_the_exact_words_and_violations(self):
         self.configure('[rules.models]\nship=["claude:opus-test"]\n[workers.astra]\nkinds=["scout"]\n')
         quote = "Let Astra ship this one fix with gpt"
         meta = self.spawn("--worker", "astra", "--model", "codex:gpt-test", "--allow-model", quote)
@@ -101,7 +101,7 @@ class ModelRulesTest(HermeticTestCase):
         self.assertEqual(journal[0]["event"], "launch_intent")
         self.assertEqual(journal[0]["meta"]["override"]["approved"], quote)
         status = self.cli("status", meta["id"])[1]
-        self.assertIn(f"allowed by captain: {quote}", status)
+        self.assertIn(f"allowed: {quote}", status)
         self.assertIn("  despite: model codex:gpt-test is not allowed for ship tasks", status)
         code, output = self.cli("spawn", "repo", "--title", "T", "--worker", "astra", "--allow-model", " ")
         self.assertEqual(code, 1, output)

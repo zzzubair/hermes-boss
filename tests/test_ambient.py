@@ -30,7 +30,7 @@ class AmbientTest(unittest.TestCase):
         self.assertEqual(output.getvalue(), "")
 
     def test_open_items_never_reach_turn_context_and_watch_counts_them_without_ids(self):
-        # Turn context shows inside the captain's own message, so open items go to boss watch instead.
+        # Turn context shows inside the person's own message, so open items go to boss watch instead.
         self.as_owner()
         decision = self.cli("decide", "add", "Choose an API")[1].split(":", 1)[0]
         meta = self.spawn()
