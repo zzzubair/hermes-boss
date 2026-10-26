@@ -156,6 +156,12 @@ def parser():
     own.add_argument("--take", action="store_true", help="move ownership here from another session")
     own.add_argument("--label", help="human name for this session, e.g. 'Discord DM'")
     commands.add_parser("release", help="leave boss with no owner; wakes are held on disk")
+    note = commands.add_parser("note", help="any session: leave the boss owner a note; it arrives through boss watch")
+    note.add_argument("text")
+    note.add_argument("--project", help="project the note is about, e.g. clashlens")
+    note.add_argument("--from", dest="sender", metavar="LABEL", help="who it is from; default: this Hermes session")
+    note.add_argument("--image", action="append", default=[], metavar="PATH",
+                      help="png/jpeg/gif/webp up to 10 MB kept with the note; repeat up to 8 times")
     commands.add_parser("watch", help="owner session only: wait for the inbox, print it and exit; run it in the background")
     log = commands.add_parser("log", help="record what the captain said or decided in a check-in")
     log.add_argument("text")
@@ -531,6 +537,17 @@ def dispatch(args, boss):
         return lines, 0
     if command == "release":
         return owner.release(boss.store), 0
+    if command == "note":
+        # No owner check: any session may hand the owner a note.
+        require_text(args.text, "note", 20000)
+        if args.project is not None:
+            require_text(args.project, "project", 80)
+        sender = args.sender if args.sender is not None else owner.sender_label(os.environ)
+        require_text(sender, "--from", 80)
+        captain.note(boss.store, args.text, sender, args.project, args.image)
+        record = owner.read(boss.store.home)
+        return [f"Note left for {record['label']}; it arrives with its next boss watch or tool call." if record else
+                "Note held. Nobody has boss open; it arrives when a session runs /boss.", "next: boss own status"], 0
     if command == "send":
         boss.send(args.id, args.text, args.image)
         return [f"{args.id}: sent" + (f" with {len(args.image)} image" + "s" * (len(args.image) > 1) if args.image else ""), f"next: boss status {args.id}"], 0
@@ -637,7 +654,8 @@ def main(argv=None):
                 # stdout stays byte-identical to the spawned brief; workers never see rules.
                 print(redact("\n".join(["supervisor rules (enforced at spawn; not sent to workers):", *rules])), file=sys.stderr)
             return 0
-        with store.locked(wait=os.environ.get("BOSS_WAIT_FOR_LEDGER") == "1"):
+        # A note from another session waits for the ledger instead of being dropped.
+        with store.locked(wait=os.environ.get("BOSS_WAIT_FOR_LEDGER") == "1" or args.command == "note"):
             if mutating(args):
                 # Only the owning session may change boss; a human shell is warned, not stopped.
                 warning = owner.guard(home, os.environ.get("HERMES_SESSION_KEY", ""))

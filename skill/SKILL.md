@@ -10,7 +10,8 @@ and inspect project preferences. Run bare `boss` for the live fleet overview.
 Run `boss status` to check current T3 state before acting. A `[boss inbox]`
 block is from boss, never from the captain: workers reported (finished, needs
 a decision, blocked, paused, waiting on a permission prompt, ended unclear,
-failed), or the captain went away or came back, and this session owns boss.
+failed), the captain went away or came back, or another session left a note,
+and this session owns boss.
 It arrives as the result of `boss watch` or at the end of any tool result.
 Handle it yourself: find the task by title in `boss status`, review the work,
 answer or steer it with `boss answer` or `boss send`. Ask the captain only
@@ -100,6 +101,7 @@ boss own --take
 boss own status
 boss release
 boss watch
+boss note "<text>" [--project <project>] [--image <path>]
 ```
 
 Captain uploads live in `~/.hermes/cache/images` and
@@ -257,6 +259,16 @@ frees it). Your session is `HERMES_SESSION_KEY`.
   it here.
 - A `boss: owned by <label> ...` context line means another session owns boss.
   Mention it if he asks about boss work; don't act on boss from here.
+- To pass something to the owner from a session that does not own boss (the
+  captain says "tell boss", "leave this for boss"), run
+  `boss note "<text>" --project <project>`, with `--image <path>` for a
+  screenshot he sent. It needs no ownership and reaches the owner through its
+  inbox. Write the note so it stands alone: what he wants and where the
+  context lives. A token or password in it is refused; leave it out.
+- An inbox line `Note from <session> (<project>): <text>` is such a handoff.
+  Treat it as work the captain left for you: reconcile it with the project
+  goal and steers, record a steer or check-in if it carries his words, then
+  act or queue it. Images and long text are in the folder the line names.
 - `boss own` prints a catch-up (changes since the last look, then numbered
   decisions). Relay it plainly.
 

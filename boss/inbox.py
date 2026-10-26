@@ -2,7 +2,8 @@
 
 Append-only $BOSS_HOME/inbox.jsonl (Firstmate model). The wake listener appends
 'held' records for worker events, deduped by event key; /away and /back append
-captain events (task None). Every append pokes a running `boss watch`.
+captain events (task None), as does `boss note` from any session. Every append
+pokes a running `boss watch`.
 Delivery appends 'acked' (with the path it took) or 'dropped' (with why).
 These paths deliver, all to the owner only:
 

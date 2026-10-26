@@ -8,6 +8,7 @@ captain journal and show up in the /back timeline.
 from datetime import datetime
 import json
 import os
+from types import SimpleNamespace
 
 from . import captain
 from .common import BossError, refuse
@@ -29,6 +30,15 @@ def label_for(surface, source=None):
     chat_type = str(getattr(source, "chat_type", "") or "").lower()
     chat = " ".join(str(getattr(source, "chat_name", "") or "").split())[:40]
     return f"{name} DM" if chat_type == "dm" else f"{name} {chat}" if chat else f"{name} chat"
+
+
+def sender_label(env):
+    """Who ran a command, from the session vars Hermes gives its terminal: 'Discord DM', 'T3', 'a shell'."""
+    surface = env.get("HERMES_SESSION_PLATFORM") or env.get("HERMES_SESSION_SOURCE") or ""
+    if not surface and not env.get("HERMES_SESSION_KEY"):
+        return "a shell"
+    return label_for(surface, SimpleNamespace(chat_type=env.get("HERMES_SESSION_CHAT_TYPE", ""),
+                                              chat_name=env.get("HERMES_SESSION_CHAT_NAME", "")))
 
 
 def read(home):
