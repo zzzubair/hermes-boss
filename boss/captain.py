@@ -13,6 +13,19 @@ from .common import BossError, refuse
 STATUS_WORDS = {"completed": "finished", "failed": "failed", "rolled_back": "failed",
                 "interrupted": "stopped", "cancelled": "stopped", "waiting": "waiting for input"}
 GROUP_AFTER = 12
+# Things the captain approves once: his answer about one of these for a task is final.
+ACTIONS = ("merge", "deploy", "demo")
+# "1 yes 3 no 5 more info": a number from the round, at the start or after a space or separator.
+ANSWER_NUMBER = re.compile(r"(?:^|(?<=[\s/;,]))(\d{1,3})(?:[.):]\s*|\s+|$)")
+UNCLEAR = re.compile(r"\b(?:more (?:info|information|details?|context)|needs? more|unclear|confus\w*|not sure|"
+                     r"don'?t (?:understand|get)|what do you mean|explain|idk|no idea)\b|\?\s*$", re.I)
+VERDICT = re.compile(r"\b(?:(yes|yeah|yep|yup|ok|okay|sure|approved?|go ahead|do it|(?:merge|deploy|ship|land) it|lgtm)|"
+                     r"(no|nope|nah|don'?t|do not|reject(?:ed)?|not now|hold off))\b", re.I)
+
+
+def now():
+    # state.now; state imports this module, so it can't be imported here.
+    return datetime.now(timezone.utc).isoformat()
 
 
 def plain(value, limit=240):
@@ -89,16 +102,33 @@ def asked_counts(events):
     return counts
 
 
-def unclear_notes(events):
-    """Latest unclear note per decision that no later round has re-asked yet."""
-    notes = {}
+def unclear_marks(events):
+    """Latest unclear mark per decision that no later round has re-asked yet."""
+    marks = {}
     for record in events:
         if record["event"] == "unclear":
-            notes[record["decision"]] = record["note"]
+            marks[record["decision"]] = record
         elif record["event"] == "ask":
             for decision_id in record["items"]:
-                notes.pop(decision_id, None)
-    return notes
+                marks.pop(decision_id, None)
+    return marks
+
+
+def needs_detail(decision, mark):
+    """An unclear answer is re-asked only after the supervisor explained it better."""
+    return not any(d["at"] > mark["at"] for d in decision.get("details") or [])
+
+
+def about(store, decision):
+    """Plain words on what a re-asked decision is about: its task and PR, never ids."""
+    if not decision.get("task"):
+        return None
+    try:
+        meta = store.load(decision["task"])
+    except BossError:
+        return None
+    prs = [p["url"] for p in (meta.get("observed") or {}).get("prs") or [] if p.get("url")]
+    return "about: " + title(meta) + (f", {prs[-1]}" if prs else "")
 
 
 def ask(store, requested=None, *, reason="ask"):
@@ -108,21 +138,143 @@ def ask(store, requested=None, *, reason="ask"):
         refuse("the captain is away; do not ask him, queue decisions for /back",
                'boss decide ask --requested "<his words>" only when he asks for the list')
     decisions = open_decisions(store)
-    counts, notes = asked_counts(events), unclear_notes(events)
+    counts, marks = asked_counts(events), unclear_marks(events)
     if not decisions:
         return ["No open decisions."], None
+    vague = [d for d in decisions if d["id"] in marks and needs_detail(d, marks[d["id"]])]
+    if vague and reason == "ask":
+        raise BossError("refused", f"{plural(len(vague), 'unclear answer')} {'needs' if len(vague) == 1 else 'need'} more detail before asking again",
+                        'boss decide detail <id> "<plain explanation of what he is choosing>"', 2,
+                        context=[f"{d['id']}: {plain(d['text'], 160)} (he said: {plain(marks[d['id']]['note'], 160)})"
+                                 for d in vague])
     record = store.captain("ask", items=[d["id"] for d in decisions], reason=reason,
                            **({"requested": requested.strip()} if requested and requested.strip() else {}))
     number = len(rounds(events)) + 1
     lines = [f"{plural(len(decisions), 'open decision')} (round {number}; reply like \"1 yes 2 no\"):"]
     for index, decision in enumerate(decisions, 1):
-        marks = []
-        if counts.get(decision["id"]):
-            marks.append("asked again")
-        if decision["id"] in notes:
-            marks.append("unclear last time: " + plain(notes[decision["id"]], 160))
-        lines.append(f"{index}. {plain(decision['text'], 300)}" + (f" ({'; '.join(marks)})" if marks else ""))
+        again = bool(counts.get(decision["id"]))
+        notes = ["asked again"] if again else []
+        if decision["id"] in marks:
+            notes.append("unclear last time: " + plain(marks[decision["id"]]["note"], 160))
+        # Re-asked items get the whole text and everything known about them.
+        lines.append(f"{index}. {plain(decision['text'], None if again else 300)}" + (f" ({'; '.join(notes)})" if notes else ""))
+        lines.extend("   more: " + plain(d["text"], 600) for d in decision.get("details") or [])
+        context = about(store, decision) if again else None
+        if context:
+            lines.append("   " + context)
     return lines, record
+
+
+def norm(text):
+    return " ".join(str(text).lower().split())
+
+
+def verdict(words):
+    match = VERDICT.search(words)
+    return None if match is None else "yes" if match[1] else "no"
+
+
+def close(store, decision, words, **extra):
+    """Record his answer; the first answer is final."""
+    if decision.get("closed"):
+        return False
+    decision.update({"closed": True, "resolution": words, "closed_at": now(), "verdict": verdict(words), **extra})
+    store.decision(decision)
+    return True
+
+
+def add_decision(store, text, task=None, action=None):
+    """Open a decision unless the same one is open already; an answered one is never asked again."""
+    if action is not None and task is None:
+        raise BossError("usage", "--action needs --task", 'boss decide add "<text>" --task <id> --action merge', 1)
+    meta = store.load(task) if task else None
+    if action == "merge" and meta.get("landed"):
+        refuse("that task is already landed; nothing to ask", f"boss settle {task}")
+    for decision in sorted(store.decisions(), key=lambda d: d.get("created_at") or ""):
+        same_subject = action is not None and decision.get("task") == task and decision.get("action") == action
+        if not same_subject and norm(decision["text"]) != norm(text):
+            continue
+        if decision.get("closed"):
+            refuse(f"already answered: {plain(decision['text'], 160)} -> {plain(decision.get('resolution') or '', 160)}; "
+                   "an answered decision is never asked again", "act on that answer")
+        return decision, False
+    record = {"id": store.new_id(), "text": text, "task": task, "closed": False, "created_at": now(),
+              **({"action": action} if action else {})}
+    store.decision(record)
+    return record, True
+
+
+def approval(store, task, action="merge"):
+    """His latest answer on doing action for task, or None."""
+    answers = [d for d in store.decisions() if d.get("closed") and d.get("task") == task and d.get("action") == action]
+    return max(answers, key=lambda d: d.get("closed_at") or "", default=None)
+
+
+def approve(store, task, action, words):
+    """An approval he gives in passing, here or in a check-in, closes the matching decision for good."""
+    meta = store.load(task)
+    closed = [d for d in store.decisions() if d.get("task") == task and d.get("action") == action
+              and close(store, d, words, verdict="yes")]
+    latest = approval(store, task, action)
+    if not closed and (latest is None or latest.get("verdict") != "yes"):
+        # Nothing was open, or he changed an earlier no: his newer words win.
+        record = {"id": store.new_id(), "text": f"{action} {plain(meta['title'], 200)}", "task": task,
+                  "action": action, "closed": False, "created_at": now()}
+        close(store, record, words, verdict="yes")
+        closed.append(record)
+    return closed
+
+
+def add_detail(store, decision, text):
+    """More context for the next time a decision is asked."""
+    if decision.get("closed"):
+        refuse("that decision is already answered; it is never asked again", "boss decide ask")
+    decision["details"] = [*(decision.get("details") or []), {"at": now(), "text": " ".join(text.split())}]
+    store.decision(decision)
+
+
+def parse_answers(reply, count):
+    """{number: his words} for numbers 1..count, read in increasing order."""
+    found, last = [], 0
+    for match in ANSWER_NUMBER.finditer(reply):
+        number = int(match[1])
+        if last < number <= count:
+            found.append((number, match.start(), match.end()))
+            last = number
+    return {number: reply[end:(found[i + 1][1] if i + 1 < len(found) else len(reply))].strip(" \t\n/;,-")
+            for i, (number, _, end) in enumerate(found)}
+
+
+def answer(store, reply, round_number=None):
+    """Apply a reply like "1 yes 3 no 5 more info" to the latest round."""
+    asked = rounds(store.captain_events())
+    if not asked:
+        refuse("no ask round yet, so numbers mean nothing", "boss decide ask")
+    if round_number is not None and round_number != len(asked):
+        refuse(f"round {round_number} is old; the latest is round {len(asked)}",
+               "boss decide ask, then use that round's numbers")
+    items = asked[-1]["items"]
+    parts = {n: words for n, words in parse_answers(reply, len(items)).items() if words}
+    if not parts:
+        refuse(f"no numbered answers for round {len(asked)} (1..{len(items)}) in his reply",
+               'boss decide close <n> "<his words>" for an answer without numbers')
+    decisions = {d["id"]: d for d in store.decisions()}
+    done = {"closed": [], "unclear": [], "already answered": []}
+    for number, words in sorted(parts.items()):
+        decision = decisions[items[number - 1]]
+        if decision.get("closed"):
+            done["already answered"].append(number)
+        elif UNCLEAR.search(words):
+            store.captain("unclear", decision=decision["id"], note=words)
+            done["unclear"].append(number)
+        else:
+            close(store, decision, words)
+            done["closed"].append(number)
+    skipped = [n for n in range(1, len(items) + 1) if n not in parts and not decisions[items[n - 1]].get("closed")]
+    lines = [f"{label}: {', '.join(map(str, numbers))}" for label, numbers in done.items() if numbers]
+    if skipped:
+        lines.append("skipped, asked again next round: " + ", ".join(map(str, skipped)))
+    return lines, bool(done["unclear"])
 
 
 def numbered_view(store, events, full=False):
@@ -222,7 +374,8 @@ def steer_events(store):
                              f"dropped steer ({plain(project, 60)}): {plain(texts.get(record['drops']) or '', 200)}"))
             else:
                 rows.append((record["created_at"], "steer",
-                             f"steer ({plain(project, 60)}{', replaces an earlier one' if record.get('replaces') else ''}): "
+                             f"{'fence' if record.get('fence') else 'steer'} ({plain(project, 60)}"
+                             f"{', replaces an earlier one' if record.get('replaces') else ''}): "
                              f"{plain(record['text'], 300)}"))
     return rows
 

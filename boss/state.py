@@ -189,7 +189,7 @@ class Store:
         return [{**r, "superseded": r["id"] in replaced, "dropped": r["id"] in dropped}
                 for r in records if all or ("drops" not in r and r["id"] not in replaced and r["id"] not in dropped)]
 
-    def add_steer(self, name, text, task=None, replaces=None):
+    def add_steer(self, name, text, task=None, replaces=None, fence=False):
         project_name(name)
         require_text(text, "captain steer", BRIEF_LIMIT)
         if self.redact(text) != text:
@@ -204,7 +204,7 @@ class Store:
             if "drops" in target or target["dropped"]:
                 refuse("cannot replace a dropped steer or tombstone", f"boss steer list {name} --all")
         record = {"id": self.new_id(), "text": text.strip(), "task": task, "replaces": replaces,
-                  "created_at": now()}
+                  "created_at": now(), **({"fence": True} if fence else {})}
         return self._append_steer(name, record)
 
     def drop_steer(self, name, steer_id):

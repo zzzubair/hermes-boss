@@ -6,6 +6,7 @@ import re
 import uuid
 
 from . import attachments
+from . import captain
 from .common import BossError, refuse, require_text
 from .events import status_line
 from .integrations import GitHub, PR_PATTERN, github_repository, inspect_worktree, remove_worktree, resolve_repository
@@ -21,6 +22,9 @@ MARK = "[boss] "  # Firstmate's from-firstmate marker: the supervisor speaking, 
 # A steer written "rule: ..." is a standing rule for every brief; "rule scout: ..." or
 # "rule direct-PR: ..." only for briefs of that kind or delivery.
 STANDING = re.compile(r"rule(?:\s+(ship|scout|direct-PR|local-only))?:\s*(\S.*)", re.I | re.S)
+# The pr-description shape, in order. A no-mistakes appendix supplies the last two.
+PR_SECTIONS = ("Intent", "What changed", "Risk Assessment", "Testing")
+ATTRIBUTION = re.compile(r"Written by \S.* in \S.* on behalf of @\S+")
 
 
 def slug(title):
@@ -239,6 +243,10 @@ class Boss:
         images = attachments.load_images(images)
         if override is not None:
             require_text(override, "--override", 2000)
+        active = len(self.store.tasks(active=True))
+        if active >= self.config.max_active:
+            refuse(f"{active} workers are active and the cap is workers.max_active = {self.config.max_active}",
+                   "settle finished workers first, or raise the cap: boss config set workers.max_active <n>")
         goal = self.store.goal(project_name)
         steers = self.store.steers(project_name)
         context = steering_sections(goal, steers, self.redact)
@@ -499,7 +507,13 @@ class Boss:
 
     def land(self, task_id, approved):
         if not approved or not approved.strip():
-            refuse("landing requires the captain's words", f'boss land {task_id} --approved "<quote>"')
+            # An approval he already gave, here or in a check-in, is never asked for again.
+            stored = captain.approval(self.store, task_id, "merge")
+            if stored is None or stored.get("verdict") != "yes":
+                refuse("landing requires the captain's words" +
+                       (f"; he answered: {captain.plain(stored['resolution'], 200)}" if stored else ""),
+                       f'boss land {task_id} --approved "<quote>"')
+            approved = stored["resolution"]
         meta = self.active_task(task_id)
         if meta.get("merge", "auto" if meta.get("auto_merge") else "approved") == "never":
             refuse("project merge policy is never", "arrange landing outside boss")
@@ -520,10 +534,21 @@ class Boss:
                 self.store.save(meta, "land_reconciled")
                 return
             refuse("PR already merged outside this landing", f"boss settle {task_id}")
+        fences = [s for s in self.store.steers(meta["project"]) if s.get("fence") and s.get("task") in (None, task_id)]
+        if fences:
+            raise BossError("refused", "the captain fenced this until he lifts it",
+                            f"boss steer drop {meta['project']} <steer id> only when he lifts it", 2,
+                            context=[f"{s['id']}: {s['text']}" for s in fences])
         if (pr["state"] != "OPEN" or pr["isDraft"] or pr["ci"]["state"] != "green" or
                 pr["mergeStateStatus"] != "CLEAN" or pr.get("reviewDecision") == "CHANGES_REQUESTED"):
             refuse(f"PR is not ready: state={pr['state']} ci={pr['ci']['state']} merge={pr['mergeStateStatus']}",
                    f"boss status {task_id}")
+        project, _ = self.config.effective(meta["project"])
+        problems = pr_body_problems(pr.get("body") or "", project["pr_body_forbidden"])
+        if problems:
+            raise BossError("refused", "PR body does not follow the pr-description format",
+                            f"boss send {task_id} asking the worker to fix the PR body with gh pr edit --body-file, then land again",
+                            2, context=problems)
         meta["land_intent"] = {"url": pr["url"], "head": pr["headRefOid"], "approved": approved}
         self.store.save(meta, "land_intent")
         self.github.merge(pr)
@@ -670,6 +695,33 @@ class Boss:
             if result is not None:
                 results.append((meta, result))
         return results
+
+
+def pr_body_problems(body, forbidden):
+    """What keeps a PR body from the pr-description shape; empty when it's fine."""
+    headings = [(m.start(), m[1].strip()) for m in re.finditer(r"^#{2,3}[ \t]+(.+?)[ \t#]*$", body, re.M)]
+    problems, places = [], []
+    for name in PR_SECTIONS:
+        found = [at for at, text in headings if text.lower() == name.lower()]
+        if len(found) != 1:
+            problems.append(f"needs exactly one '## {name}' section, found {len(found)}")
+        places.append(found[0] if len(found) == 1 else None)
+    known = [at for at in places if at is not None]
+    if known != sorted(known):
+        problems.append("sections must come in order: " + ", ".join(PR_SECTIONS))
+    if places[0] is not None:
+        end = min((at for at, _ in headings if at > places[0]), default=len(body))
+        lines = [line.strip() for line in body[places[0]:end].splitlines()[1:] if line.strip()]
+        if not lines or not ATTRIBUTION.fullmatch(lines[-1]):
+            problems.append("Intent must end with 'Written by <model> in <harness> on behalf of @<owner>'")
+        elif len(lines) < 2:
+            problems.append("Intent needs a sentence on what changed and why before the Written by line")
+    # Code spans and blocks may name files and commands; the prose speaks as the owner, about the change.
+    prose = re.sub(r"```.*?```|`[^`\n]*`", " ", body, flags=re.S)
+    for word in forbidden:
+        if re.search(r"\b" + r"\s+".join(map(re.escape, word.split())) + r"\b", prose, re.I):
+            problems.append(f"mentions '{word}'; write about the change, not the conversation behind it")
+    return problems
 
 
 def ci_text(ci):

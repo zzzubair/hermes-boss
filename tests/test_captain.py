@@ -140,8 +140,14 @@ class CaptainTest(unittest.TestCase):
         self.ok("decide", "ask")
         self.ok("decide", "unclear", "2", "he said 'sure' but which name?")
         self.ok("decide", "close", "1", "SQLite")
+        # An unclear answer goes back to him only with more detail.
+        code, output = self.cli("decide", "ask")
+        self.assertEqual(code, 2)
+        self.assertIn("1 unclear answer needs more detail", output)
+        self.ok("decide", "detail", "2", "Options: boss, t3boss")
         output = self.ok("decide", "ask")
-        self.assertIn("1. Rename CLI (asked again; unclear last time: he said 'sure' but which name?)", output)
+        self.assertIn("1. Rename CLI (asked again; unclear last time: he said 'sure' but which name?)\n"
+                      "   more: Options: boss, t3boss\n", output)
         output = self.ok("decide", "ask")
         self.assertIn("1. Rename CLI (asked again)\n", output)
         self.assertNotIn("unclear", output)
