@@ -133,7 +133,9 @@ numbered round when he is around.
   invent approval or turn `merge = "auto"` into permission. Merge policy is for the supervisor;
   `merge = "never"` refuses landing and every other policy still requires the quote.
 - `settle` refuses unlanded work or missing reports. Use `--discard-approved`
-  only with the captain's explicit words authorizing that discard.
+  only with the captain's explicit words authorizing that discard. When the
+  worktree is already gone, it settles only if a linked PR merged; otherwise it
+  refuses with "worktree is gone and no merged PR found".
 - `settle` removes the worktree and local branch once the PR is merged or
   closed or the scout/report is done. It never removes uncommitted or unpushed
   work; it prints "worktree kept" with the reason. `settle --prune-landed`

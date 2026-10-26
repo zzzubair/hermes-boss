@@ -148,7 +148,7 @@ class FakeT3:
 
 class FakeGitHub:
     def __init__(self):
-        self.branch, self.merges, self.origin_branches = "trunk", [], set()
+        self.branch, self.merges, self.origin_branches, self.origin_heads = "trunk", [], set(), {}
         self.pr = {"url": URL, "state": "OPEN", "isDraft": False, "headRefOid": "a" * 40,
                    "headRefName": "", "baseRefName": "trunk", "mergeStateStatus": "CLEAN", "reviewDecision": "APPROVED",
                    "statusCheckRollup": [{"conclusion": "SUCCESS"}], "mergeCommit": None}
@@ -158,6 +158,9 @@ class FakeGitHub:
 
     def branches(self, repository, prefix):
         return {b for b in self.origin_branches if b.startswith(prefix)}
+
+    def branch_head(self, repository, branch):
+        return self.origin_heads.get(branch)
 
     def view(self, url):
         result = copy.deepcopy(self.pr)
@@ -627,6 +630,64 @@ ssh = "far.example"
         self.cli("settle", "--prune-landed")
         self.assertEqual(len(self.removals), before)  # removed worktrees are not touched again
 
+    def test_settle_with_worktree_gone_lands_from_the_merged_pr(self):
+        meta = self.spawn()
+        self.completed(meta)
+        self.fake.prs = [URL]
+        self.gh.pr.update(state="MERGED", mergeCommit={"oid": "b" * 40})
+        self.evidence = {"gone": True}
+        self.removal = {"state": "gone"}
+
+        code, output = self.cli("settle", meta["id"])
+
+        self.assertEqual(code, 0, output)
+        self.assertIn(f"worktree already gone; PR merged on test: /fake/worktree, {URL}", output)
+        saved = self.store.load(meta["id"])
+        self.assertTrue(saved["settled"])
+        self.assertEqual(saved["landed"], {"url": URL, "head": "a" * 40, "merge": {"oid": "b" * 40},
+                                           "verified": "worktree already gone; PR merged"})
+        self.assertTrue(self.fake.threads[meta["thread_id"]]["settled"])
+        # The branch still on origin at the merged head is fine too.
+        other = self.spawn()
+        self.completed(other)
+        self.gh.origin_heads = {other["branch"]: "a" * 40}
+        self.assertEqual(self.cli("settle", other["id"])[0], 0)
+        # A task boss landed keeps the captain's approval on record.
+        landed = self.spawn()
+        self.completed(landed)
+        self.gh.pr["state"] = "OPEN"
+        self.assertEqual(self.cli("land", landed["id"], "--approved", "ship it")[0], 0)
+        self.assertEqual(self.cli("settle", landed["id"])[0], 0)
+        self.assertEqual(self.store.load(landed["id"])["landed"]["approved"], "ship it")
+
+    def test_settle_with_worktree_gone_refuses_without_a_merged_pr(self):
+        for name, pr_changes, origin_heads in (
+                ("no PR", None, {}),
+                ("open PR", {"state": "OPEN"}, {}),
+                ("closed PR", {"state": "CLOSED"}, {}),
+                ("foreign PR", {"url": "https://github.com/other/repo/pull/7"}, {}),
+                ("wrong base", {"baseRefName": "other-base"}, {}),
+                ("branch moved on", {}, {"boss/fix-thing": "c" * 40})):
+            with self.subTest(case=name):
+                meta = self.spawn()
+                self.completed(meta)
+                self.gh.pr.update(url=URL, state="MERGED", baseRefName="trunk", mergeCommit={"oid": "b" * 40})
+                self.gh.pr.update(pr_changes or {})
+                self.fake.prs = [self.gh.pr["url"]] if pr_changes is not None else []
+                self.gh.origin_heads = {meta["branch"]: h for h in origin_heads.values()}
+                self.evidence = {"gone": True}
+
+                code, output = self.cli("settle", meta["id"])
+
+                self.assertEqual(code, 2, output)
+                self.assertIn("worktree is gone and no merged PR found", output)
+                self.assertNotIn("exited", output)
+                saved = self.store.load(meta["id"])
+                self.assertFalse(saved["settled"])
+                self.assertNotIn("landed", saved)
+        self.assertFalse(any(n == "t3_thread_organize" for n, _ in self.fake.calls))
+        self.assertEqual(self.removals, [])
+
     def test_settle_needs_an_id_or_prune_alone(self):
         self.assertEqual(self.cli("settle")[0], 1)
         meta = self.spawn()
@@ -817,6 +878,8 @@ class GitEvidenceTest(HermeticTestCase):
             self.assertTrue(inspect_worktree({}, str(checkout), "boss/test", "main")["dirty"])
             git("-C", checkout, "push", "origin", "HEAD:main")
             self.assertTrue(inspect_worktree({}, str(checkout), "boss/test", "main")["in_default"])
+            # A removed worktree is reported as gone, not as a failed probe.
+            self.assertEqual(inspect_worktree({}, str(root / "removed"), "boss/test", "main"), {"gone": True})
 
     def test_real_git_worktree_removal_never_loses_work(self):
         with tempfile.TemporaryDirectory() as temporary:

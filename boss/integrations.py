@@ -79,6 +79,14 @@ class GitHub:
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
             raise BossError("github", f"invalid branch list: {exc}") from None
 
+    def branch_head(self, repository, branch):
+        """Commit at the tip of an origin branch, or None when the branch is gone."""
+        try:
+            refs = json.loads(run(["gh", "api", f"repos/{repository}/git/matching-refs/heads/{branch}"]))
+            return next((r["object"]["sha"] for r in refs if r["ref"] == "refs/heads/" + branch), None)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise BossError("github", f"invalid branch ref: {exc}") from None
+
     def merge(self, pr):
         run(["gh", "pr", "merge", pr["url"], "--squash", "--match-head-commit", pr["headRefOid"]])
 
@@ -95,7 +103,8 @@ def git(*args, allow_failure=False):
     return p
 try:
     if not pathlib.Path(path).is_dir():
-        raise RuntimeError("worktree does not exist")
+        print(json.dumps({"gone": True}))
+        sys.exit(0)
     head = git("rev-parse", "HEAD").stdout.strip()
     actual_branch = git("branch", "--show-current").stdout.strip()
     origin = git("remote", "get-url", "origin").stdout.strip()
@@ -124,6 +133,8 @@ def on_host(host, script, *args):
 def inspect_worktree(host, path, branch, base):
     try:
         data = json.loads(on_host(host, GIT_PROBE, path, branch, base))
+        if data == {"gone": True}:
+            return data
         if not all(k in data for k in ("head", "branch", "origin", "dirty", "in_default", "pushed")):
             raise ValueError("incomplete git evidence")
         return data

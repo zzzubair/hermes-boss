@@ -532,22 +532,10 @@ class Boss:
                     except BossError as exc:
                         refuse(f"cannot verify unlanded work: {exc.message}",
                                f'boss settle {task_id} --discard-approved "<quote>" only with explicit discard authority')
-                    merged = next((p for p in snapshot["prs"]
-                                   if p["state"] == "MERGED" and p["headRefOid"] == evidence["head"] and
-                                   PR_PATTERN.fullmatch(p["url"])[1].lower() == meta["repository"].lower() and
-                                   p.get("baseRefName") == meta["base"]), None)
-                    branch = merged["headRefName"] if merged else meta["branch"]
-                    if evidence["branch"] != branch:
-                        blockers.append("worktree branch mismatch")
-                    actual_repo = github_repository({"repositoryIdentity": {"locator": {"remoteUrl": evidence["origin"]}}})
-                    if not actual_repo or actual_repo.lower() != meta["repository"].lower():
-                        blockers.append("worktree origin differs from the task")
-                    if evidence["dirty"]:
-                        blockers.append("uncommitted work")
-                    if not evidence["in_default"] and not merged:
-                        if not evidence["pushed"]:
-                            blockers.append("unpushed branch")
-                        blockers.append("branch is not landed")
+                    if evidence.get("gone"):
+                        self.verify_landed_without_worktree(meta, snapshot["prs"])
+                    else:
+                        blockers += self.worktree_blockers(meta, evidence, snapshot["prs"])
             if blockers:
                 refuse("unlanded work: " + ", ".join(blockers),
                        f'boss settle {task_id} --discard-approved "<quote>" only with explicit discard authority')
@@ -564,6 +552,44 @@ class Boss:
         meta.update(settled=True, discard_approved=discard)
         self.store.save(meta, "settled")
         return self.clean_worktree(meta, snapshot["thread"].get("worktreePath"), snapshot["prs"])
+
+    @staticmethod
+    def worktree_blockers(meta, evidence, prs):
+        """Reasons the worktree on the host still holds work that has not landed."""
+        blockers = []
+        merged = next((p for p in prs
+                       if p["state"] == "MERGED" and p["headRefOid"] == evidence["head"] and
+                       PR_PATTERN.fullmatch(p["url"])[1].lower() == meta["repository"].lower() and
+                       p.get("baseRefName") == meta["base"]), None)
+        branch = merged["headRefName"] if merged else meta["branch"]
+        if evidence["branch"] != branch:
+            blockers.append("worktree branch mismatch")
+        actual_repo = github_repository({"repositoryIdentity": {"locator": {"remoteUrl": evidence["origin"]}}})
+        if not actual_repo or actual_repo.lower() != meta["repository"].lower():
+            blockers.append("worktree origin differs from the task")
+        if evidence["dirty"]:
+            blockers.append("uncommitted work")
+        if not evidence["in_default"] and not merged:
+            if not evidence["pushed"]:
+                blockers.append("unpushed branch")
+            blockers.append("branch is not landed")
+        return blockers
+
+    def verify_landed_without_worktree(self, meta, prs):
+        """A missing worktree proves nothing; only a merged PR on GitHub shows the work landed."""
+        for pr in prs:
+            if (pr["state"] != "MERGED" or not pr.get("mergeCommit") or pr.get("baseRefName") != meta["base"] or
+                    PR_PATTERN.fullmatch(pr["url"])[1].lower() != meta["repository"].lower()):
+                continue
+            # A branch still on origin must not carry commits past the merged head.
+            if all(self.github.branch_head(meta["repository"], b) in (None, pr["headRefOid"])
+                   for b in {meta["branch"], pr["headRefName"]}):
+                # Keep the captain's approval when boss landed it.
+                meta["landed"] = {"url": pr["url"], "head": pr["headRefOid"], "merge": pr["mergeCommit"],
+                                  "verified": "worktree already gone; PR merged", **(meta.get("landed") or {})}
+                return
+        refuse("worktree is gone and no merged PR found",
+               f'boss settle {meta["id"]} --discard-approved "<quote>" only with explicit discard authority')
 
     def clean_worktree(self, meta, path, prs):
         """Remove a settled task's worktree and local branch on its host, never unsaved work."""
