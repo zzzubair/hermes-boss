@@ -117,9 +117,10 @@ def parser():
     answer.add_argument("id")
     answer.add_argument("request")
     answer.add_argument("text", help="answer text; multi-question requests take a JSON object keyed by question id")
-    deploy_command = commands.add_parser("deploy", help="owner session only: deploy a project on the captain's words, then check it")
+    deploy_command = commands.add_parser("deploy", help="owner session only: deploy a project on your words, then check it")
     deploy_command.add_argument("project")
-    deploy_command.add_argument("--approved", metavar="QUOTE", help="captain's exact words; saved in the captain journal")
+    deploy_command.add_argument("--ref", metavar="SHA", help="git sha (7-40 hex) filled into {sha} and {sha7} in the deploy table")
+    deploy_command.add_argument("--approved", metavar="QUOTE", help="your exact words; saved in the journal")
     deploy_command.add_argument("--dry-run", action="store_true", help="show what would run and any refusal; runs nothing")
     stop = commands.add_parser("stop", help="interrupt a worker without removing work")
     stop.add_argument("id")
@@ -682,7 +683,7 @@ def main(argv=None):
             # Holds the ledger lock only to journal: the check wait must not block other commands.
             from .deploy import run as deploy
             return deploy(boss, args.project, args.approved, args.dry_run, os.environ.get("HERMES_SESSION_KEY", ""),
-                          lambda text: print(redact(text), flush=True))
+                          lambda text: print(redact(text), flush=True), ref=args.ref)
         if args.command == "brief":
             print(boss.worker_brief(args.project, worker=args.worker, origin=args.origin), end="")
             rules = rule_lines(*config.effective(args.project, {"worker": args.worker}))

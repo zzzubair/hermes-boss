@@ -6,7 +6,7 @@ import json
 import os
 from unittest.mock import patch
 
-from boss.deploy import inside, scrub
+from boss.deploy import inside, scrub, starts_within
 from boss.common import Redactor
 from tests import test_boss as harness
 from tests.support import HermeticTestCase
@@ -78,7 +78,12 @@ class DeployTest(HermeticTestCase):
         at = datetime.now(timezone.utc) + timedelta(hours=hours)
         return f"{(at - timedelta(minutes=30)):%H:%M}-{(at + timedelta(minutes=30)):%H:%M}"
 
-    def test_happy_path_checks_now_and_after_the_wait_and_journals_his_words(self):
+    def window_from(self, minutes):
+        """A one-hour window that starts this many minutes from now."""
+        at = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+        return f"{at:%H:%M}-{(at + timedelta(hours=1)):%H:%M}"
+
+    def test_happy_path_checks_now_and_after_the_wait_and_journals_your_words(self):
         self.configure(check="test -f deployed && echo healthy", check_minutes=2, rollback="echo undo",
                        no_touch=[self.now_window(hours=12)])
         self.assertEqual(self.cli("away", "going to bed")[0], 0)
@@ -87,10 +92,15 @@ class DeployTest(HermeticTestCase):
         lines = output.splitlines()
         self.assertEqual(lines[0], "deploying repo on prod...")
         for text in ("  deploy done", "checking repo right away...", "  healthy", "check passed right away.",
-                     "waiting 2 more minutes before the second check...", "waiting 1 more minute before the second check...",
                      "check passed after 2 minutes.", "repo: deployed; check passed right away and after 2 minutes.",
-                     "next: tell the captain it is live"):
+                     "next: report that it is live"):
             self.assertIn(text, lines)
+        # One flushed line a minute, naming when the second check is due.
+        waits = [line for line in lines if line.startswith("waiting ")]
+        self.assertEqual(len(waits), 2)
+        self.assertRegex(waits[0], r"^waiting 2 more minutes before the second check \(due \d\d:\d\d UTC\)\.\.\.$")
+        self.assertRegex(waits[1], r"^waiting 1 more minute before the second check \(due \d\d:\d\d UTC\)\.\.\.$")
+        self.assertEqual(waits[0][-14:], waits[1][-14:])
         self.assertNotIn("rollback", output)
         self.assertEqual(self.sleeps, [60, 60])
         runs = self.ssh_runs()
@@ -172,15 +182,15 @@ class DeployTest(HermeticTestCase):
         self.assertIn("dry run: nothing ran on prod", output)
         self.assertIn("check: curl -fsS https://example.test/health now and after 10 minutes", output)
         self.assertIn("rollback: ./rollback.sh (runs by itself on a failed check)", output)
-        self.assertIn('next: boss deploy repo --approved "<captain words>"', output)
+        self.assertIn('next: boss deploy repo --approved "<your exact words>"', output)
         self.assertEqual(self.ssh_runs(), [])
         self.assertEqual(self.deploys(), [])
 
     def test_refusals_run_nothing(self):
         self.configure()
-        cases = [(("--approved", " "), OWNER, "deploying needs the captain's exact words"),
-                 ((), OWNER, "deploying needs the captain's exact words"),
-                 (("--approved", "no, not now"), OWNER, "his words say no"),
+        cases = [(("--approved", " "), OWNER, "deploying needs your exact words"),
+                 ((), OWNER, "deploying needs your exact words"),
+                 (("--approved", "no, not now"), OWNER, "your words say no"),
                  (("--approved", "yes"), None, "runs only in the Hermes session that owns boss"),
                  (("--approved", "yes"), "agent:other", "boss is owned by Discord DM")]
         for extra, key, message in cases:
@@ -200,6 +210,43 @@ class DeployTest(HermeticTestCase):
         self.assertIn("would refuse: ", output)
         self.assertEqual(self.ssh_runs(), [])
 
+    def test_window_that_starts_before_the_checks_finish_refuses(self):
+        # check_minutes 10 + 5-minute margin: a window 13 minutes out is too close, 18 is clear.
+        window = self.window_from(13)
+        self.configure(check="true", check_minutes=10, no_touch=[window])
+        code, output = self.cli("deploy", "repo", "--approved", "yes")
+        self.assertEqual(code, 2, output)
+        self.assertIn(f"reason: the {window} UTC no-touch window for repo starts at {window[:5]} UTC, "
+                      "before this run can finish (10 minutes of checks plus a 5-minute margin, so until ", output)
+        code, output = self.cli("deploy", "repo", "--dry-run")
+        self.assertEqual(code, 2, output)
+        self.assertIn(f"would refuse: the {window} UTC no-touch window for repo starts at", output)
+        self.assertEqual(self.ssh_runs(), [])
+        self.configure(check="true", check_minutes=10, no_touch=[self.window_from(18)])
+        code, output = self.cli("deploy", "repo", "--approved", "yes")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(len(self.ssh_runs()), 3)
+
+    def test_margin_alone_applies_without_a_check_wait(self):
+        # No check means no wait: only the 5-minute margin counts, whatever check_minutes says.
+        self.configure(check_minutes=10, no_touch=[self.window_from(8)])
+        self.assertEqual(self.cli("deploy", "repo", "--approved", "yes")[0], 0)
+        self.configure(check_minutes=10, no_touch=[self.window_from(3)])
+        code, output = self.cli("deploy", "repo", "--approved", "yes")
+        self.assertEqual(code, 2, output)
+        self.assertIn("before this run can finish (a 5-minute margin, so until ", output)
+        self.configure(check="true", check_minutes=0, no_touch=[self.window_from(3)])
+        self.assertEqual(self.cli("deploy", "repo", "--approved", "yes")[0], 2)
+        self.assertEqual(len(self.ssh_runs()), 1)
+
+    def test_starts_within_counts_whole_minutes_and_wraps(self):
+        at = lambda h, m: datetime(2026, 1, 1, h, m, 30, tzinfo=timezone.utc)
+        self.assertTrue(starts_within("04:00-07:00", at(3, 45), 15))
+        self.assertFalse(starts_within("04:00-07:00", at(3, 44), 15))
+        self.assertFalse(starts_within("04:00-07:00", at(4, 30), 15))  # already inside: the plain window rule says so
+        self.assertTrue(starts_within("00:05-02:00", at(23, 55), 15))
+        self.assertFalse(starts_within("00:05-02:00", at(23, 45), 15))
+
     def test_windows_wrap_past_midnight(self):
         at = lambda h, m: datetime(2026, 1, 1, h, m, tzinfo=timezone.utc)
         self.assertTrue(inside("04:00-07:00", at(4, 0)))
@@ -218,7 +265,7 @@ class DeployTest(HermeticTestCase):
         fence = output.split(":", 1)[0]
         code, output = self.cli("deploy", "repo", "--approved", "yes")
         self.assertEqual(code, 2, output)
-        self.assertIn("reason: the captain fenced repo: no deploys this week", output)
+        self.assertIn("reason: you fenced repo: no deploys this week", output)
         self.assertNotIn("only this one waits", output)
         self.assertEqual(self.cli("steer", "drop", "repo", fence)[0], 0)
         self.assertEqual(self.cli("deploy", "repo", "--approved", "yes")[0], 0)
@@ -233,7 +280,7 @@ class DeployTest(HermeticTestCase):
         self.assertEqual(self.cli("decide", "close", self.decision_id(), "no, wait for Monday")[0], 0)
         code, output = self.cli("deploy", "repo", "--approved", "yes")
         self.assertEqual(code, 2, output)
-        self.assertIn("reason: the captain said no to deploying Fix thing: no, wait for Monday", output)
+        self.assertIn("reason: you said no to deploying Fix thing: no, wait for Monday", output)
         self.assertEqual(self.cli("log", "ok deploy it now", "--task", meta["id"], "--approves", "deploy")[0], 0)
         self.assertEqual(self.cli("deploy", "repo", "--approved", "ok deploy it now")[0], 0)
         self.assertEqual(len(self.ssh_runs()), 1)
@@ -268,3 +315,57 @@ class DeployTest(HermeticTestCase):
         # The deploy table stays out of the worker settings layer.
         self.assertNotIn("\ndeploy.", "\n" + output)
         self.assertIn('projects.repo.deploy.command = "echo deployed', output)
+
+    def test_ref_fills_sha_and_sha7_in_command_check_and_rollback(self):
+        sha = "0123456789ABCDEF0123456789abcdef01234567"
+        self.configure(command="echo build-{sha7}; echo deploy-{sha} > deployed", check="grep -q {sha} deployed",
+                       check_minutes=1, rollback="echo undo {sha7} HEAD@{1}")
+        code, output = self.cli("deploy", "repo", "--ref", sha, "--dry-run")
+        self.assertEqual(code, 0, output)
+        self.assertIn(f"release: {sha.lower()} ({{sha7}} = 0123456)", output)
+        self.assertIn(f"deploy: echo build-0123456; echo deploy-{sha.lower()} > deployed", output)
+        self.assertIn("rollback: echo undo 0123456 HEAD@{1}", output)  # other braces stay as written
+        self.assertIn(f'next: boss deploy repo --ref {sha.lower()} --approved "<your exact words>"', output)
+        self.on_sleep = lambda: (self.home / "deployed").write_text("other release")
+        self.assertEqual(self.cli("away", "going out")[0], 0)
+        code, output = self.cli("deploy", "repo", "--ref", sha, "--approved", "yes ship 0123456")
+        self.assertEqual(code, 3, output)
+        self.assertIn("deploying repo at 0123456 on prod...", output)
+        self.assertIn("  build-0123456", output)
+        self.assertIn("rollback (not run): ssh prod 'echo undo 0123456 HEAD@{1}'", output)
+        runs = self.ssh_runs()
+        self.assertEqual([run[-1] for run in runs], [f"echo build-0123456; echo deploy-{sha.lower()} > deployed",
+                                                     f"grep -q {sha.lower()} deployed", f"grep -q {sha.lower()} deployed"])
+        self.assertEqual(self.deploys()[0]["ref"], sha.lower())
+        self.assertEqual(self.cli("back")[0], 0)
+        self.assertIn("deploy of repo at 0123456 started on your words: yes ship 0123456", self.cli("back", "--full")[1])
+
+    def test_short_ref_fills_both_placeholders(self):
+        self.configure(command="echo {sha}/{sha7}")
+        code, output = self.cli("deploy", "repo", "--ref", "abcdef1", "--approved", "yes")
+        self.assertEqual(code, 0, output)
+        self.assertIn("  abcdef1/abcdef1", output)
+
+    def test_ref_refusals_run_nothing(self):
+        self.configure(command="~/build-{sha7}.sh && ~/deploy-{sha7}.sh", rollback="~/deploy-{sha7}.sh --undo")
+        for ref in ("abc12", "abcdefg", "a" * 41, "abc1234; reboot", "-abc1234", "HEAD"):
+            code, output = self.cli("deploy", "repo", f"--ref={ref}", "--approved", "yes")
+            self.assertEqual(code, 2, (ref, output))
+            self.assertIn("--ref must be a git sha of 7 to 40 hex characters", output)
+        for extra in (("--approved", "yes"), ("--dry-run",)):
+            code, output = self.cli("deploy", "repo", *extra)
+            self.assertEqual(code, 2, output)
+            self.assertIn("the repo deploy needs a release: deploy.command and deploy.rollback use {sha} or {sha7}", output)
+            self.assertIn("next: boss deploy repo --ref <git sha> ...", output)
+        # A placeholder in the check alone still needs the release.
+        self.configure(check="curl -fsS https://app.example.test/version | grep {sha7}")
+        code, output = self.cli("deploy", "repo", "--approved", "yes")
+        self.assertEqual(code, 2, output)
+        self.assertIn("deploy.check use {sha} or {sha7}", output)
+        # --ref on a table without placeholders would deploy something other than the named release.
+        self.configure()
+        code, output = self.cli("deploy", "repo", "--ref", "abcdef1", "--approved", "yes")
+        self.assertEqual(code, 2, output)
+        self.assertIn("--ref changes nothing: the repo deploy table has no {sha} or {sha7}", output)
+        self.assertEqual(self.ssh_runs(), [])
+        self.assertEqual(self.deploys(), [])

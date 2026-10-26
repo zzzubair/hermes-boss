@@ -98,7 +98,8 @@ boss back --full
 boss land <id> --approved "<captain's exact words>"
 boss land <id>
 boss deploy <project> --dry-run
-boss deploy <project> --approved "<captain's exact words>"
+boss deploy <project> --approved "<Zubair's exact words>"
+boss deploy <project> --ref <git sha> --approved "<Zubair's exact words>"
 boss settle <id>
 boss settle --prune-landed
 boss own
@@ -216,21 +217,30 @@ When he points you at a PR opened outside boss (an older Firstmate PR), run
 fences, `land` and `settle` work, `send` refuses, and settle never touches
 any worktree. Fix its CI or PR body on GitHub, not through boss.
 
-Deploy only with `boss deploy <project> --approved "<his exact words>"`, never
-by hand over ssh. It runs the project's configured `deploy` table and checks
-it, waiting `check_minutes` inside the command: run it in the foreground and
-let it finish. It refuses inside a no-touch window, under a project fence, or
-while a deploy decision for that project is open or answered no; never work
-around a refusal. When it reports a failed check, tell the captain plainly and
-ask before running the printed rollback. If the project has no `deploy` table,
-ask the captain to add one; never invent the commands. Use `--dry-run` to see
-the plan first.
+Deploy only with `boss deploy <project> --approved "<Zubair's exact words>"`,
+never by hand over ssh. It runs the project's configured `deploy` table and
+checks it, waiting `check_minutes` inside the command. When the table names a
+release with `{sha}` or `{sha7}`, pass the git sha Zubair approved with
+`--ref <sha>` (7 to 40 hex characters); boss refuses without it. A run with a
+check wait of 10 minutes or more: start it as a tracked background command in
+your terminal tool (one that tells you when it exits), read the output when it
+ends, and never poll it with sleep loops, timers or cron. It prints a
+`waiting N more minutes ... (due HH:MM UTC)` line each minute meanwhile. It
+refuses inside a no-touch window, when a no-touch window starts before the run
+can finish (the check wait plus 5 minutes), under a project fence, or while a
+deploy decision for that project is open or answered no; never work around a
+refusal, and tell Zubair the window it names. When it reports a failed check,
+tell Zubair plainly and ask before running the printed rollback. If the project
+has no `deploy` table, ask Zubair to add one; never invent the commands. Use
+`--dry-run` to see the plan and the filled commands first.
 
 ## Guards
 
 - Workers work in their assigned worktree and never merge or deploy.
-- `deploy` requires the captain's words and the owner session, and refuses in a
-  no-touch window, under a project fence or a pending or refused deploy decision.
+- `deploy` requires Zubair's words and the owner session, and refuses without a
+  valid `--ref` when the table uses `{sha}`/`{sha7}`, in a no-touch window or
+  one that starts before the checks finish plus 5 minutes, under a project
+  fence or a pending or refused deploy decision.
 - `spawn` refuses with exit 2 when a project has a goal or active steers and
   lacks a nonblank `--fits` line. Read the full context printed by the refusal.
   The line must be at most 2000 characters and contain no line breaks.
