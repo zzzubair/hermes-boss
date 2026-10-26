@@ -219,6 +219,9 @@ def worktree_text(meta, result):
     if result["state"] == "removed":
         return f"worktree removed on {host}: {result['path']}" + (f", branch {result['branch']} deleted" if result.get("branch") else "")
     if result["state"] == "gone":
+        landed = meta.get("landed") or {}
+        if landed.get("verified"):
+            return f"{landed['verified']} on {host}: {result['path']}, {landed['url']}"
         return f"worktree already gone on {host}: {result['path']}"
     if result["state"] == "error":
         return f"worktree check failed on {host}: {result['reason']}; retry boss settle --prune-landed"
@@ -433,8 +436,8 @@ def dispatch(args, boss):
         if args.prune_landed:
             lines = [f"{meta['id']}: {worktree_text(meta, result)}" for meta, result in boss.prune_landed()]
             return (lines or ["0 leftover worktrees"]) + ["next: boss"], 0
-        meta = boss.store.load(args.id)
         result = boss.settle(args.id, args.discard_approved)
+        meta = boss.store.load(args.id)
         return [f"{args.id}: settled", *([f"worktree: {worktree_text(meta, result)}"] if result else []), "next: boss"], 0
     if command == "away":
         note = " ".join(args.note)

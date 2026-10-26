@@ -406,8 +406,11 @@ the recorded repository and branches, green CI, a clean merge state, no draft
 or changes-requested review, and the captain's explicit quote. It matches the
 approved head SHA and confirms the merged result. `settle` checks live thread,
 PR and worktree evidence before unwatching and settling. It refuses unlanded
-work and missing reports. Use `--discard-approved` only with explicit captain
-authority. Settlement keeps the ledger. Once the thread is settled, boss
+work and missing reports. If the worktree is already gone from its host,
+`settle` proves landing from GitHub instead: a linked PR merged into the task's
+base in the task's repository, and any branch still on origin at the merged
+head. A missing worktree alone never counts as landed. Use `--discard-approved`
+only with explicit captain authority. Settlement keeps the ledger. Once the thread is settled, boss
 removes the worker's worktree and local branch on its host (over its `ssh`
 when remote) if the work is done: a merged or closed PR, or a finished scout
 or report. The host re-checks right before removing and refuses, keeping the
