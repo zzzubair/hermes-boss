@@ -1,0 +1,21 @@
+$ boss away going to bed
+Got it. Away mode on since 18:03 (going to bed).
+next: boss back
+
+$ boss back   (the /back reply is the first line; next: is stripped in chat)
+Welcome back. Catching you up.
+next: boss back --full
+
+# inbox item the supervisor gets via boss watch / next tool result
+Captain is back at 18:03 after under a minute away (since 18:03 (going to bed)): 3 events, tasks 0 finished, 0 landed, 0 failed, 1 open decision. Away mode is off. Catch him up now: read boss back --full, then write the TL;DR and the open decisions as the boss skill says. Never paste the timeline.
+
+$ boss back --full
+Away under a minute, since 18:03 (going to bed) until 18:03.
+While away (3 events):
+18:03 check-in: keep going, no rush
+18:03 check-in: merge the docs fix when green
+18:03 decision opened: Rename the CLI to t3boss?
+Tasks: 0 finished, 0 landed, 0 failed.
+1 open decisions
+- Rename the CLI to t3boss? (not asked yet)
+next: boss decide ask

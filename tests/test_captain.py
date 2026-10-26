@@ -1,10 +1,11 @@
 from datetime import datetime, timedelta, timezone
 import json
+from pathlib import Path
 import re
 import unittest
 
 from boss import captain
-from boss.inbox import Inbox, NOTE
+from boss.inbox import Inbox, LINE_CHARS, NOTE
 import plugin
 from plugin import on_pre_llm_call, register
 from tests import test_boss as harness
@@ -175,8 +176,8 @@ class CaptainTest(unittest.TestCase):
         self.ok("status", meta["id"])
         self.ok("decide", "close", decision, "SQLite, decided from phone")
         self.ok("log", "Asked how the login fix went; said fine")
-        output = self.ok("back")
-        captain_text = self.captain_part(output)
+        self.ok("back")
+        captain_text = self.captain_part(self.ok("back", "--full"))
         expected = ["started worker: Fix login (repo)", "check-in: Checked in from phone: keep going, no rush",
                     "decision opened: Pick storage", "steer (repo): Prefer SQLite everywhere",
                     "finished: Fix login (repo)", "decided: Pick storage -> SQLite, decided from phone",
@@ -184,12 +185,12 @@ class CaptainTest(unittest.TestCase):
         positions = [captain_text.find(text) for text in expected]
         self.assertNotIn(-1, positions, captain_text)
         self.assertEqual(positions, sorted(positions))
-        self.assertIn("While you were away (7 events):", captain_text)
+        self.assertIn("While away (7 events):", captain_text)
         self.assertIn("Tasks: 1 finished, 0 landed, 0 failed.", captain_text)
         self.assertNotIn(meta["id"], captain_text)
         self.assertNotIn(decision, captain_text)
         self.assertIsNone(re.search(r"\b[0-9a-f]{12,40}\b", captain_text))
-        self.assertIn("No open decisions.", captain_text)
+        self.assertIn("0 open decisions", captain_text)
 
     def test_decisions_made_while_away_count_in_full_and_are_not_reasked(self):
         storage, rename = self.decision("Pick storage"), self.decision("Rename CLI")
@@ -204,11 +205,13 @@ class CaptainTest(unittest.TestCase):
         self.ok("steer", "repo", "Docs first")
         self.assertEqual(len(self.gh.merges), 1)
         self.assertEqual(self.store.load(meta["id"])["landed"]["approved"], "land the docs PR")
-        output = self.captain_part(self.ok("back"))
+        self.ok("back")
+        output = self.captain_part(self.ok("back", "--full"))
         self.assertIn("decided: Pick storage -> SQLite", output)
         self.assertIn("landed: Ship docs (repo); approved: land the docs PR", output)
         self.assertIn("Tasks: 1 finished, 1 landed, 0 failed.", output)
-        decisions_part = output[output.index("open decision"):]
+        # The supervisor numbers the round once he is back; his answered one is not asked again.
+        decisions_part = self.ok("decide", "ask")
         self.assertIn("1. Rename CLI (asked again)", decisions_part)
         self.assertNotIn("Pick storage", decisions_part)
         self.assertEqual(self.events()[-1]["items"], [rename])
@@ -221,7 +224,7 @@ class CaptainTest(unittest.TestCase):
         self.decision("Pick storage")
         self.assertIsNone(on_pre_llm_call())
         self.ok("away", "again")  # nothing changed: nothing new to tell
-        self.assertTrue(self.ok("back").startswith("Welcome back. You were away"))
+        self.assertTrue(self.ok("back").startswith("Welcome back. Catching you up."))
         self.ok("back")
         box = Inbox(self.home)
         items = box.open_items()
@@ -230,13 +233,81 @@ class CaptainTest(unittest.TestCase):
         self.assertRegex(away, r"^Captain went away at \d\d:\d\d \(going to bed\)\. Don't ask him anything until /back")
         for text in ("queue decisions for /back", "Anything he says or decides in a check-in counts in full"):
             self.assertIn(text, away)
-        self.assertRegex(back, r"^Captain is back at \d\d:\d\d\. Away mode is off; you can ask him again\.$")
+        self.assertRegex(back, r"^Captain is back at \d\d:\d\d after under a minute away \(since \d\d:\d\d \(going to bed\)\): "
+                               r"1 event, tasks 0 finished, 0 landed, 0 failed, 1 open decision\. Away mode is off\.")
+        self.assertIn("read boss back --full", back)
         # Both survive delivery: captain events are never stale and never merged into one line.
         text = box.take(self.store.load, "watch", "Hermes app")
         self.assertEqual(text, f"[boss inbox]\n{away}\n{back}\n{NOTE}")
         self.assertEqual(box.open_items(), [])
         attention = (self.home / "attention.json").read_text()
         self.assertLess(len(attention), 4096)
+
+    def test_slash_away_and_back_reply_with_one_line_only(self):
+        self.assertEqual(plugin.on_away("going to bed"), f"Got it. Away mode on {captain.since_text(self.away())}.")
+        self.assertNotIn("\n", plugin.on_away("again"))
+        meta = self.spawn("--title", "Fix login")
+        for i in range(60):
+            self.ok("log", f"check-in number {i}: keep going")
+        self.decision("Pick storage")
+        self.completed(meta)
+        self.ok("status", meta["id"])
+        # However much happened, his /back reply is the ack and nothing else: no event list, no decisions.
+        self.assertEqual(plugin.on_back(""), "Welcome back. Catching you up.")
+        self.assertEqual([e["event"] for e in self.events() if e["event"] in ("away", "back", "ask")], ["away", "back"])
+
+    def test_back_hands_the_catch_up_to_the_supervisor_through_the_inbox(self):
+        self.ok("away", "going to bed")
+        meta = self.spawn("--title", "Fix login")
+        for i in range(60):
+            self.ok("log", f"check-in number {i}: keep going")
+        self.decision("Pick storage")
+        self.completed(meta)
+        self.ok("status", meta["id"])
+        self.ok("back")
+        items = [i for i in Inbox(self.home).open_items() if i["key"].startswith("captain:back:")]
+        self.assertEqual(len(items), 1)
+        line = items[0]["line"]
+        self.assertRegex(line, r"^Captain is back at \d\d:\d\d after under a minute away \(since \d\d:\d\d "
+                               r"\(going to bed\)\): 63 events, tasks 1 finished, 0 landed, 0 failed, 1 open decision\.")
+        for text in ("read boss back --full", "TL;DR", "Never paste the timeline"):
+            self.assertIn(text, line)
+        self.assertNotIn("check-in number", line)
+        self.assertNotIn(meta["id"], line)
+        # Delivered whole: the inbox never cuts it short.
+        self.assertLessEqual(len(line), LINE_CHARS)
+
+    def test_back_full_is_read_only_and_shows_the_latest_window(self):
+        self.assertIn("hasn't been away yet", self.ok("back", "--full"))
+        self.ok("away", "lunch")
+        self.ok("log", "first trip: all good")
+        self.ok("back")
+        self.ok("away", "going to bed")
+        self.ok("log", "second trip: merge it")
+        self.decision("Pick storage")
+        before = self.events()
+        output = self.ok("back", "--full")
+        self.assertRegex(output, r"^Away under a minute, since \d\d:\d\d \(going to bed\); still away\.\n")
+        self.assertIn("check-in: second trip: merge it", output)
+        self.assertNotIn("first trip", output)
+        self.assertIn("1 open decisions\n- Pick storage (not asked yet)", output)
+        self.assertEqual(self.events(), before)  # read-only: no presence change, no round
+        self.assertIn("captain: away", self.ok())
+        self.ok("back")
+        output = self.ok("back", "--full")
+        self.assertRegex(output, r"^Away under a minute, since \d\d:\d\d \(going to bed\) until \d\d:\d\d\.\n")
+        self.assertIn("next: boss decide ask", output)
+
+    def test_skill_tells_the_supervisor_to_write_a_short_catch_up(self):
+        skill = (Path(plugin.__file__).resolve().parent.parent / "skill" / "SKILL.md").read_text()
+        section = skill[skill.index("### Catching him up"):skill.index("When he answers a numbered list")]
+        for text in ("boss back --full", "TL;DR in 3-5 plain bullets", "what shipped, what broke, what is still",
+                     "No PR lists, no ids", "test counts unless something", "with your recommendation",
+                     "raw timeline only when he asks"):
+            self.assertIn(text, " ".join(section.split()))
+
+    def away(self):
+        return captain.presence(self.store.captain_events())
 
     def test_long_timelines_group_by_hour_without_dropping_events(self):
         start = datetime(2026, 10, 24, 22, 50, tzinfo=timezone.utc)

@@ -330,7 +330,7 @@ def register(ctx):
         # Only these two commands change presence; other chat is a check-in.
         command("away", on_away, description="Captain away: no questions, decisions queue for /back", args_hint="[note]")
         command("afk", on_away, description="Alias for /away", args_hint="[note]")
-        command("back", on_back, description="Captain back: catch-up timeline and numbered decisions")
+        command("back", on_back, description="Captain back: a short catch-up and the open decisions")
     # Plugins load before the gateway marks itself (_HERMES_GATEWAY), so never gate
     # on it. Host processes (gateway, TUI, desktop) start the listener now; any
     # other process that later proves it can inject starts it from its first turn.

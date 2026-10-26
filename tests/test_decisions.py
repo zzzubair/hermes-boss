@@ -62,9 +62,10 @@ class DecisionsTest(unittest.TestCase):
         self.assertIn("never asked again", self.refused("decide", "add", "Merge login?", "--task", meta["id"], "--action", "merge"))
         self.ok("land", meta["id"])
         self.assertEqual(self.store.load(meta["id"])["landed"]["approved"], "yeah merge the login fix when it's green")
-        output = self.ok("back")
+        self.ok("back")
+        output = self.ok("back", "--full")
         self.assertIn("decided: merge Fix login -> yeah merge the login fix when it's green", output)
-        self.assertIn("No open decisions.", output)
+        self.assertIn("0 open decisions", output)
 
     def test_checkin_approval_closes_an_open_decision_and_a_no_blocks_landing(self):
         meta = self.ready()
@@ -168,7 +169,8 @@ class DecisionsTest(unittest.TestCase):
         self.completed(other)
         self.refused("land", other["id"], "--approved", "merge it")
         self.assertEqual(self.gh.merges, [])
-        self.assertIn("fence (repo): stop merging until I say", self.ok("back"))
+        self.ok("back")
+        self.assertIn("fence (repo): stop merging until I say", self.ok("back", "--full"))
         for argv in (("steer", "drop", "repo", "x", "--fence"), ("steer", "list", "repo", "--fence")):
             self.assertEqual(self.cli(*argv)[0], 1)
 
