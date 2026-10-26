@@ -1,4 +1,17 @@
-# python3 -m unittest discover -v on oracle, rebased on origin/main 3b1cb3f
+# python3 -m unittest discover -v on oracle, rebased on origin/main f32f473
+test_a_merge_on_github_wakes_the_owner_once_for_an_adopted_pr (tests.test_adopt_park.AdoptParkTest.test_a_merge_on_github_wakes_the_owner_once_for_an_adopted_pr) ... ok
+test_a_parked_docs_only_pr_is_not_fast_landed (tests.test_adopt_park.AdoptParkTest.test_a_parked_docs_only_pr_is_not_fast_landed) ... ok
+test_a_parked_task_never_asks_to_land_in_the_inbox_but_still_says_when_its_pr_merges (tests.test_adopt_park.AdoptParkTest.test_a_parked_task_never_asks_to_land_in_the_inbox_but_still_says_when_its_pr_merges) ... ok
+test_a_parked_task_shows_parked_and_waits_on_the_captain (tests.test_adopt_park.AdoptParkTest.test_a_parked_task_shows_parked_and_waits_on_the_captain) ... ok
+test_adopt_refuses_bad_urls_other_repos_closed_prs_and_a_pr_already_tracked (tests.test_adopt_park.AdoptParkTest.test_adopt_refuses_bad_urls_other_repos_closed_prs_and_a_pr_already_tracked) ... ok
+test_adopt_takes_a_title_and_never_counts_against_the_worker_cap (tests.test_adopt_park.AdoptParkTest.test_adopt_takes_a_title_and_never_counts_against_the_worker_cap) ... ok
+test_an_adopted_pr_shows_in_the_fleet_and_status_with_no_worker (tests.test_adopt_park.AdoptParkTest.test_an_adopted_pr_shows_in_the_fleet_and_status_with_no_worker) ... ok
+test_an_adopted_task_has_no_worker_to_message (tests.test_adopt_park.AdoptParkTest.test_an_adopted_task_has_no_worker_to_message) ... ok
+test_land_merges_an_adopted_pr_only_with_his_words_and_never_through_a_fence (tests.test_adopt_park.AdoptParkTest.test_land_merges_an_adopted_pr_only_with_his_words_and_never_through_a_fence) ... ok
+test_land_refuses_while_parked_even_with_his_words (tests.test_adopt_park.AdoptParkTest.test_land_refuses_while_parked_even_with_his_words) ... ok
+test_park_needs_his_words_and_an_active_task (tests.test_adopt_park.AdoptParkTest.test_park_needs_his_words_and_an_active_task) ... ok
+test_settle_of_an_adopted_task_never_touches_a_worktree_or_thread (tests.test_adopt_park.AdoptParkTest.test_settle_of_an_adopted_task_never_touches_a_worktree_or_thread) ... ok
+test_the_away_timeline_names_adopted_and_parked_tasks_in_plain_words (tests.test_adopt_park.AdoptParkTest.test_the_away_timeline_names_adopted_and_parked_tasks_in_plain_words) ... ok
 test_answers_and_closed_decisions_clear_the_open_line (tests.test_ambient.AmbientTest.test_answers_and_closed_decisions_clear_the_open_line) ... ok
 test_clean_ledger_injects_nothing_and_prints_nothing (tests.test_ambient.AmbientTest.test_clean_ledger_injects_nothing_and_prints_nothing) ... ok
 test_corrupt_record_does_not_hide_valid_decision (tests.test_ambient.AmbientTest.test_corrupt_record_does_not_hide_valid_decision) ... ok
@@ -93,6 +106,7 @@ test_long_timelines_group_by_hour_without_dropping_events (tests.test_captain.Ca
 test_numbers_from_old_rounds_or_without_a_round_are_refused (tests.test_captain.CaptainTest.test_numbers_from_old_rounds_or_without_a_round_are_refused) ... ok
 test_only_away_and_back_change_presence (tests.test_captain.CaptainTest.test_only_away_and_back_change_presence) ... ok
 test_skill_tells_the_supervisor_to_write_a_short_catch_up (tests.test_captain.CaptainTest.test_skill_tells_the_supervisor_to_write_a_short_catch_up) ... ok
+test_slash_ahoy_is_back (tests.test_captain.CaptainTest.test_slash_ahoy_is_back) ... ok
 test_slash_away_and_back_reply_with_one_line_only (tests.test_captain.CaptainTest.test_slash_away_and_back_reply_with_one_line_only) ... ok
 test_slash_commands_registered_from_plugin (tests.test_captain.CaptainTest.test_slash_commands_registered_from_plugin) ... ok
 test_supervisor_cannot_ask_while_away_unless_he_asks (tests.test_captain.CaptainTest.test_supervisor_cannot_ask_while_away_unless_he_asks) ... ok
@@ -374,8 +388,8 @@ test_pr_merged_on_github_is_found_at_the_owner_turn_start_when_t3s_copy_is_stale
 test_pushed_event_reaches_owner_session_once (tests.test_wake.WakeTest.test_pushed_event_reaches_owner_session_once) ... ok
 test_refused_injection_is_held_then_delivered_when_owner_returns_or_new_owner_claims (tests.test_wake.WakeTest.test_refused_injection_is_held_then_delivered_when_owner_returns_or_new_owner_claims) ... ok
 test_register_starts_listener_without_gateway_marker (tests.test_wake.WakeTest.test_register_starts_listener_without_gateway_marker) ... ok
-test_replied_answered_and_merged_items_are_dropped_not_delivered (tests.test_wake.WakeTest.test_replied_answered_and_merged_items_are_dropped_not_delivered) ... warning: boss is owned by Hermes app since 21:28; this shell is not a Hermes session
-warning: boss is owned by Hermes app since 21:28; this shell is not a Hermes session
+test_replied_answered_and_merged_items_are_dropped_not_delivered (tests.test_wake.WakeTest.test_replied_answered_and_merged_items_are_dropped_not_delivered) ... warning: boss is owned by Hermes app since 21:34; this shell is not a Hermes session
+warning: boss is owned by Hermes app since 21:34; this shell is not a Hermes session
 ok
 test_running_worker_quiet_too_long_wakes_once_per_stall (tests.test_wake.WakeTest.test_running_worker_quiet_too_long_wakes_once_per_stall) ... ok
 test_settled_task_is_ignored (tests.test_wake.WakeTest.test_settled_task_is_ignored) ... ok
@@ -396,6 +410,6 @@ test_stale_items_are_dropped_and_it_keeps_waiting (tests.test_watch.WatchTest.te
 test_waiting_items_are_printed_and_acked_at_once (tests.test_watch.WatchTest.test_waiting_items_are_printed_and_acked_at_once) ... ok
 
 ----------------------------------------------------------------------
-Ran 382 tests in 76.032s
+Ran 396 tests in 82.049s
 
 OK
