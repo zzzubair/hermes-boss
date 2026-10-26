@@ -373,7 +373,8 @@ boss decide detail 2 'Plain explanation shown when it is asked again'
 boss away 'going to bed'        # also /away or /afk in the Hermes chat
 boss log 'What he said or decided in a check-in'
 boss log 'yes merge the login fix' --task <id> --approves merge
-boss back                       # also /back: catch-up timeline and decisions
+boss back                       # also /back: one-line ack; the supervisor catches him up
+boss back --full                # read-only: the latest away window's timeline
 boss steer <project> "don't merge this until I say" --task <id> --fence
 boss land <id> --approved 'The captain exact words'
 boss land <id>                  # when he already approved the merge
@@ -439,13 +440,18 @@ while he is away unless he asked for the list (`--requested`). Away never
 weakens what he says: a decision close, steer, land or settle from a check-in
 has full authority. Record the rest of what he says with `boss log`.
 
-`/back` prints, without any model call, how long he was away and every ledger
-event since then in time order: workers started, finished, failed, stopped,
-landed and settled, PRs opened, steers, decisions opened and closed, and
-check-in log entries. Long lists are grouped by hour. It then shows the open
-decisions as a new numbered round. That text carries no task IDs or SHAs.
-`/away` twice keeps the first time; `/back` when he is not away says so and
-still lists decisions.
+`/away` and `/back` each reply with one line ("Got it. Away mode on since
+22:10." and "Welcome back. Catching you up."). `/back` also puts one item in
+the owner's inbox with how long he was away, the event and task counts and
+how many decisions are open. The supervisor then runs `boss back --full`,
+which prints, without any model call, every ledger event of that away window
+in time order: workers started, finished, failed, stopped, landed and
+settled, PRs opened, steers, decisions opened and closed, and check-in log
+entries, grouped by hour when long, plus the open decisions. From that it
+writes him a TL;DR in 3-5 plain bullets and the open decisions one per line
+with a recommendation; the raw timeline reaches him only when he asks.
+`boss back --full` is read-only and carries no task IDs or SHAs. `/away`
+twice keeps the first time; `/back` when he is not away says so.
 
 `boss decide ask` records each round, so the captain can reply "1 yes 3 no".
 `decide close` and `decide unclear` take a number from the latest round or a
@@ -526,8 +532,7 @@ chat (Discord, Telegram, the Hermes app or TUI, the CLI, T3) to make it the
 owner. Exactly one session owns boss at a time:
 
 - `/boss` with nobody owning it claims it here and prints a catch-up: what
-  changed since anyone last looked, then the open numbered decisions (as
-  `/back` does). Run it again in the owner session for a fresh catch-up.
+  changed since anyone last looked, then the open numbered decisions. Run it again in the owner session for a fresh catch-up.
 - `/boss` in another session refuses: `boss is owned by Discord DM since 14:02.
   Run /boss take (or boss own --take) to move it here.`
 - `/boss take` moves it here and tells the previous session in one line.
@@ -599,8 +604,8 @@ The owner's `pre_llm_call` only records the busy mark
 (`$BOSS_HOME/owner-turn.json`) and, when tasks are active and no process holds
 `wake.lock`, adds the one line `boss: worker updates are not arriving; run
 boss doctor`. `/away` and `/back` put `Captain went away at 16:40 (note)` and
-`Captain is back at 17:10` in the inbox, so the supervisor hears of them and
-acknowledges him in chat.
+`Captain is back at 17:10 after 3h 12m away (...)` in the inbox, so the
+supervisor hears of them; on the second it writes his catch-up.
 
 Set `wake.inject_when_idle = true` to also inject the inbox with
 `ctx.inject_message(session_key=owner)` while no owner turn runs (it shows as

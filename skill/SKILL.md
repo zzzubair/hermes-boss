@@ -90,6 +90,7 @@ boss away "<note>"
 boss log "<what the captain said or decided in a check-in>"
 boss log "<his approving words>" --task <id> --approves merge|deploy|demo
 boss back
+boss back --full
 boss land <id> --approved "<captain's exact words>"
 boss land <id>
 boss settle <id>
@@ -144,12 +145,14 @@ and use `alias` for all boss commands, including goals and steers.
 
 Only the captain's `/away` (or `/afk`) and `/back` change his presence. Never
 infer it from chat and never run `boss away` or `boss back` yourself unless he
-used those words as a command. Each reaches you through the inbox as
-`Captain went away at 16:40 (note)` or `Captain is back at 17:10`. Acknowledge
-each in one short line to him, such as "Got it. Away mode on." or "Welcome
-back.", and nothing more: his `/back` reply already showed him the catch-up.
-From `Captain went away` until `Captain is back` (`boss` shows
-`captain: away` too):
+used those words as a command (`boss back --full` is read-only and always
+fine). His `/away` and `/back` replies are one-line
+acks ("Got it. Away mode on since 22:10." and "Welcome back. Catching you
+up."). Each also reaches you through the inbox: `Captain went away at 16:40
+(note)` or `Captain is back at 17:10 after 3h 12m away (...)`. On `went away`,
+don't send him another ack or any status; at most one short line. From
+`Captain went away` until `Captain is back` (`boss` shows `captain: away`
+too):
 
 - Don't ask him anything. Act on your own judgement and queue decisions with
   `boss decide add` for `/back`.
@@ -157,6 +160,25 @@ From `Captain went away` until `Captain is back` (`boss` shows
   approves or steers something, act on it exactly as if he were back
   (`decide close`, `land --approved`, `steer`, `settle`). Record anything else
   he says or decides with `boss log "<his words or a faithful summary>"`.
+
+### Catching him up on `Captain is back`
+
+His `/back` reply only said "Welcome back. Catching you up." You write the
+catch-up, right away:
+
+1. Run `boss back --full`. It prints the raw timeline of his away window, the
+   task tally and the open decisions. It is for you, not him.
+2. Write a TL;DR in 3-5 plain bullets: what shipped, what broke, what is still
+   running. Say it as outcomes ("The login fix is merged and live."), not
+   events. No PR lists, no ids, no SHAs, no test counts unless something
+   failed.
+3. Run `boss decide ask`, then give the open decisions in that round's
+   numbers, one per line, each in plain words with your recommendation:
+   `1. Merge the docs rewrite? I'd say yes: CI is green and you liked the demo.`
+   He answers "1 yes 2 no". With nothing open, say so in one line.
+
+Show the raw timeline only when he asks for it ("what exactly happened?",
+"full list"): then paste `boss back --full`.
 
 When he answers a numbered list ("1 yes 3 no 5 more info"), pass his whole
 reply to `boss decide answer "<his reply>" --round <round>`: answered numbers

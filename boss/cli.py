@@ -148,7 +148,9 @@ def parser():
     steer.add_argument("--all", action="store_true", help="with 'list', include superseded/dropped steers and tombstones")
     away = commands.add_parser("away", help="mark the captain away; only away/back change presence")
     away.add_argument("note", nargs="*", help="optional note, e.g. going to bed")
-    commands.add_parser("back", help="mark the captain back; plain catch-up timeline and numbered decisions")
+    back = commands.add_parser("back", help="mark the captain back; the supervisor gets the catch-up in its inbox")
+    back.add_argument("--full", action="store_true",
+                      help="read-only: the raw timeline of the latest away window and the open decisions")
     own = commands.add_parser("own", help="open boss in this Hermes session (HERMES_SESSION_KEY); it gets wakes")
     own.add_argument("status", nargs="?", choices=("status",), help="show the owner; read-only")
     own.add_argument("--take", action="store_true", help="move ownership here from another session")
@@ -331,7 +333,8 @@ def worktree_text(meta, result):
 def mutating(args):
     """Commands that change the ledger or config; read-only ones always work."""
     command = args.command
-    return (command in ("init", "spawn", "panel", "send", "answer", "stop", "land", "settle", "away", "back", "log", "release") or
+    return (command in ("init", "spawn", "panel", "send", "answer", "stop", "land", "settle", "away", "log", "release") or
+            (command == "back" and not args.full) or
             (command == "steer" and args.project != "list") or (command == "goal" and args.text is not None) or
             (command == "decide" and args.decision_command != "list") or
             (command == "config" and args.config_command in ("set", "unset")) or
@@ -558,6 +561,8 @@ def dispatch(args, boss):
         poke(boss.store.home)  # a listener set to inject when idle tells the owner now
         return lines, 0
     if command == "back":
+        if full:
+            return captain.full(boss.store), 0
         lines = captain.back(boss.store)
         from .wake import poke
         poke(boss.store.home)

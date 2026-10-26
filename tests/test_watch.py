@@ -142,7 +142,7 @@ class WatchTest(HermeticTestCase):
         self.own()
         env = {**os.environ, "HERMES_SESSION_KEY": OWNER}
         for command, words, expected in ((plugin.on_away, "bed", "Got it. Away mode on since "),
-                                         (plugin.on_back, "", "Welcome back. You were away")):
+                                         (plugin.on_back, "", "Welcome back. Catching you up.")):
             process = subprocess.Popen([sys.executable, BOSS, "watch"], env=env, stdout=subprocess.PIPE, text=True)
             self.addCleanup(process.kill)
             # Whether the watch is already waiting or starts after, the event reaches it exactly once.
@@ -155,7 +155,8 @@ class WatchTest(HermeticTestCase):
             if command is plugin.on_away:
                 self.assertRegex(lines[1], r"^Captain went away at \d\d:\d\d \(bed\)\. Don't ask him anything until /back")
             else:
-                self.assertRegex(lines[1], r"^Captain is back at \d\d:\d\d\. Away mode is off")
+                self.assertRegex(lines[1], r"^Captain is back at \d\d:\d\d after under a minute away \(since \d\d:\d\d \(bed\)\)")
+                self.assertIn("boss back --full", lines[1])
         self.assertEqual([r["via"] for r in self.acks()], ["watch", "watch"])
         self.assertEqual(Inbox(self.home).open_items(), [])
         captain = [json.loads(line)["event"] for line in (self.home / "captain.jsonl").read_text().splitlines()]

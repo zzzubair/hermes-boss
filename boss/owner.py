@@ -83,7 +83,7 @@ def last_look(events):
 
 
 def catch_up(store, events, end):
-    """What changed since the owner last looked, then open numbered decisions (as /back)."""
+    """What changed since the owner last looked, then open numbered decisions."""
     lines = []
     start = last_look(events)
     if start is None:

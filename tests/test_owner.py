@@ -86,7 +86,7 @@ class OwnerTest(HermeticTestCase):
         self.assertEqual(len(self.store.journal(meta["id"])), before)
         self.assertTrue((self.home / "owner.json").exists())
         for argv in [("status",), ("status", meta["id"]), ("decide", "list"), ("steer", "list", "repo"),
-                     ("goal", "repo"), ("project", "show", "repo"), ("own", "status"), ("brief", "repo")]:
+                     ("goal", "repo"), ("project", "show", "repo"), ("own", "status"), ("brief", "repo"), ("back", "--full")]:
             self.assertEqual(self.cli(*argv, key="agent:other")[0], 0, argv)
         self.assertEqual(self.cli("decide", "add", "Pick", key="agent:discord")[0], 0)
 
@@ -120,8 +120,8 @@ class OwnerTest(HermeticTestCase):
         self.cli("own", "--label", "Discord DM", key="agent:discord")
         self.cli("away", "bed", key="agent:discord")
         self.cli("own", "--take", "--label", "Telegram DM", key="agent:phone")
-        output = self.cli("back", key="agent:phone")[1]
-        self.assertIn("boss moved from Discord DM to Telegram DM", output)
+        self.assertEqual(self.cli("back", key="agent:phone")[0], 0)
+        self.assertIn("boss moved from Discord DM to Telegram DM", self.cli("back", "--full", key="agent:phone")[1])
 
     def test_slash_command_claims_refuses_takes_and_tells_the_previous_owner(self):
         ctx = Context(self.home / "profile")

@@ -1,4 +1,4 @@
-"""Captain presence, numbered decision rounds and the deterministic /back catch-up.
+"""Captain presence, numbered decision rounds and the /back timeline the supervisor catches him up from.
 
 Only `away` and `back` change presence. Everything the captain says in between is a
 check-in with full authority; the supervisor records it and never asks him things.
@@ -83,8 +83,7 @@ def away(store, note):
     tell(store, record, f"Captain went away at {clock(record['at'])}" + (f" ({plain(note, 80)})" if note else "") +
          ". Don't ask him anything until /back: act on your own judgement and queue decisions for /back."
          " Anything he says or decides in a check-in counts in full; record it with boss log.")
-    return [f"Got it. Away mode on {since_text(record)}. I won't ask you anything; anything you decide in a"
-            " check-in counts.", "next: boss back"]
+    return [f"Got it. Away mode on {since_text(record)}.", "next: boss back"]
 
 
 def tell(store, record, line):
@@ -444,27 +443,57 @@ def timeline_lines(rows):
     return lines
 
 
+def last_window(events):
+    """(away record, back record or None) for the latest away window, or None if he was never away."""
+    window, away = None, None
+    for record in events:
+        if record["event"] == "away" and away is None:
+            away = record
+        elif record["event"] == "back" and away is not None:
+            window, away = (away, record), None
+    return (away, None) if away else window
+
+
+def tally(rows):
+    counts = {k: sum(1 for _, kind, _ in rows if kind == k) for k in ("finished", "landed", "failed")}
+    return f"{counts['finished']} finished, {counts['landed']} landed, {counts['failed']} failed"
+
+
 def back(store):
+    """/back: a one-line ack for him; the window and a pointer to the timeline go to the supervisor's inbox."""
     events = store.captain_events()
     current = presence(events)
-    lines = []
     if current is None:
-        lines.append("Welcome back. You weren't marked away; nothing changed.")
-    else:
-        record = store.captain("back")
-        tell(store, record, f"Captain is back at {clock(record['at'])}. Away mode is off; you can ask him again.")
-        start, end = parse(current["at"]), parse(record["at"])
-        lines.append(f"Welcome back. You were away {duration(start, end)}, {since_text(current)}.")
-        rows = timeline(store, start, end, events)
-        if rows:
-            lines.append(f"While you were away ({plural(len(rows), 'event')}):")
-            lines.extend(timeline_lines(rows))
-        else:
-            lines.append("Nothing happened while you were away.")
-        tally = {k: sum(1 for _, kind, _ in rows if kind == k) for k in ("finished", "landed", "failed")}
-        lines.append(f"Tasks: {tally['finished']} finished, {tally['landed']} landed, {tally['failed']} failed.")
-    asked, _ = ask(store, reason="back")
-    lines.extend(asked)
-    lines.append('next: boss decide close <n> "<captain words>"' if len(asked) > 1 else "next: boss")
-    return lines
+        return ["Welcome back. You weren't marked away; nothing changed.", "next: boss"]
+    record = store.captain("back")
+    start, end = parse(current["at"]), parse(record["at"])
+    rows = timeline(store, start, end, events)
+    open_count = len(open_decisions(store))
+    tell(store, record, f"Captain is back at {clock(record['at'])} after {duration(start, end)} away "
+         f"({since_text(current)}): {plural(len(rows), 'event')}, tasks {tally(rows)}, "
+         f"{plural(open_count, 'open decision')}. Away mode is off. Catch him up now: read boss back --full, then "
+         "write the TL;DR and the open decisions as the boss skill says. Never paste the timeline.")
+    return ["Welcome back. Catching you up.", "next: boss back --full"]
 
+
+def full(store):
+    """boss back --full, read-only: the raw timeline of the latest away window (so far, if still away)."""
+    events = store.captain_events()
+    window = last_window(events)
+    if window is None:
+        return ["The captain hasn't been away yet; nothing to catch up on.", "next: boss"]
+    away_record, back_record = window
+    start = parse(away_record["at"])
+    end = parse(back_record["at"]) if back_record else datetime.now(timezone.utc)
+    lines = [f"Away {duration(start, end)}, {since_text(away_record)}" +
+             (f" until {clock(back_record['at'])}." if back_record else "; still away.")]
+    rows = timeline(store, start, end, events)
+    if rows:
+        lines.append(f"While away ({plural(len(rows), 'event')}):")
+        lines.extend(timeline_lines(rows))
+    else:
+        lines.append("Nothing happened while away.")
+    lines.append(f"Tasks: {tally(rows)}.")
+    lines.extend(numbered_view(store, events))
+    lines.append("next: boss decide ask" if back_record is not None and open_decisions(store) else "next: boss")
+    return lines
