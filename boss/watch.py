@@ -16,6 +16,7 @@ from .common import refuse
 from .inbox import Inbox, SOCKET, notify
 
 LOCK = "watch.lock"
+REMIND = "boss: no boss watch running; start it: boss watch (background, notify on exit)"
 KINDS = (("decision", "open decision"), ("input", "unanswered worker question"), ("finished", "finished run to review"))
 
 
@@ -51,6 +52,15 @@ def waiting(home):
         return True
     finally:
         os.close(descriptor)
+
+
+def unwatched(home):
+    """True when tasks are active and no boss watch waits: an idle owner would hear nothing."""
+    try:
+        active = json.loads((home / "attention.json").read_text(encoding="utf-8"))["active"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return type(active) is int and active > 0 and not waiting(home)
 
 
 def run(home, session_key, load, out):

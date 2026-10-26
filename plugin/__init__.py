@@ -4,6 +4,8 @@ The owner's inbox (boss/inbox.py) reaches its model through `boss watch`, a trac
 background command whose exit Hermes shows as a system notice, and appended to a
 tool result mid-turn (transform_tool_result). Nothing goes into turn-start context
 or an injected message by default: Hermes shows both as if the captain sent them.
+With tasks active and no watch running, the owner's first tool result each turn
+says to start one.
 Turn start and end hooks keep the on-disk busy mark the listener checks.
 """
 from datetime import datetime
@@ -145,14 +147,20 @@ def on_tool_result(**kwargs):
         if turn is None or turn.get("session_id") != session_id:
             return None
         inbox.turn_touched(home, turn)
-        if not box.maybe_open():
+        from boss import watch
+        # Without a watch, an idle owner hears nothing: say so once per turn, never in turn-start context.
+        remind = not turn.get("watch_reminded") and watch.unwatched(home)
+        if not remind and not box.maybe_open():
             return None
         owner = read_small(home / "owner.json")
         if not isinstance(owner, dict) or owner.get("session_key") != turn.get("session_key"):
             return None
         from boss.state import Store
-        block = box.take(Store(home, None).load, "tool", owner.get("label", ""))
-        return f"{result}\n\n{block}" if block else None
+        block = box.take(Store(home, None).load, "tool", owner.get("label", "")) if box.maybe_open() else None
+        if remind:
+            inbox.turn_reminded(home, turn)
+        extra = "\n".join(line for line in (block, watch.REMIND if remind else None) if line)
+        return f"{result}\n\n{extra}" if extra else None
     except Exception:
         # Never break the owner's tool call over the inbox.
         return None

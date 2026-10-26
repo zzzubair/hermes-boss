@@ -203,6 +203,11 @@ def turn_touched(home, record):
     atomic_write(Path(home) / TURN, json.dumps({**record, "at": now()}, sort_keys=True) + "\n")
 
 
+def turn_reminded(home, record):
+    """This turn was told no boss watch runs; the next turn starts a fresh record, so once per turn."""
+    atomic_write(Path(home) / TURN, json.dumps({**record, "watch_reminded": True, "at": now()}, sort_keys=True) + "\n")
+
+
 def turn_ended(home, *, session_id=None, session_key=None):
     """The owner's turn ended (on_session_end, or the gateway stopped it). True when this was the owner's turn."""
     record = read_turn(home)

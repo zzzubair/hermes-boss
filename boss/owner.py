@@ -131,6 +131,10 @@ def own(store, key, surface, label, take=False):
     lines.extend(catch_up(store, events, end))
     store.captain("own", action=action, label=label, surface=surface or "",
                   **({"previous": previous["label"]} if previous else {}))
+    from .watch import REMIND, waiting
+    # A watch already waiting can only be this session's when it re-opens; a claim or take has none yet.
+    if action != "look" or not waiting(store.home):
+        lines.append(REMIND)
     return lines + ["next: boss"]
 
 
