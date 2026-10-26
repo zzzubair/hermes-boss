@@ -1,0 +1,12 @@
+$ <hermes venv>/bin/python -I scripts/check_inbox_hermes.py ~/.hermes/hermes-agent   # oracle, Hermes ff2d02f998
+turn start, empty inbox: []
+owner tool result: "{\"output\": \"ok\"}\n\n[boss inbox]\nFix the ledger lock: finished: lock fixed, 40 tests pass\n(boss: handle it; ask the captain only if you need a decision)"
+same tool again (acked once): "{\"output\": \"ok\"}"
+subagent tool result (same session key, other session id): "{\"output\": \"ok\"}"
+turn mark after on_session_end: False
+next turn start: [{"context": "[boss inbox]\nFix the ledger lock: blocked: no token\n(boss: handle it; ask the captain only if you need a decision)"}]
+inbox log:
+   {'event': 'held', 'key': 'thread-1:done:run-1'}
+   {'event': 'acked', 'keys': ['thread-1:done:run-1'], 'via': 'tool'}
+   {'event': 'held', 'key': 'thread-1:blocked:run-2'}
+   {'event': 'acked', 'keys': ['thread-1:blocked:run-2'], 'via': 'turn'}

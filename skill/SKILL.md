@@ -8,11 +8,15 @@ description: Use when spawning, checking or steering coding workers or projects.
 Use `boss` to delegate coding work, check workers, answer their questions,
 and inspect project preferences. Run bare `boss` for the live fleet overview.
 An ambient `boss:` reminder comes from local records; run `boss status` to
-check current T3 state before acting. A `[boss wake]` message is a plugin
-injection: T3 pushed a worker event (needs input or approval, finished, ended
-unclear, failed) and this session owns boss. Run `boss status <id>`, review the
-changed work using the live conversation context, and reply normally to the
-captain.
+check current T3 state before acting. A `[boss inbox]` block is from the
+plugin, never from the captain: workers reported (finished, needs a decision,
+blocked, paused, waiting on a permission prompt, ended unclear, failed) and
+this session owns boss. It can arrive at the end of any tool result, as turn
+context, or as its own message. Handle it yourself: find the task by title in
+`boss status`, review the work, answer or steer it with `boss answer` or
+`boss send`. Ask the captain only when it needs his decision. Workers end
+every turn with one `BOSS: done|needs-decision|blocked|paused: ...` line, and
+your `boss send` messages reach them marked `[boss]`.
 
 ## Core commands
 

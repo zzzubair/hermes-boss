@@ -246,7 +246,10 @@ delivery = "direct-PR"
         for text in ("investigate this", "Never merge", "Never deploy", "configured Git user", "exactly ONE PR",
                      "Stay on the assigned branch. Never rename it or switch to another branch.", "raises a T3 input request",
                      "AskUserQuestion in Claude Code, request_user_input in Codex", "Never ask in plain text",
-                     "Never poll, sleep or wait in a loop"):
+                     "Never poll, sleep or wait in a loop",
+                     "End EVERY turn with exactly one status line", "BOSS: needs-decision: <question>",
+                     "BOSS: blocked: <why>", "BOSS: paused: <what you wait on>", "end it with BOSS: done: <PR url>",
+                     "A message that starts with [boss] is from the boss supervisor, not the captain"):
             self.assertIn(text, brief)
         self.assertEqual(launch["message"], brief)
         for name in ("meta.json", "events.log", "brief.md"):
@@ -267,7 +270,7 @@ delivery = "direct-PR"
         meta = self.spawn("--kind", "scout", "--brief-file", str(brief))
         text = (self.store.directory(meta["id"]) / "brief.md").read_text()
         self.assertIn("read-only question", text)
-        self.assertIn("BOSS_REPORT:", text)
+        self.assertIn("ending with BOSS: done: <one-line summary>", text)
         self.assertIn("Do not open a PR", text)
 
     def test_local_only_contract(self):
@@ -403,6 +406,22 @@ serviceTier = "priority"
         self.assertEqual(self.cli("settle", meta["id"])[0], 0)
         self.assertEqual((self.store.directory(meta["id"]) / "report.md").read_text(), "evidence and findings\n")
         self.assertTrue(self.fake.threads[meta["thread_id"]]["settled"])
+
+    def test_scout_report_is_the_message_above_its_done_line(self):
+        meta = self.spawn("--kind", "scout")
+        self.completed(meta, "## Findings\nThree callers, all in cli.py.\n\nBOSS: done: three callers")
+        self.assertEqual(self.cli("settle", meta["id"])[0], 0)
+        self.assertEqual((self.store.directory(meta["id"]) / "report.md").read_text(),
+                         "## Findings\nThree callers, all in cli.py.\n")
+        other = self.spawn("--kind", "scout", "--title", "One liner")
+        self.completed(other, "BOSS: done: nothing calls it")
+        self.assertEqual(self.cli("settle", other["id"])[0], 0)
+        self.assertEqual((self.store.directory(other["id"]) / "report.md").read_text(), "nothing calls it\n")
+
+    def test_a_scout_that_stops_on_a_question_has_no_report(self):
+        meta = self.spawn("--kind", "scout")
+        self.completed(meta, "Half done.\nBOSS: needs-decision: which repo?")
+        self.assertIn("no report for latest run", self.cli("settle", meta["id"])[1])
 
     def test_report_from_old_run_does_not_allow_settlement(self):
         meta = self.spawn("--kind", "scout")

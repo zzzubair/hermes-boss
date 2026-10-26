@@ -42,19 +42,6 @@ class AmbientTest(unittest.TestCase):
         self.assertNotIn("Choose an API", result["context"])
         self.assertNotIn("Which API?", result["context"])
 
-    def test_held_wake_is_a_reminder_until_delivered(self):
-        meta = self.spawn()
-        self.completed(meta, "finished report")
-        self.assertIsNone(on_pre_llm_call())
-        # A pushed event the owner has not received yet shows up locally, once per task.
-        self.store.hold_wake("k1", meta["id"], "finished_report", "finished")
-        self.store.hold_wake("k2", meta["id"], "error", "failed")
-        self.store.refresh_attention()
-        self.assertEqual(on_pre_llm_call()["context"], f"boss: 1 need you ({meta['id']} finished) - run boss status")
-        self.store.wakes_delivered(["k1", "k2"], "Discord DM")
-        self.store.refresh_attention()
-        self.assertIsNone(on_pre_llm_call())
-
     def test_status_records_a_pending_input(self):
         meta = self.spawn()
         self.fake.pending = {"r": [{"id": "q", "question": "Choice?", "options": []}]}
@@ -69,15 +56,6 @@ class AmbientTest(unittest.TestCase):
         self.cli("answer", meta["id"], "r", "A")
         self.assertNotIn("input", on_pre_llm_call()["context"])
         self.cli("decide", "close", decision, "A")
-        self.assertIsNone(on_pre_llm_call())
-
-    def test_settle_removes_a_held_completion(self):
-        meta = self.spawn()
-        self.completed(meta)
-        self.store.hold_wake("k1", meta["id"], "finished_report", "finished")
-        self.store.refresh_attention()
-        self.assertIsNotNone(on_pre_llm_call())
-        self.assertEqual(self.cli("settle", meta["id"])[0], 0)
         self.assertIsNone(on_pre_llm_call())
 
     def test_context_is_bounded_with_precomputed_total(self):
@@ -114,7 +92,7 @@ class AmbientTest(unittest.TestCase):
         self.store.refresh_attention()
         self.assertIn("1 need you", on_pre_llm_call()["context"])
 
-    def test_only_one_hook_is_registered_with_actual_keyword_contract(self):
+    def test_hooks_are_registered_with_actual_keyword_contract(self):
         class Context:
             def __init__(self):
                 self.hooks = []
@@ -124,7 +102,8 @@ class AmbientTest(unittest.TestCase):
 
         context = Context()
         register(context)
-        self.assertEqual([name for name, _ in context.hooks], ["pre_llm_call"])
+        self.assertEqual([name for name, _ in context.hooks],
+                         ["pre_llm_call", "transform_tool_result", "on_session_end", "agent_loop_stopped"])
         self.cli("decide", "add", "Review")
         hook = context.hooks[0][1]
 
