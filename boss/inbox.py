@@ -1,12 +1,14 @@
 """The owner's inbox: every worker event lands on disk first and leaves only once the owner's model saw it.
 
 Append-only $BOSS_HOME/inbox.jsonl (Firstmate model). The wake listener appends
-'held' records, deduped by event key. Delivery appends 'acked' (with the path
-it took) or 'dropped' (with why). Three paths deliver, all to the owner only:
+'held' records for worker events, deduped by event key; /away and /back append
+captain events (task None). Every append pokes a running `boss watch`.
+Delivery appends 'acked' (with the path it took) or 'dropped' (with why).
+These paths deliver, all to the owner only:
 
+  watch   boss watch, a tracked background command: its exit is a system notice
   tool    mid-turn: appended to the result of a tool the owner's turn just ran
-  turn    turn start: pre_llm_call context
-  inject  inject_message, only while the owner is idle (no turn running)
+  inject  inject_message while the owner is idle; off unless wake.inject_when_idle
 
 At delivery, items that are stale (task settled or landed, PR merged or closed,
 question answered, worker already replied to or moved on) are dropped, and each
@@ -18,6 +20,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import socket
 
 from .common import BossError
 from .state import append_line, atomic_write, now
@@ -25,6 +28,7 @@ from .state import append_line, atomic_write, now
 FILE = "inbox.jsonl"
 LEGACY = "wakes.jsonl"  # pre-inbox wake log: same 'held' records, 'delivered' meant acked
 LOCK = "inbox.lock"
+SOCKET = "watch.sock"  # a waiting boss watch listens here
 TURN = "owner-turn.json"
 NOTE = "(boss: handle it; ask the captain only if you need a decision)"
 LINE_CHARS = 400
@@ -70,9 +74,11 @@ class Inbox:
         with self.locked():
             if any(r["event"] == "held" and r["key"] == key for r in self.records()):
                 return None
-            return append_line(self.path, {"event": "held", "key": key, "task": task, "kind": kind,
-                                           "line": self.redact(line), "run": run, "request_ids": list(request_ids),
-                                           "pr_urls": list(pr_urls), "at": now()})
+            record = append_line(self.path, {"event": "held", "key": key, "task": task, "kind": kind,
+                                             "line": self.redact(line), "run": run, "request_ids": list(request_ids),
+                                             "pr_urls": list(pr_urls), "at": now()})
+        notify(self.home)
+        return record
 
     def maybe_open(self):
         """Cheap stat check: False only when the file is unchanged since it was last seen empty."""
@@ -105,6 +111,17 @@ class Inbox:
             return text
 
 
+def notify(home, message=b"inbox\n"):
+    """Wake a waiting boss watch, if one runs; never fails the caller."""
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(1)
+            client.connect(str(Path(home) / SOCKET))
+            client.sendall(message)
+    except OSError:
+        pass
+
+
 def stale(meta, item):
     """Why an open item no longer needs the owner, from the local ledger only; None if it still does."""
     if meta.get("settled"):
@@ -129,6 +146,9 @@ def triage(load, items):
     """(newest live item per task, [(key, reason) to drop]); input is oldest first."""
     newest, drops = {}, []
     for item in items:
+        if item.get("task") is None:
+            newest[item["key"]] = item  # a captain event: never stale, never merged
+            continue
         try:
             meta = load(item["task"])
         except (BossError, OSError, ValueError):

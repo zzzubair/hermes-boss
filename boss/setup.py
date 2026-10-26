@@ -173,6 +173,11 @@ def owner_lines(boss):
         return lines + ["warn: no owner: run /boss in the session that should get wakes; until then wakes are held on disk"]
     lines.append(f"ok: owner {record['label']} since {owner.stamp(record['claimed_at'])}"
                  f" surface={record['surface'] or 'unknown'}")
+    if not wake.get("inject_when_idle", False):
+        from .watch import waiting
+        return lines + ["ok: boss watch waiting in the owner session" if waiting(boss.store.home) else
+                        "warn: no boss watch waiting: the owner sees worker updates only on its next tool call;"
+                        " fix: the owner session runs boss watch as a background command"]
     try:
         last = json.loads((boss.store.home / LAST).read_text())
         if last.get("owner") != record["label"]:

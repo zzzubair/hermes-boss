@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from boss.cli import quiet
+from boss.watch import still_open
 from plugin import DEAF, on_pre_llm_call
 from tests import test_boss as harness
 
@@ -47,12 +48,12 @@ class NothingSlipsTest(unittest.TestCase):
         self.completed(meta, "BOSS: done: shipped it")
         self.fleet()
         self.assertEqual(self.finished_ids(), [meta["id"]])
-        # Being shown is not being handled: every turn keeps showing it.
+        # Being shown is not being handled: every boss watch delivery keeps naming it.
         for _ in range(3):
-            self.assertIn(f"{meta['id']} finished", on_pre_llm_call()["context"])
+            self.assertEqual(still_open(self.home), "Still open: 1 finished run to review. Run boss status.")
         self.assertEqual(self.cli("status", meta["id"])[0], 0)
         self.assertEqual(self.finished_ids(), [])
-        self.assertIsNone(on_pre_llm_call())
+        self.assertIsNone(still_open(self.home))
 
     def test_errored_run_is_listed_and_send_clears_it(self):
         meta = self.spawn()
@@ -110,12 +111,10 @@ class NothingSlipsTest(unittest.TestCase):
         # Someone else's session, or a subagent of the owner, never gets it.
         self.assertNotIn(DEAF, (on_pre_llm_call(session_id="agent:other", user_message="boss?") or {}).get("context", ""))
         self.assertIsNone(on_pre_llm_call(session_id="child", parent_session_id=OWNER, user_message="hi"))
-        # It joins the attention line rather than replacing it.
+        # It is the only line: open items never ride on the captain's own message.
         self.completed(meta, "BOSS: done: shipped")
         self.fleet()
-        context = on_pre_llm_call(session_id=OWNER, user_message="hi")["context"]
-        self.assertIn(DEAF, context)
-        self.assertIn(f"{meta['id']} finished", context)
+        self.assertEqual(on_pre_llm_call(session_id=OWNER, user_message="hi"), {"context": DEAF})
 
     def test_no_line_while_a_listener_holds_the_lock_or_nothing_is_active(self):
         self.own()
@@ -135,14 +134,12 @@ class NothingSlipsTest(unittest.TestCase):
         finally:
             os.close(probe)
 
-    def test_away_line_and_listener_line_share_one_context(self):
+    def test_away_never_rides_on_the_captains_message(self):
         self.own()
         self.spawn()
         with patch.dict(os.environ, {"HERMES_SESSION_KEY": OWNER}):
             self.cli("away", "sleeping")
-        context = on_pre_llm_call(session_id=OWNER, user_message="still /afk")["context"]
-        self.assertTrue(context.startswith("boss: captain away since "), context)
-        self.assertTrue(context.endswith(DEAF), context)
+        self.assertEqual(on_pre_llm_call(session_id=OWNER, user_message="still /afk"), {"context": DEAF})
 
     # Gap 8 / must-haves 4 and 15: one status table, scoped, no ids, short.
 

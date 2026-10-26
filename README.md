@@ -537,26 +537,43 @@ The inbox is append-only and is the truth: an item leaves it only when it
 reached the owner's model (`acked`, with the path it took) or went stale
 (`dropped`, with why). Nothing is lost because a turn was busy.
 
-The inbox reaches the owner session, and only the owner, three ways:
+The inbox reaches the owner session, and only the owner, two ways. Neither
+shows to the captain as a message he sent: Hermes renders turn-start context
+inside his own message and an injected message as one from him, so boss uses
+neither by default.
 
+- **`boss watch`.** The owner session keeps one `boss watch` running as a
+  Hermes tracked background command (`background=true`,
+  `notify_on_complete=true`). It blocks on `$BOSS_HOME/watch.sock`, which
+  every inbox append pokes, so it costs nothing while it waits. When open
+  items exist (at start or later) it prints them, acks them `via=watch` and
+  exits 0; Hermes shows the exit as a system notice and the supervisor
+  re-arms it. A last `Still open: ...` line counts open decisions,
+  unanswered worker questions and finished runs nobody reviewed yet
+  (`boss status <id>`, `boss send` or `boss settle` clears one), with no
+  ids. Only the owner session may run it. One runs at a time
+  (`watch.lock`): a newer one replaces the older, which exits without taking
+  anything, and a watch whose session lost boss exits the same way.
 - **Mid-turn.** When the owner's running turn calls any tool, the plugin's
   `transform_tool_result` hook appends the open items to that tool's result.
   A worker that finishes while the owner is mid-turn is seen in that same
   turn. Only tools of the owner's own top-level turn are touched (matched by
   the session id its `pre_llm_call` recorded), never another session's or a
   subagent's.
-- **Turn start.** The owner's `pre_llm_call` adds open items as context. Its
-  `boss: N need you` line also keeps every finished or failed run nobody has
-  reviewed yet (`boss status <id>`, `boss send` or `boss settle` clears it),
-  so a skimmed wake never drops out of view. When tasks are active and no
-  process holds `wake.lock`, it adds `boss: worker updates are not arriving;
-  run boss doctor`.
-- **Idle.** Only while no owner turn runs does the listener inject them with
-  `ctx.inject_message(session_key=owner)`. When an owner turn ends
-  (`on_session_end`, or `agent_loop_stopped` for a gateway `/stop`), the
-  plugin pokes the listener to inject anything that arrived after the turn's
-  last tool call. The busy mark is `$BOSS_HOME/owner-turn.json`; a mark whose
-  process is gone, or that is two hours old, counts as idle.
+
+The owner's `pre_llm_call` only records the busy mark
+(`$BOSS_HOME/owner-turn.json`) and, when tasks are active and no process holds
+`wake.lock`, adds the one line `boss: worker updates are not arriving; run
+boss doctor`. `/away` and `/back` put `Captain went away at 16:40 (note)` and
+`Captain is back at 17:10` in the inbox, so the supervisor hears of them and
+acknowledges him in chat.
+
+Set `wake.inject_when_idle = true` to also inject the inbox with
+`ctx.inject_message(session_key=owner)` while no owner turn runs (it shows as
+a message from the captain). When an owner turn ends (`on_session_end`, or
+`agent_loop_stopped` for a gateway `/stop`), the plugin pokes the listener to
+inject anything that arrived after the turn's last tool call; a busy mark
+whose process is gone, or that is two hours old, counts as idle.
 
 At delivery, items that no longer need anyone are dropped: the task is settled
 or landed, its PR merged or closed, its question answered, boss already
@@ -585,10 +602,9 @@ A worker that stays running with no progress for `wake.stall_minutes` (default
 `Fix the ledger lock: no progress for 25 min (last: <its last words>)`. So does
 a worker paused `until <UTC time>` once that time has passed. There is no timer:
 the check runs on every push and every poke, so it needs some other worker, or
-the owner, to be active. With no owner, or an owner
-that refuses the injection (offline, app closed), items stay in the inbox until
-the next pushed event, the moment a session claims or takes boss, or the
-owner's next turn. An older `wakes.jsonl` is moved to `inbox.jsonl` on first
+the owner, to be active. With no owner, or an owner that is offline, items
+stay in the inbox until the owner's next `boss watch` or tool call. An older
+`wakes.jsonl` is moved to `inbox.jsonl` on first
 use, keeping undelivered wakes. Exactly one listener runs per machine: it
 holds `$BOSS_HOME/wake.lock`, and any other Hermes process waits on that lock
 without polling, taking over if the holder exits. A dropped stream reconnects
@@ -607,8 +623,9 @@ Setup, once per profile:
    (`plugins.entries.boss.allow_gateway_injection: true`). Setup never edits
    Hermes config.
 3. Enable the plugin, restart the gateway (or app), and type `/boss` where you
-   want wakes. `boss doctor` shows the owner, whether the last wake reached it,
-   each host's push stream, and which process holds the listener.
+   want wakes; that session then keeps `boss watch` running in the background.
+   `boss doctor` shows the owner, whether a `boss watch` is waiting, each
+   host's push stream, and which process holds the listener.
 
 Set `wake.enabled = false` to turn wakes off. Older configs may still contain
 `wake.interval_seconds` (ignored; doctor suggests removing it) and a fixed

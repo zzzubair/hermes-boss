@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from boss.watch import still_open
 from plugin import on_pre_llm_call, register
 from tests import test_boss as harness
 
@@ -27,7 +28,8 @@ class AmbientTest(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(output.getvalue(), "")
 
-    def test_one_line_for_decision_and_input_without_network(self):
+    def test_open_items_never_reach_turn_context_and_watch_counts_them_without_ids(self):
+        # Turn context shows inside the captain's own message, so open items go to boss watch instead.
         decision = self.cli("decide", "add", "Choose an API")[1].split(":", 1)[0]
         meta = self.spawn()
         self.fake.pending = {"request-1": [{"id": "q1", "question": "Which API?", "options": []}]}
@@ -36,37 +38,28 @@ class AmbientTest(unittest.TestCase):
         with patch("socket.socket.connect", side_effect=AssertionError("network forbidden")), \
                 patch("subprocess.run", side_effect=AssertionError("subprocess forbidden")):
             result = on_pre_llm_call(task_id="irrelevant", turn_id="t", model="m", is_first_turn=True)
+            line = still_open(self.home)
         self.assertEqual(len(self.fake.calls), before)
-        self.assertEqual(result, {"context": f"boss: 2 need you ({decision} decision, {meta['id']} input) - run boss status"})
-        self.assertNotIn("\n", result["context"])
-        self.assertNotIn("Choose an API", result["context"])
-        self.assertNotIn("Which API?", result["context"])
+        self.assertIsNone(result)
+        self.assertEqual(line, "Still open: 1 open decision, 1 unanswered worker question. Run boss status.")
+        for text in (decision, meta["id"], "Choose an API", "Which API?"):
+            self.assertNotIn(text, line)
 
-    def test_status_records_a_pending_input(self):
-        meta = self.spawn()
-        self.fake.pending = {"r": [{"id": "q", "question": "Choice?", "options": []}]}
-        self.cli("status", meta["id"])
-        self.assertIn(meta["id"] + " input", on_pre_llm_call()["context"])
-
-    def test_answers_and_closed_decisions_clear_the_context(self):
+    def test_answers_and_closed_decisions_clear_the_open_line(self):
         decision = self.cli("decide", "add", "Pick A or B")[1].split(":", 1)[0]
         meta = self.spawn()
         self.fake.pending = {"r": [{"id": "q", "question": "Choice?", "options": []}]}
         self.cli("status", meta["id"])
         self.cli("answer", meta["id"], "r", "A")
-        self.assertNotIn("input", on_pre_llm_call()["context"])
+        self.assertEqual(still_open(self.home), "Still open: 1 open decision. Run boss status.")
         self.cli("decide", "close", decision, "A")
-        self.assertIsNone(on_pre_llm_call())
+        self.assertIsNone(still_open(self.home))
 
-    def test_context_is_bounded_with_precomputed_total(self):
+    def test_open_line_is_bounded_with_precomputed_total(self):
         for i in range(9):
             self.store.decision({"id": f"d{i}", "text": "secret detail", "closed": False})
         self.store.refresh_attention()
-        result = on_pre_llm_call()["context"]
-        self.assertIn("9 need you", result)
-        self.assertIn("+3 more", result)
-        self.assertLess(len(result), 300)
-        self.assertNotIn("secret detail", result)
+        self.assertEqual(still_open(self.home), "Still open: 6 open decisions and 3 more. Run boss status.")
 
     def test_missing_and_corrupt_ledgers_never_raise(self):
         cache = self.home / "attention.json"
@@ -90,7 +83,7 @@ class AmbientTest(unittest.TestCase):
         directory.mkdir(parents=True)
         (directory / "events.log").write_text("{")
         self.store.refresh_attention()
-        self.assertIn("1 need you", on_pre_llm_call()["context"])
+        self.assertEqual(still_open(self.home), "Still open: 1 open decision. Run boss status.")
 
     def test_hooks_are_registered_with_actual_keyword_contract(self):
         class Context:
@@ -113,7 +106,7 @@ class AmbientTest(unittest.TestCase):
         self.assertTrue(turn("s")["context"].startswith("boss: not open in any session"))
         with patch.dict(os.environ, {"HERMES_SESSION_KEY": "s"}):
             self.assertEqual(self.cli("own", "--label", "Hermes CLI")[0], 0)
-        self.assertTrue(turn("s")["context"].startswith("boss: 1 need you"))
+        self.assertIsNone(turn("s"))  # the owner's own message never carries boss lines
         self.assertRegex(turn("other")["context"], r"^boss: owned by Hermes CLI since \d\d:\d\d; /boss take to move it here$")
 
     def test_installer_is_repeatable_and_preserves_config(self):
