@@ -521,7 +521,8 @@ already-settled task on every host, reading old tasks' worktree paths from T3.
 Launch intent is journaled before the network mutation. An uncertain launch is
 reconciled by its unique title marker, never blindly retried. Commands serialize
 ledger writes; metadata is recovered from the append-only journal. `status`
-acknowledges completed-run reminders, without approving merges or discards.
+in the owner session acknowledges completed-run reminders, without approving
+merges or discards.
 
 Exit codes: 0 success, 1 usage/config, 2 guard refusal, 3 transport/external/data
 failure. Every command has `--help` and actionable errors.
@@ -546,7 +547,11 @@ tool subprocesses their session in `HERMES_SESSION_KEY`. Any command that
 changes boss (spawn, send, answer, stop, land, settle, steer, goal, decide,
 away, back, log, release, config/host/project edits) exits 2 from a session
 that does not own boss, naming the owner and how to take over. Read-only
-commands (status, show, list, brief, doctor) always work. A human shell
+commands (status, show, list, brief, doctor) always work. `boss status` and
+bare `boss` change nothing outside the owner session: from another session or
+any shell they never mark a run reviewed, never clear the owner's inbox items
+and never rewrite task snapshots or `attention.json`. Only the owner's own
+look counts as reviewing a run. A human shell
 without `HERMES_SESSION_KEY` may change boss but gets a one-line warning when
 a session owns it.
 
@@ -595,8 +600,8 @@ neither by default.
   exits 0; Hermes shows the exit as a system notice and the supervisor
   re-arms it. A last `Still open: ...` line counts open decisions,
   unanswered worker questions and finished runs nobody reviewed yet
-  (`boss status <id>`, `boss send` or `boss settle` clears one), with no
-  ids. Only the owner session may run it. One runs at a time
+  (the owner's `boss status <id>`, `boss send` or `boss settle` clears
+  one), with no ids. Only the owner session may run it. One runs at a time
   (`watch.lock`): a newer one replaces the older, which exits without taking
   anything, and a watch whose session lost boss exits the same way.
 - **Mid-turn.** When the owner's running turn calls any tool, the plugin's
@@ -631,9 +636,9 @@ whose process is gone, or that is two hours old, counts as idle.
 
 At delivery, items that no longer need anyone are dropped: the task is settled
 or landed, its PR merged or closed, its question answered, boss already
-replied to or reviewed the worker (`boss send`, `boss answer`,
-`boss status <id>`), or the worker moved on to a newer turn. Each task keeps
-one line, its newest event. Delivered text is plain words, task title first,
+replied to or reviewed the worker (`boss send`, `boss answer`, or
+`boss status <id>` in the owner session), or the worker moved on to a newer
+turn. Each task keeps one line, its newest event. Delivered text is plain words, task title first,
 with the payload and no IDs:
 
 ```text

@@ -7,6 +7,7 @@ import os
 import subprocess
 from unittest.mock import patch
 
+from boss.inbox import Inbox, triage
 from boss.wake import HEARTBEAT, LOCK
 import plugin
 from tests import test_boss as harness
@@ -103,6 +104,47 @@ class OwnerTest(HermeticTestCase):
         self.assertEqual(code, 0)
         self.assertRegex(errors, r"^warning: boss is owned by Discord DM since \d\d:\d\d; this shell is not a Hermes session\n$")
         self.assertEqual(self.cli("status")[2], "")  # reads never warn
+
+    def ledger(self):
+        """Every ledger file but the locks, which any command takes."""
+        return {str(p.relative_to(self.home)): p.read_bytes() for p in self.home.rglob("*")
+                if p.is_file() and not p.name.endswith(".lock") and "user" not in p.relative_to(self.home).parts}
+
+    def test_status_outside_the_owner_session_only_looks(self):
+        meta = self.spawn()
+        self.cli("own", "--label", "Discord DM", key="agent:discord")
+        harness.CLITest.completed(self, meta, "Shipped it.\nBOSS: done: shipped it")
+        self.fake.pending = {"req-1": [{"id": "q", "question": "Which?"}]}
+        Inbox(self.home).hold("finished:run-1", meta["id"], "finished", "Fix thing: finished", run="run-1")
+        live = lambda: [i["key"] for i in triage(self.store.load, Inbox(self.home).open_items())[0]]
+        before = self.ledger()
+        # Another Hermes session, or any shell (a firstmate check, the captain's terminal), sees it all...
+        for key in ("agent:app", None):
+            for args in (("status", meta["id"]), ("status", meta["id"], "--full"), ("status",), ()):
+                code, output, _ = self.cli(*args, key=key)
+                self.assertEqual(code, 0, output)
+            self.assertIn("completed", self.cli("status", meta["id"], key=key)[1])
+            self.assertIn("1 pending input requests", self.cli("status", meta["id"], key=key)[1])
+        # ...and changes nothing: not reviewed, the owner's item still open, no snapshot or attention rewrite.
+        self.assertEqual(self.ledger(), before)
+        self.assertNotIn("reviewed_run_id", self.store.load(meta["id"]))
+        self.assertEqual(live(), ["finished:run-1"])
+        # The owner's own look is what reviews the run and clears the stale item.
+        self.assertEqual(self.cli("status", meta["id"], key="agent:discord")[0], 0)
+        reviewed = self.store.load(meta["id"])
+        self.assertEqual((reviewed["reviewed_run_id"], reviewed["pending_inputs"]), ("run-1", ["req-1"]))
+        self.assertEqual(reviewed["observed"]["status"], "completed")
+        self.assertEqual(live(), [])
+        self.assertTrue((self.home / "tasks" / meta["id"] / "report.md").exists())
+
+    def test_status_with_nobody_owning_boss_only_looks(self):
+        meta = self.spawn()
+        harness.CLITest.completed(self, meta, "BOSS: done: shipped it")
+        before = self.ledger()
+        for key in ("agent:app", None):
+            self.assertEqual(self.cli("status", meta["id"], key=key)[0], 0)
+            self.assertEqual(self.cli("status", key=key)[0], 0)
+        self.assertEqual(self.ledger(), before)
 
     def test_catch_up_shows_changes_since_last_look_and_numbered_decisions(self):
         self.cli("own", "--label", "Discord DM", key="agent:discord")

@@ -78,6 +78,15 @@ def guard(home, key):
     return None
 
 
+def owns(home, key):
+    """True only in the owning session. A shell, another session or a bad owner.json just looks."""
+    try:
+        record = read(home)
+    except BossError:
+        return False
+    return bool(key) and record is not None and record["session_key"] == key
+
+
 def status_lines(home):
     record = read(home)
     if record is None:

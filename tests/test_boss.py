@@ -249,9 +249,17 @@ delivery = "direct-PR"
 
     def cli(self, *args, stdin="investigate this"):
         output = io.StringIO()
-        with contextlib.redirect_stdout(output), patch("sys.stdin", io.StringIO(stdin)):
+        session = getattr(self, "session", None)
+        with contextlib.redirect_stdout(output), patch("sys.stdin", io.StringIO(stdin)), \
+                patch.dict(os.environ, {"HERMES_SESSION_KEY": session} if session else {}):
             code = main(list(args))
         return code, output.getvalue()
+
+    def as_owner(self, key="agent:captain"):
+        """From here on, boss commands run in the session that owns boss, like the supervisor's."""
+        self.session = key
+        code, output = self.cli("own")
+        self.assertEqual(code, 0, output)
 
     def spawn(self, *extra):
         code, output = self.cli("spawn", "repo", "--title", "Fix thing", *extra)
@@ -548,6 +556,7 @@ serviceTier = "priority"
         self.assertFalse(any(n == "t3_thread_organize" for n, _ in self.fake.calls))
 
     def test_bare_waiting_is_not_a_permission_prompt_but_a_pending_count_is(self):
+        self.as_owner()
         meta = self.spawn()
         thread = self.fake.threads[meta["thread_id"]]
         thread.update(status="waiting", pendingRequestCount=0)
