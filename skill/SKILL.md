@@ -69,10 +69,12 @@ boss release
 ```
 
 Captain uploads live in `~/.hermes/cache/images` and
-`~/.hermes/cache/documents/native-inputs`; pass them with `--image` on
+`~/.hermes/cache/documents/native-inputs`. Pass one with `--image` on
 `boss send` or `boss spawn` (png, jpeg, gif or webp, up to 10 MB, at most 8)
-so a screenshot of a bug or a design pick reaches the worker. A path in the
-text does not: the worker may run on another host.
+only when the worker needs it for the job right now: the bug or design it
+must see. Never forward an image just because the captain sent it; a console
+screenshot he wants walked through is yours to answer. A path in the text
+does not work instead: the worker may run on another host.
 
 Projects can be discovered by exact T3 title without registration. Use
 `project show` to inspect effective preferences and contributing files.
