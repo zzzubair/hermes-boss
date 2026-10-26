@@ -18,6 +18,14 @@ context, or as its own message. Handle it yourself: find the task by title in
 every turn with one `BOSS: done|needs-decision|blocked|paused: ...` line, and
 your `boss send` messages reach them marked `[boss]`.
 
+Bare `boss` (or `boss status`) prints one table: task, project, host, model,
+state (the worker's last status line), PR and CI, how long it has been quiet,
+and the next step. Scope it with `--project <p>` or `--skip <p>`; add `--ids`
+only when you need ids for a command. The `boss: N need you` line keeps a
+finished or failed task until `boss status <id>`, `boss send` or `boss settle`
+handles it. `boss: worker updates are not arriving` means the wake listener is
+down: run `boss doctor`.
+
 ## Core commands
 
 ```sh
@@ -44,6 +52,7 @@ boss spawn <project> --title "<task>" --brief-file <file> --fits "<how this fits
 boss spawn <project> --title "<investigation>" --kind scout --brief-file <file>
 boss spawn <project> --worker <role> --title "<task>" --brief-file <file>
 boss spawn <project> --worker <role> --title "<task>" --brief-file <file> --override "<captain's exact words>"
+boss status --project <project> --skip <project> --ids
 boss status <id>
 boss status <id> --full
 boss send <id> "<instruction>"

@@ -317,7 +317,8 @@ goals and steers are refused, and task text is redacted.
 ## Commands and guards
 
 ```sh
-boss                            # live fleet and open decisions
+boss                            # one status table and open decisions
+boss status --project my-project --skip notebook --ids
 boss project list
 boss brief my-project --origin
 boss project show my-project
@@ -489,7 +490,12 @@ The inbox reaches the owner session, and only the owner, three ways:
   turn. Only tools of the owner's own top-level turn are touched (matched by
   the session id its `pre_llm_call` recorded), never another session's or a
   subagent's.
-- **Turn start.** The owner's `pre_llm_call` adds open items as context.
+- **Turn start.** The owner's `pre_llm_call` adds open items as context. Its
+  `boss: N need you` line also keeps every finished or failed run nobody has
+  reviewed yet (`boss status <id>`, `boss send` or `boss settle` clears it),
+  so a skimmed wake never drops out of view. When tasks are active and no
+  process holds `wake.lock`, it adds `boss: worker updates are not arriving;
+  run boss doctor`.
 - **Idle.** Only while no owner turn runs does the listener inject them with
   `ctx.inject_message(session_key=owner)`. When an owner turn ends
   (`on_session_end`, or `agent_loop_stopped` for a gateway `/stop`), the

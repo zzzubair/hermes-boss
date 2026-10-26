@@ -6,6 +6,7 @@ and, only while no owner turn runs, injected by the listener. Turn start and end
 hooks keep the on-disk busy mark the listener checks.
 """
 from datetime import datetime
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,7 @@ import sys
 
 
 BOSS_WORD = re.compile(r"\bboss\b", re.IGNORECASE)
+DEAF = "boss: worker updates are not arriving; run boss doctor"
 
 
 def when(at):
@@ -38,6 +40,29 @@ def read_small(path):
         if not stat.S_ISREG(info.st_mode) or info.st_size > 4096:
             return None
         return json.loads(os.read(descriptor, 4097))
+    finally:
+        os.close(descriptor)
+
+
+def listening(home):
+    """True while some process holds wake.lock; a lock nobody holds means no listener runs.
+
+    The probe takes the lock without waiting and drops it at once, so a listener
+    starting right now waits a moment, never misses its turn."""
+    try:
+        descriptor = os.open(home / "wake.lock", os.O_RDWR | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True  # unsure: never cry wolf
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        return False
+    except BlockingIOError:
+        return True
+    except OSError:
+        return True
     finally:
         os.close(descriptor)
 
@@ -170,7 +195,8 @@ def on_pre_llm_call(**kwargs):
             return None
         # Only the owner session gets the attention line. Elsewhere, one ownership line,
         # and only on a turn that mentions boss or while something is waiting.
-        foreign = owner_line(read_small(home / "owner.json"), kwargs)
+        owner = read_small(home / "owner.json")
+        foreign = owner_line(owner, kwargs)
         if foreign is not None:
             message = kwargs.get("user_message")
             mentioned = isinstance(message, str) and BOSS_WORD.search(message)
@@ -181,9 +207,12 @@ def on_pre_llm_call(**kwargs):
             if line is None:
                 return None
             lines.append(line)
+        active = data.get("active")
+        if owner_turn(owner, kwargs) and type(active) is int and active > 0 and not listening(home):
+            lines.append(DEAF)
         count, items = data.get("count"), data.get("items")
-        if lines and count == 0 and items == []:
-            return {"context": lines[0]}
+        if count == 0 and items == []:
+            return {"context": " ".join(lines)} if lines else None
         if type(count) is not int or count <= 0 or not isinstance(items, list) or not 0 < len(items) <= 6 or count < len(items):
             return None
         details = []
