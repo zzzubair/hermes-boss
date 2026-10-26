@@ -68,6 +68,7 @@ boss spawn <project> --title "<investigation>" --kind scout --brief-file <file>
 boss spawn <project> --worker <role> --title "<task>" --brief-file <file>
 boss spawn <project> --worker <role> --title "<task>" --brief-file <file> --allow-model "<captain's exact words>"
 boss status --project <project> --skip <project> --ids
+boss panel <project> --brief-file <file> --workers <role>,<role> [--judge <role>] [--rounds N --target <score>]
 boss status <id>
 boss status <id> --full
 boss send <id> "<instruction>"
@@ -191,6 +192,9 @@ task). `land` refuses until he lifts it and you run `boss steer drop`.
   Settle finished workers; only the captain raises the cap.
 - `land` refuses a PR body that breaks the pr-description shape or uses the
   configured `pr_body_forbidden` words; send the worker the listed problems.
+- When the captain wants several models on one brief, or a judge score loop, use
+  `boss panel`; never judge entries yourself or tell a judge which model wrote what.
+  Boss starts the judge and the revisions; you get one inbox line per judged round.
 - `land` requires the captain's exact words (or his saved yes) and a green, eligible PR. Never
   invent approval or turn `merge = "auto"` into permission. Merge policy is for the supervisor;
   `merge = "never"` refuses landing and every other policy still requires the quote.

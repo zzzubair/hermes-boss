@@ -357,6 +357,7 @@ boss steer my-project 'New direction' --replaces <steer-id>
 boss steer drop my-project <steer-id>
 boss steer list my-project --all
 boss spawn my-project --title 'Task' --brief-file brief.md --fits 'How this fits the goal and active steers'
+boss panel my-project --brief-file brief.md --workers opus,sol --judge scout --rounds 4 --target 9.5
 boss status <id> --full
 boss send <id> 'Additional instruction'
 boss answer <id> <request-id/0> 'Answer text'
@@ -401,6 +402,30 @@ a project has a goal or active steers. It saves the explanation with the task.
 Boss does not ask an LLM to judge it; the captain resolves unclear choices.
 Spawn also refuses tasks that break the [worker rules](#worker-rules) unless
 `--allow-model` carries the captain's exact words.
+
+### Panel runs
+
+`boss panel <project> --brief-file F --workers opus,sol[,...]` spawns one
+worker per role on the same brief (scouts unless `--kind ship`), labelled
+A, B, C in shuffled order. Each is told that a blind judge will compare the
+entries and not to name its model. When every writer has finished, boss spawns
+a fresh scout judge (`--judge <role>`, default the scout role) that sees only
+the brief and the entries under their labels. The model id, its words and the
+provider name are replaced with `[name hidden]` in every entry. The judge's
+final message ends with one JSON object of scores, reasons and fixes.
+
+With `--rounds N`, the best entry goes back to its writer with the judge's
+reasons and fixes, and a new judge with the same rubric and nothing from
+earlier rounds scores the revision. This repeats until the best score reaches
+`--target` or N rounds were judged. Every seat is checked against the
+[worker rules](#worker-rules) before anything launches, and `--fits` is
+required as for `spawn`. Nothing runs on a timer: the wake listener moves the
+panel on when a writer or judge finishes. Their own "finished" wakes are
+consumed, and the captain gets one plain line per judged round, such as
+`Blog post: panel round 1 of 4: B (opus) best at 8.2/10, below the 9.5 target;
+B is revising. Scores: A (sol) 7, B (opus) 8.2.` Questions, blocks and
+failures from panel workers still wake as usual; a writer that fails is left
+out of that round. The panel record is `$BOSS_HOME/panels/<id>/panel.json`.
 
 ### Away, back and numbered decisions
 
