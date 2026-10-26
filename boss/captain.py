@@ -454,7 +454,8 @@ def captain_rows(store, events):
                 "release": f"boss released by {label}; wakes held"}[record["action"]]))
         elif record["event"] == "deploy":
             project = plain(record["project"], 60)
-            rows.append((record["at"], "deploy", f"deploy of {project} started on your words: {plain(record['approved'], 200)}"
+            release = f" at {plain(record['ref'], 40)[:7]}" if record.get("ref") else ""
+            rows.append((record["at"], "deploy", f"deploy of {project}{release} started on your words: {plain(record['approved'], 200)}"
                          if record["phase"] == "start" else f"{project} deploy: {plain(record['result'], 200)}"))
         elif record["event"] == "ask" and record.get("reason") == "ask":
             rows.append((record["at"], "ask", f"listed {len(record['items'])} open decisions" +

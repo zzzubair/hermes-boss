@@ -392,7 +392,8 @@ boss steer <project> "don't merge this until I say" --task <id> --fence
 boss land <id> --approved 'The captain exact words'
 boss land <id>                  # when he already approved the merge
 boss deploy my-project --dry-run                     # the plan and any refusal; runs nothing
-boss deploy my-project --approved 'The captain exact words'
+boss deploy my-project --approved 'Your exact words'
+boss deploy my-project --ref <git sha> --approved 'Your exact words'   # fills {sha}/{sha7}
 boss settle <id>
 boss settle --prune-landed      # remove leftover worktrees of settled, landed tasks on all hosts
 boss own                        # also /boss: open boss in this Hermes session
@@ -531,12 +532,12 @@ and use `alias` for all boss commands, including goals and steers.
 ### Deploys
 
 Workers never deploy. The supervisor deploys a project with
-`boss deploy <project> --approved '<captain words>'`, from the session that
+`boss deploy <project> --approved '<your words>'`, from the session that
 owns boss, using that project's `deploy` table. boss never ships a deploy
 config; add one per project. An example (placeholders, not a real setup):
 
 ```toml
-[projects."Clash Lens".deploy]
+[projects.my-project.deploy]
 host = "my-prod-ssh-alias"                       # ssh destination, as in ~/.ssh/config
 command = "cd /srv/app && git pull --ff-only && systemctl --user restart app"
 check = "curl -fsS https://app.example.ts.net/health"   # optional; exit 0 means healthy
@@ -546,24 +547,62 @@ no_touch = ["04:00-07:00"]                       # UTC windows; may wrap past mi
 auto_rollback = false                            # true runs rollback on a failed check
 ```
 
-It refuses (exit 2, nothing runs) when the quote is missing or says no, when
-it is not run from the owner session, inside a `no_touch` window, under a
+When each release has its own scripts on the host, name the release with
+`{sha}` (the git sha you pass, lowercased) or `{sha7}` (its first 7
+characters) in `command`, `check` or `rollback`, and pass it with `--ref`.
+An example for a per-release build and deploy pair (again placeholders):
+
+```toml
+[projects.my-project.deploy]
+host = "my-prod-ssh-alias"
+command = "~/build-{sha7}.sh && ~/deploy-{sha7}.sh"
+check = "curl -fsS https://app.example.ts.net/version | grep -q {sha7}"
+rollback = "~/deploy-previous.sh"
+check_minutes = 10
+no_touch = ["04:00-07:00"]
+```
+
+```bash
+boss deploy my-project --ref 3ca8959 --dry-run    # shows the filled commands
+boss deploy my-project --ref 3ca8959 --approved 'yes deploy 3ca8959'
+```
+
+`--ref` takes 7 to 40 hex characters and nothing else, so it cannot add shell
+words. Only the exact `{sha}` and `{sha7}` are filled; other braces such as
+`HEAD@{1}` stay as written. A table that uses either placeholder refuses to run
+without `--ref`, and `--ref` on a table without one is refused too, since it
+would deploy something other than the named release.
+
+It refuses (exit 2, nothing runs) when your quote is missing or says no, when
+it is not run from the owner session, when `--ref` is missing or not a sha as
+above, inside a `no_touch` window, when a `no_touch` window starts before the
+run can finish (the `check_minutes` wait, when there is a check, plus a
+5-minute margin; the refusal names the window and its start), under a
 project-wide fence (`boss steer <project> '...' --fence`; a `--task` fence
 holds only that task's landing), or while a deploy decision
 (`decide add --task <id> --action deploy`) for a task in that project is still
-open or was answered no. `boss log '<his words>' --task <id> --approves deploy`
-records a later yes. Then it saves his words in the captain journal, runs
-`command` over `ssh -oBatchMode=yes <host>`, runs `check` right away, and with
-`check_minutes > 0` waits inside the same command (a progress line each minute,
-no timer or background job) and checks again. A failed deploy skips the
-checks. On a failed deploy or check it says so plainly (exit 3) and prints the
-rollback command without running it, unless `auto_rollback = true`. The result
-goes to the captain journal, so the `/back` timeline shows the deploy. Remote
+open or was answered no. `boss log '<your words>' --task <id> --approves deploy`
+records a later yes. Then it saves your words (and the `--ref`) in the journal,
+runs `command` over `ssh -oBatchMode=yes <host>`, runs `check` right away, and
+with `check_minutes > 0` waits inside the same command and checks again. While
+it waits it prints one line a minute, such as
+`waiting 7 more minutes before the second check (due 14:32 UTC)...`, flushed
+at once, so a 10+ minute run stays visibly alive. There is no timer or
+background job inside boss. A failed deploy skips the checks. On a failed
+deploy or check it says so plainly (exit 3) and prints the rollback command
+without running it, unless `auto_rollback = true`. The result goes to the
+journal, so the `/back` timeline shows the deploy and its release. Remote
 output is cut to its last 20 lines; `NAME=value` environment lines are hidden
 and token-, secret- and password-looking values are redacted. The ledger is
 locked only while journaling, so other boss commands keep working during the
-wait. `--dry-run` works from any shell, needs no quote, and prints the plan and
-any refusal.
+wait. `--dry-run` works from any shell, needs no quote, and prints the plan,
+the filled commands and any refusal.
+
+A run with a long check wait can outlast a chat tool call. Start it as a
+tracked background command: your agent's terminal runs it in the background
+and tells you when it exits, and the progress lines are in its output
+meanwhile. Read the output once it ends. Never poll it with a sleep loop,
+a timer or cron.
 
 `answer` accepts the request ID or the exact `request-id/question-id` printed
 by `status`, including `/0`. A suffix must identify a real question in that
