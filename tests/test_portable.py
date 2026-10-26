@@ -207,6 +207,25 @@ class RoleTest(HermeticTestCase):
         self.fake.pending["request-123"] = [{"id": "0", "question": "Again?", "options": []}]
         self.assertEqual(self.cli("answer", meta["id"], "request-123/99", "A")[0], 2)
 
+    def test_answer_accepts_question_id_with_slashes_and_quotes(self):
+        meta = self.spawn()
+        question_id = '"/" was removed on purpose, keep it out? a/b'
+        self.fake.pending["request-9"] = [{"id": question_id, "question": "Keep it out?", "options": []}]
+        shown = self.cli("status", meta["id"], "--full")[1]
+        self.assertIn(f"request-9/{question_id}: Keep it out?", shown)
+        code, output = self.cli("answer", meta["id"], f"request-9/{question_id}", "yes")
+        self.assertEqual(code, 0, output)
+        sent = [args for name, args in self.fake.calls if name == "t3_pending_request_respond"][-1]
+        self.assertEqual(sent["requestId"], "request-9")
+        self.assertEqual(sent["answers"], {question_id: "yes"})
+        # A unique prefix of a pending id is enough; an ambiguous one is refused.
+        self.fake.pending["request-9"] = [{"id": "0", "question": "Again?", "options": []}]
+        self.assertEqual(self.cli("answer", meta["id"], "request-", "A")[0], 0)
+        self.fake.pending["request-1"] = [{"id": "0", "question": "One?", "options": []}]
+        self.fake.pending["request-2"] = [{"id": "0", "question": "Two?", "options": []}]
+        self.assertEqual(self.cli("answer", meta["id"], "request-", "A")[0], 2)
+        self.assertEqual(self.cli("answer", meta["id"], "request-2", "A")[0], 0)
+
     def test_host_commands_and_init_are_idempotent(self):
         self.assertIn("MCP handshake ok", self.cli("host", "test", "test")[1])
         self.assertEqual(self.cli("host", "add", "other", "--url", self.fake.url, "--token-env", "T3_TEST_MCP_TOKEN")[0], 0)

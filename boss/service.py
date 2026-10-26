@@ -426,12 +426,8 @@ class Boss:
         self.recover(meta)
         client = self.client(meta["host"])
         pending = client.call("t3_pending_request_list", threadId=meta["thread_id"])["requestIds"]
-        question_id = None
-        if request_id not in pending and "/" in request_id:
-            candidate, question_id = request_id.rsplit("/", 1)
-            if candidate in pending:
-                request_id = candidate
-        if request_id not in pending:
+        request_id, question_id = resolve_request(request_id, pending)
+        if request_id is None:
             refuse("request is not pending on this task", f"boss status {task_id}")
         request = client.call("t3_pending_request_read", threadId=meta["thread_id"], requestId=request_id)
         questions = request["questions"]
@@ -645,3 +641,19 @@ def normalize_options(options):
     if isinstance(options, list):
         return {o["id"]: o["value"] for o in options if isinstance(o, dict) and "id" in o}
     return dict(options or {})
+
+
+def resolve_request(given, pending):
+    """Map what the captain typed to (request id, question id or None).
+
+    status prints `<request id>/<question id>` and T3 question ids can be the
+    question text itself, slashes and quotes included, so match against the
+    pending ids instead of splitting. A unique prefix of a pending id also works."""
+    if given in pending:
+        return given, None
+    owners = [r for r in pending if given.startswith(f"{r}/")]
+    if owners:
+        request_id = max(owners, key=len)
+        return request_id, given[len(request_id) + 1:]
+    prefixed = [r for r in pending if r.startswith(given)] if given else []
+    return (prefixed[0], None) if len(prefixed) == 1 else (None, None)
