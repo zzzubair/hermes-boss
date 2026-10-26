@@ -47,6 +47,7 @@ boss spawn <project> --worker <role> --title "<task>" --brief-file <file> --over
 boss status <id>
 boss status <id> --full
 boss send <id> "<instruction>"
+boss send <id> "<instruction>" --image <path> [--image <path> ...]
 boss answer <id> <request/question-id> "<answer>"
 boss stop <id>
 boss decide list
@@ -66,6 +67,12 @@ boss own --take
 boss own status
 boss release
 ```
+
+Captain uploads live in `~/.hermes/cache/images` and
+`~/.hermes/cache/documents/native-inputs`; pass them with `--image` on
+`boss send` or `boss spawn` (png, jpeg, gif or webp, up to 10 MB, at most 8)
+so a screenshot of a bug or a design pick reaches the worker. A path in the
+text does not: the worker may run on another host.
 
 Projects can be discovered by exact T3 title without registration. Use
 `project show` to inspect effective preferences and contributing files.

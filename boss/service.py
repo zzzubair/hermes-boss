@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import uuid
 
+from . import attachments
 from .common import BossError, refuse, require_text
 from .events import status_line
 from .integrations import GitHub, PR_PATTERN, github_repository, inspect_worktree, remove_worktree, resolve_repository
@@ -232,9 +233,11 @@ class Boss:
                              goal=self.store.goal(name) if goal is None else goal,
                              steers=[s for s in steers if not standing_rule(s)], origin=origin)
 
-    def spawn(self, project_name, title, brief, kind=None, host=None, model=None, effort=None, fits=None, worker=None, override=None):
+    def spawn(self, project_name, title, brief, kind=None, host=None, model=None, effort=None, fits=None, worker=None, override=None,
+              images=()):
         require_text(title, "title", 300)
         require_text(brief, "task brief", 115000)
+        images = attachments.load_images(images)
         if override is not None:
             require_text(override, "--override", 2000)
         goal = self.store.goal(project_name)
@@ -272,6 +275,9 @@ class Boss:
         if override is not None and not violations:
             raise BossError("usage", "--override applies only when a worker rule refuses the spawn",
                             "retry boss spawn without --override", 1)
+        # Images ride on the launch itself, so the worker's first turn sees them with the brief.
+        # Upload before any ledger entry: a failed upload leaves no half-launched task behind.
+        uploaded = attachments.upload(client, images) if images else None
         task_id = self.store.new_id()
         branch = self.free_branch(repo, slug(title) or task_id)
         meta = {"id": task_id, "project": project_name, "project_id": project["project_id"],
@@ -284,13 +290,14 @@ class Boss:
         if violations:
             meta["override"] = {"approved": override, "violations": violations}
         self.store.text(task_id, "brief.md", message)
-        self.store.save(meta, "launch_intent")
+        self.store.save(meta, "launch_intent", **({"images": attachments.journal(images)} if images else {}))
         try:
             launched = client.call("t3_thread_launch", projectId=project["project_id"],
                                    title=f"[boss:{task_id}] {title}", message=message,
                                    workspaceStrategy={"type": "worktree", "baseRef": base,
                                                       "branch": meta["branch"], "startFromOrigin": True},
-                                   **({"modelSelection": selection} if selection else {}))
+                                   **({"modelSelection": selection} if selection else {}),
+                                   **({"attachments": uploaded} if uploaded else {}))
         except BossError as exc:
             meta["status"] = "launch_unknown"
             self.store.save(meta, "launch_unknown")
@@ -431,16 +438,23 @@ class Boss:
             refuse(f"task {task_id} is settled", f"boss status {task_id}")
         return meta
 
-    def send(self, task_id, text):
+    def send(self, task_id, text, images=()):
         require_text(text, "message")
+        images = attachments.load_images(images)
         meta = self.active_task(task_id)
         self.recover(meta)
         client = self.client(meta["host"])
         request_id = uuid.uuid4().hex
         message = text if text.startswith(MARK.strip()) else MARK + text
-        self.store.save(meta, "send_intent", client_request_id=request_id, text=message)
-        result = client.call("t3_thread_send", threadId=meta["thread_id"], message=message,
-                             clientRequestId=request_id)
+        self.store.save(meta, "send_intent", client_request_id=request_id, text=message,
+                        **({"images": attachments.journal(images)} if images else {}))
+        if images:
+            # t3_thread_send_attachments has no retry key: on a transport error, boss status before resending.
+            result = client.call("t3_thread_send_attachments", threadId=meta["thread_id"], message=message,
+                                 attachments=attachments.upload(client, images))
+        else:
+            result = client.call("t3_thread_send", threadId=meta["thread_id"], message=message,
+                                 clientRequestId=request_id)
         meta.pop("report_run_id", None)
         meta["handled_at"] = now()
         if meta.get("status") == "completed":

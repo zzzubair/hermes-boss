@@ -74,6 +74,8 @@ def parser():
     spawn.add_argument("--effort", help="exact effort value supported by that model")
     spawn.add_argument("--fits", metavar="TEXT", help="one line reconciling this task with the project goal and active steers")
     spawn.add_argument("--override", metavar="QUOTE", help="captain's exact words letting a rule-refused spawn through; saved on the task")
+    spawn.add_argument("--image", action="append", default=[], metavar="PATH",
+                       help="png/jpeg/gif/webp up to 10 MB attached to the brief; repeat up to 8 times")
     brief = commands.add_parser("brief", help="preview worker context and contract with a <task> placeholder; read-only")
     brief.add_argument("project")
     brief.add_argument("--worker", help="named worker preset")
@@ -84,6 +86,8 @@ def parser():
     send = commands.add_parser("send", help="send a durable message to a worker")
     send.add_argument("id")
     send.add_argument("text")
+    send.add_argument("--image", action="append", default=[], metavar="PATH",
+                      help="png/jpeg/gif/webp up to 10 MB attached to the message; repeat up to 8 times")
     answer = commands.add_parser("answer", help="answer a pending input request; cannot approve permissions")
     answer.add_argument("id")
     answer.add_argument("request")
@@ -375,7 +379,7 @@ def dispatch(args, boss):
         else:
             raise BossError("usage", "supply --brief-file or pipe a brief on stdin", "boss spawn --help", 1)
         meta = boss.spawn(args.project, args.title, brief, args.kind, args.host, args.model, args.effort, args.fits, args.worker,
-                          args.override)
+                          args.override, args.image)
         return [f"{meta['id']}: spawned {meta['host']} {meta['status']}",
                 f"thread: {meta['thread_id']}", f"next: boss status {meta['id']}"], 0
     if command == "status":
@@ -419,8 +423,8 @@ def dispatch(args, boss):
     if command == "release":
         return owner.release(boss.store), 0
     if command == "send":
-        boss.send(args.id, args.text)
-        return [f"{args.id}: sent", f"next: boss status {args.id}"], 0
+        boss.send(args.id, args.text, args.image)
+        return [f"{args.id}: sent" + (f" with {len(args.image)} image" + "s" * (len(args.image) > 1) if args.image else ""), f"next: boss status {args.id}"], 0
     if command == "answer":
         boss.answer(args.id, args.request, args.text)
         return [f"{args.id}: answered {args.request}", f"next: boss status {args.id}"], 0
