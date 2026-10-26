@@ -1,4 +1,4 @@
-# python3 -m unittest discover -v on oracle, rebased on origin/main cba5dd2
+# python3 -m unittest discover -v on oracle, rebased on origin/main 3b1cb3f
 test_answers_and_closed_decisions_clear_the_open_line (tests.test_ambient.AmbientTest.test_answers_and_closed_decisions_clear_the_open_line) ... ok
 test_clean_ledger_injects_nothing_and_prints_nothing (tests.test_ambient.AmbientTest.test_clean_ledger_injects_nothing_and_prints_nothing) ... ok
 test_corrupt_record_does_not_hide_valid_decision (tests.test_ambient.AmbientTest.test_corrupt_record_does_not_hide_valid_decision) ... ok
@@ -219,16 +219,16 @@ test_the_note_shows_in_the_away_timeline (tests.test_note.NoteTest.test_the_note
 test_with_nobody_owning_boss_the_note_waits_for_the_next_owner (tests.test_note.NoteTest.test_with_nobody_owning_boss_the_note_waits_for_the_next_owner) ... ok
 test_a_new_finished_run_comes_back_after_review (tests.test_nothing_slips.NothingSlipsTest.test_a_new_finished_run_comes_back_after_review) ... ok
 test_a_pending_question_is_one_input_item_not_also_finished (tests.test_nothing_slips.NothingSlipsTest.test_a_pending_question_is_one_input_item_not_also_finished) ... ok
-test_away_never_rides_on_the_captains_message (tests.test_nothing_slips.NothingSlipsTest.test_away_never_rides_on_the_captains_message) ... warning: boss is owned by Hermes app since 21:24; this shell is not a Hermes session
+test_away_never_rides_on_the_captains_message (tests.test_nothing_slips.NothingSlipsTest.test_away_never_rides_on_the_captains_message) ... warning: boss is owned by Hermes app since 21:26; this shell is not a Hermes session
 ok
 test_errored_run_is_listed_and_send_clears_it (tests.test_nothing_slips.NothingSlipsTest.test_errored_run_is_listed_and_send_clears_it) ... ok
 test_errored_run_reviewed_by_status_is_cleared (tests.test_nothing_slips.NothingSlipsTest.test_errored_run_reviewed_by_status_is_cleared) ... ok
 test_finished_run_stays_on_the_attention_line_until_status_reviews_it (tests.test_nothing_slips.NothingSlipsTest.test_finished_run_stays_on_the_attention_line_until_status_reviews_it) ... ok
 test_ids_column_only_with_ids (tests.test_nothing_slips.NothingSlipsTest.test_ids_column_only_with_ids) ... ok
 test_next_step_follows_how_the_turn_ended (tests.test_nothing_slips.NothingSlipsTest.test_next_step_follows_how_the_turn_ended) ... ok
-test_no_line_while_a_listener_holds_the_lock_or_nothing_is_active (tests.test_nothing_slips.NothingSlipsTest.test_no_line_while_a_listener_holds_the_lock_or_nothing_is_active) ... warning: boss is owned by Hermes app since 21:24; this shell is not a Hermes session
+test_no_line_while_a_listener_holds_the_lock_or_nothing_is_active (tests.test_nothing_slips.NothingSlipsTest.test_no_line_while_a_listener_holds_the_lock_or_nothing_is_active) ... warning: boss is owned by Hermes app since 21:26; this shell is not a Hermes session
 ok
-test_owner_turn_says_updates_are_not_arriving_when_nobody_listens (tests.test_nothing_slips.NothingSlipsTest.test_owner_turn_says_updates_are_not_arriving_when_nobody_listens) ... warning: boss is owned by Hermes app since 21:24; this shell is not a Hermes session
+test_owner_turn_says_updates_are_not_arriving_when_nobody_listens (tests.test_nothing_slips.NothingSlipsTest.test_owner_turn_says_updates_are_not_arriving_when_nobody_listens) ... warning: boss is owned by Hermes app since 21:26; this shell is not a Hermes session
 ok
 test_pipes_in_text_never_break_the_table (tests.test_nothing_slips.NothingSlipsTest.test_pipes_in_text_never_break_the_table) ... ok
 test_quiet_age (tests.test_nothing_slips.NothingSlipsTest.test_quiet_age) ... ok
@@ -375,8 +375,8 @@ test_pr_merged_on_github_is_found_at_the_owner_turn_start_when_t3s_copy_is_stale
 test_pushed_event_reaches_owner_session_once (tests.test_wake.WakeTest.test_pushed_event_reaches_owner_session_once) ... ok
 test_refused_injection_is_held_then_delivered_when_owner_returns_or_new_owner_claims (tests.test_wake.WakeTest.test_refused_injection_is_held_then_delivered_when_owner_returns_or_new_owner_claims) ... ok
 test_register_starts_listener_without_gateway_marker (tests.test_wake.WakeTest.test_register_starts_listener_without_gateway_marker) ... ok
-test_replied_answered_and_merged_items_are_dropped_not_delivered (tests.test_wake.WakeTest.test_replied_answered_and_merged_items_are_dropped_not_delivered) ... warning: boss is owned by Hermes app since 21:25; this shell is not a Hermes session
-warning: boss is owned by Hermes app since 21:25; this shell is not a Hermes session
+test_replied_answered_and_merged_items_are_dropped_not_delivered (tests.test_wake.WakeTest.test_replied_answered_and_merged_items_are_dropped_not_delivered) ... warning: boss is owned by Hermes app since 21:27; this shell is not a Hermes session
+warning: boss is owned by Hermes app since 21:27; this shell is not a Hermes session
 ok
 test_running_worker_quiet_too_long_wakes_once_per_stall (tests.test_wake.WakeTest.test_running_worker_quiet_too_long_wakes_once_per_stall) ... ok
 test_settled_task_is_ignored (tests.test_wake.WakeTest.test_settled_task_is_ignored) ... ok
@@ -397,6 +397,6 @@ test_stale_items_are_dropped_and_it_keeps_waiting (tests.test_watch.WatchTest.te
 test_waiting_items_are_printed_and_acked_at_once (tests.test_watch.WatchTest.test_waiting_items_are_printed_and_acked_at_once) ... ok
 
 ----------------------------------------------------------------------
-Ran 380 tests in 75.086s
+Ran 380 tests in 74.504s
 
 OK

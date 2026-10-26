@@ -85,7 +85,7 @@ def footer(kind, delivery, *, origin=False, test_host=None, standing=(), standin
                      "against the origin default branch. A review finding you cannot settle from the brief is a question: "
                      "ask it through the question tool and end the turn; never dismiss it on your own. "
                      "The PR body must keep the pipeline's evidence appendix, which links its review and test evidence: "
-                     "above it write only Intent and What changed, and never remove it when you edit the body; "
+                     "above it write only Intent and What changed, and never change or remove it when you edit the body; "
                      "boss refuses to land a PR without it. "
                      "Link the PR to this thread with link_pull_request, then stop. Put the verification in your final message "
                      "and end it with BOSS: done: <PR url>.")

@@ -283,7 +283,7 @@ and open exactly one PR against the origin default branch. No-mistakes ship
 workers commit, then validate through `/no-mistakes` before any PR exists: the
 pipeline reviews, tests, pushes and opens the one PR. The contract tells them
 to ask any review finding they can't settle through the question tool, and to
-keep the pipeline's evidence appendix in the PR body, below their Intent and
+keep the pipeline's evidence appendix in the PR body, unedited, below their Intent and
 What changed. `boss spawn` refuses a ship task when the host has no
 `no-mistakes` command (checked locally, or over SSH in a login shell so
 `~/.local/bin` counts) and names the host. `boss land` refuses a no-mistakes
