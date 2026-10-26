@@ -20,7 +20,10 @@ def footer(kind, delivery, *, origin=False):
         "Stay on the assigned branch. Never rename it or switch to another branch.",
         "Commit as the repository's configured Git user. Never change Git identity or add AI co-author trailers or agent credit.",
         "Never merge. Never deploy. Report through this thread to boss.",
-        "Ask questions through T3 input requests.",
+        "Any question, decision or blocker MUST go through your harness's interactive question tool, which raises a T3 input request "
+        "(AskUserQuestion in Claude Code, request_user_input in Codex). Never ask in plain text. "
+        "After asking, stop: take no further action until the answer arrives, and end the turn if the tool returns without one. "
+        "Never poll, sleep or wait in a loop spending turns.",
     ]
     if kind == "scout":
         rules.append("Scout: investigate and write a report. Do not open a PR. Leave the worktree clean. "

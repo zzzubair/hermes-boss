@@ -235,7 +235,9 @@ delivery = "direct-PR"
         self.assertEqual(launch["modelSelection"], {"instanceId": "codex", "model": "gpt-test", "options": {"reasoningEffort": "max"}})
         brief = (self.store.directory(meta["id"]) / "brief.md").read_text()
         for text in ("investigate this", "Never merge", "Never deploy", "configured Git user", "exactly ONE PR",
-                     "Stay on the assigned branch. Never rename it or switch to another branch.", "T3 input requests"):
+                     "Stay on the assigned branch. Never rename it or switch to another branch.", "raises a T3 input request",
+                     "AskUserQuestion in Claude Code, request_user_input in Codex", "Never ask in plain text",
+                     "Never poll, sleep or wait in a loop"):
             self.assertIn(text, brief)
         self.assertEqual(launch["message"], brief)
         for name in ("meta.json", "events.log", "brief.md"):

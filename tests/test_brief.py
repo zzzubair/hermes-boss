@@ -45,7 +45,7 @@ class BriefTest(HermeticTestCase):
                 for absent in ("old tests", "obsolete", "new tests", "format", "stdlib", "## Rules", "source:",
                                "Execution settings", "test_host:", "no_mistakes:", str(self.home)):
                     self.assertNotIn(absent, sent)
-                for present in ("Small supervisor", "No LLM calls", "Never merge. Never deploy.", "T3 input requests"):
+                for present in ("Small supervisor", "No LLM calls", "Never merge. Never deploy.", "raises a T3 input request"):
                     self.assertIn(present, sent)
 
     def test_brief_is_read_only_even_with_existing_ledger_and_lock(self):

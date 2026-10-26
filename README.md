@@ -255,6 +255,17 @@ commit locally and return a `BOSS_REPORT:`. Scouts investigate and return a
 report with a clean worktree. `test_host` and `no_mistakes` are supervisor
 preferences; include any relevant instructions in the task's brief.
 
+Every worker asks questions only through its harness's question tool, which
+T3 turns into an input request (`AskUserQuestion` in Claude Code,
+`request_user_input` in Codex), then stops until answered. `boss.events.classify`
+reads a task snapshot and says what it needs: `input`, `approval`,
+`finished_pr` (the final reply names a linked PR), `finished_report`,
+`error`, `working`, or `ended_unclear`. A turn that ends with none of these
+is `ended_unclear` and quotes the first 300 characters of the last reply,
+because it is probably a question asked in plain text. Each event has a
+`dedupe_key` (thread, kind, and turn or request IDs), so one event wakes the
+captain once.
+
 ## Writing briefs
 
 The supervisor writes each task's brief and resolves conflicting instructions.
