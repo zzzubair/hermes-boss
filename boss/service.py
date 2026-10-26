@@ -18,6 +18,7 @@ from .state import FINISHED as TERMINAL, now
 SLUG_CHARS = 40
 STATUS_FORMS = ("BOSS: done: <PR url or one-line report> / BOSS: needs-decision: <question> / "
                 "BOSS: blocked: <why> / BOSS: paused: <what you wait on> until <UTC time>")
+FAST_LAND_DOCS = "docs-only PR, landed under the project's fast_land_docs rule"
 MARK = "[boss] "  # Firstmate's from-firstmate marker: the supervisor speaking, never the captain
 # A steer written "rule: ..." is a standing rule for every brief; "rule scout: ..." or
 # "rule direct-PR: ..." only for briefs of that kind or delivery.
@@ -82,6 +83,8 @@ def footer(kind, delivery, *, origin=False, test_host=None, standing=(), standin
         rules.append(f"Run heavy tests (full suites, browsers, app stacks) on {test_host}, not on this host.")
     if kind != "scout":
         rules.append("If the change touches UI, put before and after screenshots of the real page in the PR or final report.")
+        rules.append("Give every demo or preview link as a tailnet (*.ts.net) or preview URL the captain can open on his phone. "
+                     "Never link localhost, 127.0.0.1 or a bare host:port; boss flags those as working only on that machine.")
     matching = [text for scope, text in standing if scope in (None, kind, delivery.lower())]
     if matching:
         rules.append("Standing rules from the captain. Follow every one:")
@@ -505,16 +508,37 @@ class Boss:
         result = self.client(meta["host"]).call("t3_thread_interrupt", threadId=meta["thread_id"])
         self.store.save(meta, "interrupt_requested", result=result)
 
+    def fast_land_docs(self, meta):
+        """The project's fast_land_docs rule applies: on, landable by boss, and no merge fence."""
+        return (meta["kind"] == "ship" and meta["delivery"] == "direct-PR" and
+                meta.get("merge", "auto" if meta.get("auto_merge") else "approved") != "never" and
+                self.config.effective(meta["project"])[0].get("fast_land_docs", False))
+
+    def docs_only_pr(self, meta, prs):
+        """The task's one open PR when the rule applies, the captain holds nothing back (a fence,
+        or his no to merging it) and it touches only *.md files, else None."""
+        if not self.fast_land_docs(meta) or len(prs) != 1 or prs[0]["state"] != "OPEN":
+            return None
+        answer = captain.approval(self.store, meta["id"], "merge")
+        if (answer is not None and answer.get("verdict") != "yes" or
+                any(s.get("fence") and s.get("task") in (None, meta["id"]) for s in self.store.steers(meta["project"]))):
+            return None
+        paths = self.github.files(prs[0])
+        return prs[0] if paths and all(path.lower().endswith(".md") for path in paths) else None
+
     def land(self, task_id, approved):
-        if not approved or not approved.strip():
+        quoted = bool(approved and approved.strip())
+        if not quoted:
             # An approval he already gave, here or in a check-in, is never asked for again.
             stored = captain.approval(self.store, task_id, "merge")
-            if stored is None or stored.get("verdict") != "yes":
-                refuse("landing requires the captain's words" +
-                       (f"; he answered: {captain.plain(stored['resolution'], 200)}" if stored else ""),
+            if stored is not None and stored.get("verdict") == "yes":
+                approved, quoted = stored["resolution"], True
+            elif stored is not None:  # his "no" holds even for a docs-only PR
+                refuse(f"landing requires the captain's words; he answered: {captain.plain(stored['resolution'], 200)}",
                        f'boss land {task_id} --approved "<quote>"')
-            approved = stored["resolution"]
         meta = self.active_task(task_id)
+        if not quoted and not self.fast_land_docs(meta):
+            refuse("landing requires the captain's words", f'boss land {task_id} --approved "<quote>"')
         if meta.get("merge", "auto" if meta.get("auto_merge") else "approved") == "never":
             refuse("project merge policy is never", "arrange landing outside boss")
         snapshot = self.snapshot(meta)
@@ -539,8 +563,16 @@ class Boss:
             raise BossError("refused", "the captain fenced this until he lifts it",
                             f"boss steer drop {meta['project']} <steer id> only when he lifts it", 2,
                             context=[f"{s['id']}: {s['text']}" for s in fences])
-        if (pr["state"] != "OPEN" or pr["isDraft"] or pr["ci"]["state"] != "green" or
-                pr["mergeStateStatus"] != "CLEAN" or pr.get("reviewDecision") == "CHANGES_REQUESTED"):
+        # A docs-only PR under fast_land_docs needs no captain words and does not wait for
+        # checks still running; a failed check or anything GitHub itself blocks still refuses.
+        docs = self.docs_only_pr(meta, snapshot["prs"]) is not None
+        if not quoted and not docs:
+            refuse("landing requires the captain's words; this PR changes more than *.md files",
+                   f'boss land {task_id} --approved "<quote>"')
+        ready_ci = ("green", "pending", "none", "skipped") if docs else ("green",)
+        ready_merge = ("CLEAN", "UNSTABLE", "HAS_HOOKS") if docs else ("CLEAN",)
+        if (pr["state"] != "OPEN" or pr["isDraft"] or pr["ci"]["state"] not in ready_ci or
+                pr["mergeStateStatus"] not in ready_merge or pr.get("reviewDecision") == "CHANGES_REQUESTED"):
             refuse(f"PR is not ready: state={pr['state']} ci={pr['ci']['state']} merge={pr['mergeStateStatus']}",
                    f"boss status {task_id}")
         project, _ = self.config.effective(meta["project"])
@@ -549,6 +581,7 @@ class Boss:
             raise BossError("refused", "PR body does not follow the pr-description format",
                             f"boss send {task_id} asking the worker to fix the PR body with gh pr edit --body-file, then land again",
                             2, context=problems)
+        approved = approved if quoted else FAST_LAND_DOCS
         meta["land_intent"] = {"url": pr["url"], "head": pr["headRefOid"], "approved": approved}
         self.store.save(meta, "land_intent")
         self.github.merge(pr)

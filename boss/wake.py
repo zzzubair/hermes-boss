@@ -337,8 +337,10 @@ class Listener:
                     event = Event("stalled", thread_id, event.turn_id, key, stall_text(minutes, view["assistant"]))
                 if event.kind != "working":
                     questions = boss.questions(meta, event.request_ids) if event.request_ids else []
-                    held.append(self.inbox.hold(event.dedupe_key, task, event.kind,
-                                                describe(meta.get("title"), event, view["prs"], questions),
+                    line = describe(meta.get("title"), event, view["prs"], questions)
+                    if event.kind == "done" and event.pr_urls and self.docs_only(boss, meta, view["prs"]):
+                        line += "; docs only, so boss can land it without asking the captain"
+                    held.append(self.inbox.hold(event.dedupe_key, task, event.kind, line,
                                                 run=event.turn_id, request_ids=event.request_ids, pr_urls=event.pr_urls))
                 until = paused_until(event.detail, self.clock()) if event.kind == "paused" else None
                 if until is not None:
@@ -431,6 +433,14 @@ class Listener:
             if finished:
                 held = bool(self.read(meta["id"], meta["thread_id"])) or held
         return held
+
+    def docs_only(self, boss, meta, prs):
+        """A hint only: a GitHub hiccup here must never cost the wake itself."""
+        try:
+            return boss.docs_only_pr(meta, prs) is not None
+        except BossError as exc:
+            log_error(self.home, self.config.redact, f"boss wake docs check {meta['id']} failed: {exc.code} {exc.message}")
+            return False
 
     def target(self):
         try:

@@ -18,9 +18,11 @@ pr_events() says which of the task's PRs merged or closed (often by the captain
 on GitHub, not by boss), so the supervisor can settle the task at once. The wake
 listener builds 'stalled' events itself, from how long a thread was quiet.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
+import ipaddress
 import re
+from urllib.parse import urlsplit
 
 KINDS = ("needs-decision", "approval", "blocked", "paused", "done", "error", "ended_unclear", "working")
 ERROR_STATUSES = {"failed", "interrupted", "cancelled", "rolled_back"}
@@ -31,6 +33,9 @@ STATUS_LINE = re.compile(r"BOSS:\s*(done|needs-decision|blocked|paused):\s*(\S.*
 UNTIL = re.compile(r"\buntil\s+(?:(\d{4}-\d{2}-\d{2})[T ])?(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?\s*(?:Z|UTC|GMT|\+00:?00)?\b",
                    re.IGNORECASE)
 FINISHED_PRS = {"MERGED": "merged", "CLOSED": "closed"}
+LINK = re.compile(r"https?://(?:\[[0-9A-Fa-f:.]+\])?[^\s<>()\[\]\"'`]+")
+# localhost:5173 or 127.0.0.1:8080 written without a scheme; never a piece of a URL or path.
+BARE_LOCAL = re.compile(r"(?<![\w./:@-])(?:localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0):\d{2,5}\b")
 
 
 @dataclass(frozen=True)
@@ -42,6 +47,7 @@ class Event:
     detail: str = ""
     request_ids: tuple = ()
     pr_urls: tuple = ()
+    machine_links: tuple = ()  # links in the report or PR body that open only on the worker's machine
 
 
 def status_line(text):
@@ -49,6 +55,28 @@ def status_line(text):
     lines = [line.strip().strip("`*").strip() for line in (text or "").splitlines() if line.strip()]
     match = STATUS_LINE.fullmatch(lines[-1]) if lines else None
     return (match[1], match[2].strip()) if match else None
+
+
+def machine_links(text):
+    """Links that open only on the machine that wrote them: localhost, a loopback address,
+    or a bare host with a port (http://devbox:3000). Tailnet (*.ts.net) and preview hosts pass."""
+    found = []
+    for link in LINK.findall(text or ""):
+        link = link.rstrip(".,;:!?*_")
+        try:
+            parts = urlsplit(link)
+            host, port = parts.hostname or "", parts.port
+        except ValueError:
+            continue
+        try:
+            address = ipaddress.ip_address(host)
+            local = address.is_loopback or address.is_unspecified
+        except ValueError:
+            local = host == "localhost" or host.endswith(".localhost") or ("." not in host and port is not None)
+        if local:
+            found.append(link)
+    found += BARE_LOCAL.findall(text or "")
+    return tuple(dict.fromkeys(found))
 
 
 def classify(view):
@@ -81,7 +109,8 @@ def classify(view):
             return event(state, payload)
         # PR links outlive the turn that made them: only PRs this turn's message names count.
         named = tuple(sorted(p["url"] for p in view.get("prs") or () if p["url"] in text))
-        return event("done", payload, pr_urls=named)
+        bodies = [p.get("body") or "" for p in view.get("prs") or () if p["url"] in named]
+        return event("done", payload, pr_urls=named, machine_links=machine_links("\n".join([text, *bodies])))
     quote = " ".join(text.split())[:QUOTE_CHARS]
     return event("ended_unclear", quote)
 
@@ -139,6 +168,9 @@ def describe(title, event, prs=(), questions=()):
     title = " ".join(str(title or "a worker").split())[:80]
     detail = " ".join(event.detail.split())
     kind = event.kind
+    if kind == "done" and event.machine_links:
+        flag = "link only works on that machine: " + ", ".join(event.machine_links[:3])
+        return f"{describe(title, replace(event, machine_links=()), prs)} ({flag})"
     if kind == "done":
         named = [p for p in prs if p["url"] in event.pr_urls]
         if named:
