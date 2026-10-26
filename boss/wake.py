@@ -131,7 +131,20 @@ class Listener:
         self.deliver_lock = threading.Lock()
         self.descriptor = self.server = None
         self.sockets, self.refused, self.tasks, self.tasks_stamp, self.seen = {}, None, {}, None, {}
+        # Completion counters, bumped only after everything a step writes is on disk.
+        self.progress = threading.Condition()
+        self.counts = {"streams": 0, "drops": 0, "pushes": 0, "pokes": 0}
         self.thread = threading.Thread(target=self.run, name="boss-wake", daemon=True)
+
+    def done(self, step):
+        with self.progress:
+            self.counts[step] += 1
+            self.progress.notify_all()
+
+    def reached(self, step, count, timeout):
+        """True once `count` of `step` have finished (doctor-style observability; tests wait on it)."""
+        with self.progress:
+            return self.progress.wait_for(lambda: self.counts[step] >= count, timeout)
 
     def armed(self):
         """This process can reach a session; the classic CLI queue is never a wake target."""
@@ -187,6 +200,8 @@ class Listener:
                         self.deliver()
                 except Exception as exc:
                     log_error(self.home, self.config.redact, "boss wake poke failed: " + type(exc).__name__)
+                finally:
+                    self.done("pokes")
 
     def follow(self, name):
         """One push stream per host. Reconnects after a drop; T3's snapshot covers the gap."""
@@ -198,6 +213,7 @@ class Listener:
                 stream = open_stream(self.config.hosts[name]["url"], token)
                 self.sockets[name] = stream
                 self.beat(f"listening host={name}")
+                self.done("streams")
                 failures = 0
                 while not self.stop_event.is_set():
                     message = json.loads(stream.receive())
@@ -207,12 +223,14 @@ class Listener:
                         stream.send(json.dumps({"_tag": "Ack", "requestId": message["requestId"]}))
             except BossError as exc:
                 log_error(self.home, self.config.redact, f"boss wake {name}: {exc.message}")
+                self.done("drops")
                 return  # no token for this host: doctor says how to add one
             except Exception as exc:
                 if self.stop_event.is_set():
                     return
                 failures += 1
                 log_error(self.home, self.config.redact, f"boss wake {name} stream dropped: {type(exc).__name__}")
+                self.done("drops")
             finally:
                 if stream is not None:
                     stream.close()
@@ -231,6 +249,13 @@ class Listener:
         return self.tasks.get((host, thread_id))
 
     def pushed(self, host, thread):
+        """Handle one pushed thread shell, including any delivery it triggers."""
+        try:
+            self.handle(host, thread)
+        finally:
+            self.done("pushes")
+
+    def handle(self, host, thread):
         request = thread.get("pendingRuntimeRequest") or {}
         if thread.get("status") in BUSY and not request:
             return  # most pushes: a running worker's progress, nothing to read
