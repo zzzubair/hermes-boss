@@ -18,7 +18,7 @@ from .config import Config, boss_home, flatten, display_key, key_parts, literal
 from .preferences import goal_path, notes_path
 from .events import classify
 from .service import Boss, ci_text, normalize_options
-from .state import Store, now
+from .state import Store
 
 
 class Parser(argparse.ArgumentParser):
@@ -131,6 +131,8 @@ def parser():
     steer.add_argument("steer_id", nargs="?", help="with 'drop', the active steer to retract")
     steer.add_argument("--task", help="related task from this project")
     steer.add_argument("--replaces", metavar="STEER_ID", help="supersede an earlier steer in this project")
+    steer.add_argument("--fence", action="store_true",
+                       help="hard fence: land refuses this project (or only --task) until the steer is dropped")
     steer.add_argument("--all", action="store_true", help="with 'list', include superseded/dropped steers and tombstones")
     away = commands.add_parser("away", help="mark the captain away; only away/back change presence")
     away.add_argument("note", nargs="*", help="optional note, e.g. going to bed")
@@ -142,11 +144,14 @@ def parser():
     commands.add_parser("release", help="leave boss with no owner; wakes are held on disk")
     log = commands.add_parser("log", help="record what the captain said or decided in a check-in")
     log.add_argument("text")
+    log.add_argument("--approves", choices=captain.ACTIONS, help="his words approve this for --task; never asked again")
+    log.add_argument("--task", help="task his approval is about")
     decide = commands.add_parser("decide", help="record decisions that need the captain")
     decisions = decide.add_subparsers(dest="decision_command", required=True)
     add = decisions.add_parser("add", help="open a durable decision")
     add.add_argument("text")
     add.add_argument("--task", help="related task id")
+    add.add_argument("--action", choices=captain.ACTIONS, help="what --task needs approved; answered once, never asked again")
     listing = decisions.add_parser("list", help="list open captain decisions with ids")
     listing.add_argument("--full", action="store_true", default=argparse.SUPPRESS, help="show complete text")
     ask = decisions.add_parser("ask", help="number open decisions 1..N for the captain and record the round")
@@ -159,6 +164,12 @@ def parser():
     unclear.add_argument("id", help="decision id, or number from the latest ask round")
     unclear.add_argument("text", help="what was unclear about his answer")
     unclear.add_argument("--round", type=int, help="ask round the captain answered; older rounds are refused")
+    reply = decisions.add_parser("answer", help="apply his numbered reply, e.g. '1 yes 3 no 5 more info', to the latest round")
+    reply.add_argument("text", help="his whole reply")
+    reply.add_argument("--round", type=int, help="ask round the captain answered; older rounds are refused")
+    detail = decisions.add_parser("detail", help="add plain context shown when the decision is asked again")
+    detail.add_argument("id", help="decision id, or number from the latest ask round")
+    detail.add_argument("text")
     return root
 
 
@@ -382,8 +393,8 @@ def dispatch(args, boss):
         return [f"project: {compact(args.project)}", "goal: " + (goal or "unset")], 0
     if command == "steer":
         if args.project == "drop":
-            if args.task is not None or args.replaces is not None or args.all or args.steer_id is None:
-                raise BossError("usage", "drop requires a project and steer id, without --task, --replaces or --all",
+            if args.task is not None or args.replaces is not None or args.all or args.fence or args.steer_id is None:
+                raise BossError("usage", "drop requires a project and steer id, without --task, --replaces, --fence or --all",
                                 "boss steer drop <project> <steer_id>", 1)
             record = boss.store.drop_steer(args.text, args.steer_id)
             return [f"{record['id']}: steer dropped project={compact(args.text)} drops={record['drops']}",
@@ -391,8 +402,8 @@ def dispatch(args, boss):
         if args.steer_id is not None:
             raise BossError("usage", "a third argument applies only to boss steer drop", "boss steer --help", 1)
         if args.project == "list":
-            if args.task is not None or args.replaces is not None:
-                raise BossError("usage", "--task and --replaces apply only when adding a steer", "boss steer --help", 1)
+            if args.task is not None or args.replaces is not None or args.fence:
+                raise BossError("usage", "--task, --replaces and --fence apply only when adding a steer", "boss steer --help", 1)
             records = boss.store.steers(args.text, all=args.all)
             lines = [f"{len(records)} {'total' if args.all else 'active'} steers project={compact(args.text)}"]
             for record in records:
@@ -400,14 +411,14 @@ def dispatch(args, boss):
                     lines.append(f"{record['id']}: tombstone {record['created_at']} drops={record['drops']}")
                     continue
                 state = "dropped" if record["dropped"] else "superseded" if record["superseded"] else "active"
-                lines.append(f"{record['id']}: {state} {record['created_at']} {record['text']}" +
+                lines.append(f"{record['id']}: {state}{' fence' if record.get('fence') else ''} {record['created_at']} {record['text']}" +
                              (f" task={record['task']}" if record.get("task") else "") +
                              (f" replaces={record['replaces']}" if record.get("replaces") else ""))
             return lines, 0
         if args.all:
             raise BossError("usage", "--all applies only to boss steer list", "boss steer --help", 1)
-        record = boss.store.add_steer(args.project, args.text, args.task, args.replaces)
-        return [f"{record['id']}: steer recorded project={compact(args.project)}",
+        record = boss.store.add_steer(args.project, args.text, args.task, args.replaces, args.fence)
+        return [f"{record['id']}: {'fence' if args.fence else 'steer'} recorded project={compact(args.project)}",
                 f"next: boss steer list {compact(args.project)}"], 0
     if command == "project":
         if args.project_command == "list":
@@ -526,7 +537,13 @@ def dispatch(args, boss):
         return captain.back(boss.store), 0
     if command == "log":
         require_text(args.text, "check-in log", 20000)
+        if bool(args.approves) != bool(args.task):
+            raise BossError("usage", "--approves and --task go together", 'boss log "<his words>" --task <id> --approves merge', 1)
         boss.store.captain("log", text=args.text.strip())
+        if args.approves:
+            captain.approve(boss.store, args.task, args.approves, args.text.strip())
+            return [f"check-in logged; {args.approves} approved for {args.task}, never asked again",
+                    f"next: boss land {args.task}" if args.approves == "merge" else "next: boss"], 0
         return ["check-in logged", "next: boss"], 0
     if command == "decide":
         subcommand = args.decision_command
@@ -537,22 +554,24 @@ def dispatch(args, boss):
             return lines + (['next: boss decide close <n> "<captain words>"'] if record else ["next: boss"]), 0
         require_text(args.text, "decision", 20000)
         if subcommand == "add":
-            if args.task:
-                boss.store.load(args.task)
-            decision_id = boss.store.new_id()
-            boss.store.decision({"id": decision_id, "text": args.text, "task": args.task, "closed": False,
-                                 "created_at": now()})
-            return [f"{decision_id}: decision open", "next: boss decide ask"], 0
-        record = captain.resolve(boss.store, args.id, args.round)
+            record, added = captain.add_decision(boss.store, args.text, args.task, args.action)
+            return [f"{record['id']}: decision {'open' if added else 'already open; not added twice'}", "next: boss decide ask"], 0
+        if subcommand == "answer":
+            # Full authority whether or not the captain is away.
+            lines, unclear = captain.answer(boss.store, args.text, args.round)
+            return lines + ['next: boss decide detail <n> "<plain explanation>" for each unclear one' if unclear else "next: boss"], 0
+        record = captain.resolve(boss.store, args.id, getattr(args, "round", None))
+        if subcommand == "detail":
+            captain.add_detail(boss.store, record, args.text)
+            return [f"{record['id']}: detail added; shown when asked again", "next: boss decide ask"], 0
         if subcommand == "unclear":
             if record.get("closed"):
                 refuse("that decision is already answered; it is never asked again", "boss decide ask")
             boss.store.captain("unclear", decision=record["id"], note=args.text.strip())
-            return [f"{record['id']}: marked unclear; re-asked next round", "next: boss decide ask"], 0
-        if not record.get("closed"):
+            return [f"{record['id']}: marked unclear; add detail, then it is re-asked next round",
+                    f'next: boss decide detail {record["id"]} "<plain explanation>"'], 0
+        if captain.close(boss.store, record, args.text):
             # Full authority whether or not the captain is away.
-            record.update(closed=True, resolution=args.text, closed_at=now())
-            boss.store.decision(record)
             return [f"{record['id']}: decision closed", "next: boss"], 0
         return [f"{record['id']}: decision already closed; kept the first answer", "next: boss"], 0
     raise BossError("usage", "unknown command", exit_code=1)

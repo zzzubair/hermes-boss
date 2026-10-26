@@ -47,7 +47,7 @@ class GitHub:
     def view(self, url):
         if not PR_PATTERN.fullmatch(url):
             raise BossError("protocol", "expected a github.com pull request URL")
-        fields = "url,title,state,isDraft,headRefOid,headRefName,baseRefName,mergeStateStatus,reviewDecision,statusCheckRollup,mergeCommit"
+        fields = "url,title,state,isDraft,headRefOid,headRefName,baseRefName,mergeStateStatus,reviewDecision,statusCheckRollup,mergeCommit,body"
         try:
             data = json.loads(run(["gh", "pr", "view", url, "--json", fields]))
             for key in ("state", "headRefOid", "headRefName", "isDraft", "mergeStateStatus", "statusCheckRollup"):

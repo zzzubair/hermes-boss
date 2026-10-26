@@ -190,6 +190,9 @@ explicit --model / --effort / --host / --kind
 ```
 
 Project roles merge field by field and may exist without a global definition.
+`[workers] max_active` (default 15) caps unsettled workers across all projects;
+spawn past it is refused naming the cap. Settle finished workers or raise it
+with `boss config set workers.max_active <n>`. It is not a role name.
 An unknown role fails with the available roles for that project. Both
 `config show --origin --project <name>` and `project show <name>` show the
 selected role's effective model, effort, host and kind with their origins.
@@ -335,14 +338,20 @@ boss send <id> 'Additional instruction'
 boss answer <id> <request-id/0> 'Answer text'
 boss stop <id>
 boss decide add 'Captain decision needed' --task <id>
+boss decide add 'Merge the login fix?' --task <id> --action merge
 boss decide list
 boss decide ask                 # number open decisions 1..N for the captain
+boss decide answer '1 yes 3 no 5 more info'   # his whole numbered reply
 boss decide close 1 'yes'       # by number from the latest round, or by id
 boss decide unclear 2 'Which name did he mean?'
+boss decide detail 2 'Plain explanation shown when it is asked again'
 boss away 'going to bed'        # also /away or /afk in the Hermes chat
 boss log 'What he said or decided in a check-in'
+boss log 'yes merge the login fix' --task <id> --approves merge
 boss back                       # also /back: catch-up timeline and decisions
+boss steer <project> "don't merge this until I say" --task <id> --fence
 boss land <id> --approved 'The captain exact words'
+boss land <id>                  # when he already approved the merge
 boss settle <id>
 boss settle --prune-landed      # remove leftover worktrees of settled, landed tasks on all hosts
 boss own                        # also /boss: open boss in this Hermes session
@@ -392,9 +401,31 @@ still lists decisions.
 `boss decide ask` records each round, so the captain can reply "1 yes 3 no".
 `decide close` and `decide unclear` take a number from the latest round or a
 decision ID. `--round <n>` names the round he answered; older rounds are
-refused. Unanswered decisions stay open and come back marked "asked again".
-`decide unclear` adds what was unclear to the next round. Answered decisions
-never come back. Bare `boss` shows presence and the latest round's numbers.
+refused. Unanswered decisions stay open and come back marked "asked again",
+with their whole text, any detail and the task they are about.
+`decide answer` takes his whole reply: "1 yes 3 no 5 more info" closes 1 and
+3, marks 5 unclear and leaves skipped numbers open. An unclear decision is
+asked again only after `decide detail` explains it better. Answered decisions
+never come back: `decide add` refuses the same text or the same `--task` and
+`--action` (merge, deploy or demo) once he answered it.
+
+Approval counts once. A yes to a merge decision, or `boss log '<his words>'
+--task <id> --approves merge` for an approval he gave in passing (also in an
+away check-in), is saved; `boss land <id>` then needs no `--approved`. A no
+blocks that until he approves again.
+
+A steer added with `--fence` is a hard fence: `land` refuses the whole project,
+or only `--task`, until the steer is dropped or replaced. Use it for "don't
+merge or deploy X until I say" and for merge freezes.
+
+`land` also refuses a PR whose body doesn't follow the pr-description shape:
+exactly one `## Intent`, `## What changed`, `## Risk Assessment` and
+`## Testing` section in that order, Intent ending with
+`Written by <model> in <harness> on behalf of @<owner>`, and none of the words
+in `pr_body_forbidden` (default `captain`, `firstmate`, `first mate`, `chat`)
+outside code. Set `pr_body_forbidden` globally or per project to change them.
+
+Bare `boss` shows presence and the latest round's numbers.
 
 ### Retracting a steer
 

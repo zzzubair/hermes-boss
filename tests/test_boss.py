@@ -22,6 +22,24 @@ from tests.support import HermeticTestCase
 
 TOKEN = "test-secret-token-never-print"
 URL = "https://github.com/example/repo/pull/7"
+BODY = """## Intent
+
+Fixes the thing so it works.
+
+Written by Claude Opus 5.5 in Claude Code on behalf of @owner
+
+## What changed
+
+- `fix.py`: does the thing
+
+## Risk Assessment
+
+**Low**: one function.
+
+## Testing
+
+- `python3 -m unittest`: 1 passed
+"""
 SCHEMAS = {
     "t3_project_list": [], "orchestrator_capabilities": [],
     "t3_thread_launch": ["title"], "t3_thread_read": ["threadId"],
@@ -167,7 +185,7 @@ class FakeGitHub:
         self.branch, self.merges, self.origin_branches, self.origin_heads = "trunk", [], set(), {}
         self.pr = {"url": URL, "state": "OPEN", "isDraft": False, "headRefOid": "a" * 40,
                    "headRefName": "", "baseRefName": "trunk", "mergeStateStatus": "CLEAN", "reviewDecision": "APPROVED",
-                   "statusCheckRollup": [{"conclusion": "SUCCESS"}], "mergeCommit": None}
+                   "statusCheckRollup": [{"conclusion": "SUCCESS"}], "mergeCommit": None, "body": BODY}
 
     def default_branch(self, repository):
         return self.branch

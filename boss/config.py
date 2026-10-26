@@ -13,11 +13,15 @@ from .preferences import project_name
 from .state import atomic_write
 
 
+# Words a PR body may not use outside code: the PR speaks as the owner, about the change.
+PR_BODY_FORBIDDEN = ["captain", "firstmate", "first mate", "chat"]
 DEFAULTS = {"default_host": "", "delivery": "direct-PR", "merge": "approved",
-            "no_mistakes": False, "kind": "ship"}
+            "no_mistakes": False, "kind": "ship", "pr_body_forbidden": PR_BODY_FORBIDDEN}
 SETTINGS = {"host": str, "worker": str, "model": str, "effort": str, "kind": str,
             "delivery": str, "merge": str, "auto_merge": bool, "test_host": str,
-            "no_mistakes": bool, "model_selection": dict}
+            "no_mistakes": bool, "model_selection": dict, "pr_body_forbidden": list}
+# [workers] holds role tables plus this one fleet-wide number.
+MAX_ACTIVE = 15
 # Allow-lists of instance:model per task kind. Unset means no restriction.
 RULES = {"ship_models": list, "scout_models": list}
 ROLE = {**{k: SETTINGS[k] for k in ("host", "model", "effort", "kind")}, "kinds": list}
@@ -26,6 +30,11 @@ ROLE = {**{k: SETTINGS[k] for k in ("host", "model", "effort", "kind")}, "kinds"
 def boss_home():
     # The ledger deliberately stays at its original location.
     return Path(os.environ.get("BOSS_HOME", "~/.boss")).expanduser()
+
+
+def roles_table(data):
+    """[workers] minus max_active: only the role tables."""
+    return {k: v for k, v in data.get("workers", {}).items() if k != "max_active"}
 
 
 def hermes_home():
@@ -111,7 +120,8 @@ class Config:
     def _load(self):
         self.hosts = self.data.get("hosts", {})
         self.projects = self.data.get("projects", {})
-        self.workers = self.data.get("workers", {})
+        self.workers = roles_table(self.data)
+        self.max_active = self.data.get("workers", {}).get("max_active", MAX_ACTIVE)
         self.default_host = self.data.get("default_host", "")
 
     def fail(self, key, message):
@@ -141,6 +151,8 @@ class Config:
                     self.fail(path, "must be instance:model")
                 if key == "kinds" and any(item not in choices["kind"] for item in value):
                     self.fail(path, "must list only " + ", ".join(choices["kind"]))
+                if key == "pr_body_forbidden" and any(type(item) is not str or not item.strip() for item in value):
+                    self.fail(path, "must list nonempty strings")
                 if key in RULES and any(type(item) is not str or ":" not in item or any(not p for p in item.split(":", 1))
                                         for item in value):
                     self.fail(path, "must list instance:model strings")
@@ -200,13 +212,16 @@ class Config:
             ssh = host.get("ssh", "")
             if ssh and (not re.fullmatch(r"[A-Za-z0-9_@.:-]+", ssh) or ssh.startswith("-")):
                 self.fail(prefix + ".ssh", "invalid ssh destination")
-        for name, worker in data.get("workers", {}).items():
+        cap = data.get("workers", {}).get("max_active", MAX_ACTIVE)
+        if type(cap) is not int or cap < 1:
+            self.fail("workers.max_active", "must be a positive integer")
+        for name, worker in roles_table(data).items():
             fields(worker, ROLE, "workers." + name)
         for name, project in data.get("projects", {}).items():
             project_name(name)
             fields(project, {**SETTINGS, "project_id": str, "repository": str, "workers": dict, "rules": dict}, "projects." + name)
             fields(project.get("rules", {}), RULES, f"projects.{name}.rules")
-        hosts, workers = data.get("hosts", {}), data.get("workers", {})
+        hosts, workers = data.get("hosts", {}), roles_table(data)
         for name, project in data.get("projects", {}).items():
             for role, settings in project.get("workers", {}).items():
                 fields(settings, ROLE, f"projects.{name}.workers.{role}")

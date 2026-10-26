@@ -44,6 +44,7 @@ boss goal <project> "<project goal>"
 boss goal <project>
 boss steer <project> "<captain steer>" --task <id>
 boss steer <project> "<replacement steer>" --replaces <steer-id>
+boss steer <project> "<captain's fence words>" [--task <id>] --fence
 boss steer drop <project> <steer-id>
 boss steer list <project>
 boss steer list <project> --all
@@ -61,14 +62,19 @@ boss answer <id> <request/question-id> "<answer>"
 boss stop <id>
 boss decide list
 boss decide add "<captain decision needed>" --task <id>
+boss decide add "<merge/deploy/demo question>" --task <id> --action merge|deploy|demo
 boss decide close <decision-id> "<captain resolution>"
 boss decide ask
+boss decide answer "<his whole numbered reply>" --round <round>
 boss decide close <n> "<captain words>" --round <round>
 boss decide unclear <n> "<what was unclear>"
+boss decide detail <n> "<plain explanation for the next round>"
 boss away "<note>"
 boss log "<what the captain said or decided in a check-in>"
+boss log "<his approving words>" --task <id> --approves merge|deploy|demo
 boss back
 boss land <id> --approved "<captain's exact words>"
+boss land <id>
 boss settle <id>
 boss settle --prune-landed
 boss own
@@ -129,11 +135,23 @@ used those words as a command. While a `boss: captain away` line is present:
   (`decide close`, `land --approved`, `steer`, `settle`). Record anything else
   he says or decides with `boss log "<his words or a faithful summary>"`.
 
-When he answers a numbered list ("1 yes 3 no"), close each with
-`boss decide close <n> "<his words>" --round <round>`. Mark an answer you
-don't understand with `boss decide unclear <n> "<what was unclear>"`; skipped
-ones are asked again automatically. Use `boss decide ask` to show him a new
-numbered round when he is around.
+When he answers a numbered list ("1 yes 3 no 5 more info"), pass his whole
+reply to `boss decide answer "<his reply>" --round <round>`: answered numbers
+close, "more info" ones are marked unclear, skipped ones stay open. Use
+`decide close` / `decide unclear` for a single answer. Before the next round,
+explain each unclear one in plain words with `boss decide detail`; `decide ask`
+refuses until you do. Use `boss decide ask` to show him a new numbered round
+when he is around.
+
+Approval counts once. Ask about a merge, deploy or demo with
+`decide add --task <id> --action <what>`; boss refuses to ask it again once he
+answered. When he approves one in passing (also in an away check-in), record
+it with `boss log "<his words>" --task <id> --approves <what>`. After a yes,
+`boss land <id>` needs no `--approved`.
+
+When he says "don't merge or deploy X until I say", or freezes merging, record
+it with `boss steer <project> "<his words>" --fence` (add `--task <id>` for one
+task). `land` refuses until he lifts it and you run `boss steer drop`.
 
 ## Guards
 
@@ -147,7 +165,11 @@ numbered round when he is around.
   `--model`). Use `--override` only with the captain's exact words allowing that
   spawn; boss saves them on the task. Never add model rules to briefs or notes:
   ask the captain to set them in config so boss enforces them.
-- `land` requires the captain's exact words and a green, eligible PR. Never
+- `spawn` refuses past `workers.max_active` unsettled workers (default 15).
+  Settle finished workers; only the captain raises the cap.
+- `land` refuses a PR body that breaks the pr-description shape or uses the
+  configured `pr_body_forbidden` words; send the worker the listed problems.
+- `land` requires the captain's exact words (or his saved yes) and a green, eligible PR. Never
   invent approval or turn `merge = "auto"` into permission. Merge policy is for the supervisor;
   `merge = "never"` refuses landing and every other policy still requires the quote.
 - `settle` refuses unlanded work or missing reports. Use `--discard-approved`
