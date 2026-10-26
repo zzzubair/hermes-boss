@@ -83,7 +83,7 @@ class DeployTest(HermeticTestCase):
         at = datetime.now(timezone.utc) + timedelta(minutes=minutes)
         return f"{at:%H:%M}-{(at + timedelta(hours=1)):%H:%M}"
 
-    def test_happy_path_checks_now_and_after_the_wait_and_journals_his_words(self):
+    def test_happy_path_checks_now_and_after_the_wait_and_journals_your_words(self):
         self.configure(check="test -f deployed && echo healthy", check_minutes=2, rollback="echo undo",
                        no_touch=[self.now_window(hours=12)])
         self.assertEqual(self.cli("away", "going to bed")[0], 0)
