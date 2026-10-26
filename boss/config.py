@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import sys
 import tomllib
 from urllib.parse import urlsplit
@@ -22,9 +23,28 @@ SETTINGS = {"host": str, "worker": str, "model": str, "effort": str, "kind": str
             "no_mistakes": bool, "fast_land_docs": bool, "model_selection": dict, "pr_body_forbidden": list}
 # [workers] holds role tables plus this one fleet-wide number.
 MAX_ACTIVE = 15
-# Allow-lists of instance:model per task kind. Unset means no restriction.
-RULES = {"ship_models": list, "scout_models": list}
+# [rules.models]: allow-lists of "instance:model" or "instance:model effort", keyed by role or task kind.
+# Unset means no restriction. ship_models/scout_models are the deprecated spelling of models.ship/scout.
+RULES = {"models": dict, "ship_models": list, "scout_models": list}
 ROLE = {**{k: SETTINGS[k] for k in ("host", "model", "effort", "kind")}, "kinds": list}
+
+
+def rule_entry(entry):
+    """'codex:gpt-5 xhigh' -> ('codex:gpt-5', 'xhigh'); 'codex:gpt-5' -> ('codex:gpt-5', None); malformed -> None."""
+    parts = entry.split(" ") if isinstance(entry, str) else []
+    if not 0 < len(parts) <= 2 or not all(parts) or ":" not in parts[0] or not all(parts[0].split(":", 1)):
+        return None
+    return parts[0], parts[1] if len(parts) == 2 else None
+
+
+def model_rules(rules):
+    """One rules table as {role or kind: allowed}; models.<key> wins over the deprecated <kind>_models."""
+    return {**{k[:-len("_models")]: v for k, v in rules.items() if k.endswith("_models")}, **rules.get("models", {})}
+
+
+def allows(allowed, model, effort):
+    """An entry without an effort allows the model at any effort."""
+    return any(m == model and e in (None, effort) for m, e in map(rule_entry, allowed))
 
 
 def boss_home():
@@ -116,6 +136,9 @@ class Config:
         for path, value in flatten(self.data):
             if path[-1] == "auto_merge":
                 print(self.redact(f"warning: {display_key(path)} is deprecated; use merge = {literal('auto' if value else 'approved')}"), file=sys.stderr)
+            if path[-1] in ("ship_models", "scout_models") and path[-2] == "rules":
+                print(self.redact(f"warning: {display_key(path)} is deprecated; use "
+                                  f"{display_key((*path[:-1], 'models', path[-1][:-len('_models')]))}"), file=sys.stderr)
 
     def _load(self):
         self.hosts = self.data.get("hosts", {})
@@ -153,9 +176,8 @@ class Config:
                     self.fail(path, "must list only " + ", ".join(choices["kind"]))
                 if key == "pr_body_forbidden" and any(type(item) is not str or not item.strip() for item in value):
                     self.fail(path, "must list nonempty strings")
-                if key in RULES and any(type(item) is not str or ":" not in item or any(not p for p in item.split(":", 1))
-                                        for item in value):
-                    self.fail(path, "must list instance:model strings")
+                if key in RULES and expected is list and any(rule_entry(item) is None for item in value):
+                    self.fail(path, 'must list "instance:model" or "instance:model effort" strings')
                 if key == "model_selection":
                     # Legacy explicit model selections remain readable.
                     fields(value, {"model": str, "instanceId": str, "options": dict}, path, legacy_selection=True)
@@ -176,7 +198,20 @@ class Config:
                     self.redact.add(self.credentials.get(key))
         fields(data, {"default_host": str, "default_worker": str, "hosts": dict, "projects": dict, "workers": dict, "wake": dict,
                       "rules": dict, **{k: v for k, v in SETTINGS.items() if k != "worker"}})
-        fields(data.get("rules", {}), RULES, "rules")
+        roles = set(roles_table(data)) | {r for p in data.get("projects", {}).values() if isinstance(p, dict)
+                                          for r in p.get("workers", {}) if isinstance(p.get("workers"), dict)}
+
+        def rules(table, prefix):
+            fields(table, RULES, prefix)
+            models = table.get("models", {})
+            for key in models:
+                if key not in ("ship", "scout") and key not in roles:
+                    self.fail(f"{prefix}.models.{key}", "must name a task kind (ship, scout) or a configured role")
+            fields(models, dict.fromkeys(models, list), prefix + ".models")
+            for key, value in models.items():
+                if any(rule_entry(item) is None for item in value):
+                    self.fail(f"{prefix}.models.{key}", 'must list "instance:model" or "instance:model effort" strings')
+        rules(data.get("rules", {}), "rules")
         wake = data.get("wake", {})
         # interval_seconds is a leftover from timed polling; tolerated so old configs load, never read.
         fields(wake, {"enabled": bool, "interval_seconds": int, "origin": dict, "session_key": str, "stall_minutes": int}, "wake")
@@ -222,7 +257,7 @@ class Config:
         for name, project in data.get("projects", {}).items():
             project_name(name)
             fields(project, {**SETTINGS, "project_id": str, "repository": str, "workers": dict, "rules": dict}, "projects." + name)
-            fields(project.get("rules", {}), RULES, f"projects.{name}.rules")
+            rules(project.get("rules", {}), f"projects.{name}.rules")
         hosts, workers = data.get("hosts", {}), roles_table(data)
         for name, project in data.get("projects", {}).items():
             for role, settings in project.get("workers", {}).items():
@@ -327,32 +362,47 @@ class Config:
                 apply(self.project(name).get("workers", {}).get(role, {}), f"{self.path} [projects.{name}.workers.{role}]")
             apply({"worker": role}, role_origin)
         apply(overrides, "CLI")
-        # Rules merge per key: a project list replaces only that kind's global list.
+        # Rules merge per key: a project list replaces only that role's or kind's global list.
         rules = {}
         for layer, origin in ((self.data.get("rules", {}), f"{self.path} [rules]"),
                               (self.project(name).get("rules", {}) if name else {}, f"{self.path} [projects.{name}.rules]")):
-            for key, allowed in layer.items():
+            for key, allowed in model_rules(layer).items():
                 rules[key] = list(allowed)
-                origins[("rules", key)] = origin
+                origins[("rules", "models", key)] = origin
         if rules:
-            values["rules"] = rules
+            values["rules"] = {"models": rules}
         if not values.get("host"):
             values["host"] = values["default_host"]
             origins[("host",)] = origins[("default_host",)]
         return values, origins
 
-    def violations(self, values, origins, model):
-        """Deterministic captain rules for one spawn; model is instance:model, or None for T3's own default."""
+    def violations(self, name, values, origins, model, effort):
+        """Deterministic captain rules for one spawn; model is instance:model, or None for T3's own default.
+
+        Each broken rule comes with a spawn retry that passes it and the one config change that
+        allows this spawn from now on (None when there is none)."""
+        def change(path, value):
+            return f"boss config set {display_key(path)} {shlex.quote(literal(value))}"
         found = []
-        kind, kinds = values["kind"], values.get("kinds")
+        role, kind, kinds = values.get("worker"), values["kind"], values.get("kinds")
         if kinds is not None and kind not in kinds:
-            found.append(f"role {values['worker']} may run only {', '.join(kinds) or 'no'} tasks, not {kind} "
-                         f"(kinds from {origins[('kinds',)]})")
-        key = kind + "_models"
-        allowed = values.get("rules", {}).get(key)
-        if allowed is not None and model not in allowed:
-            found.append(f"{'model ' + model if model else 'T3 default model'} is not allowed for {kind} tasks; "
-                         f"rules.{key} = {literal(allowed)} (from {origins[('rules', key)]})")
+            local = name and "kinds" in self.project(name).get("workers", {}).get(role, {})
+            found.append((f"role {role} may run only {', '.join(kinds) or 'no'} tasks, not {kind} (kinds from {origins[('kinds',)]})",
+                          f"--kind {kinds[0]} or another --worker" if kinds else "another --worker",
+                          change(("projects", name, "workers", role, "kinds") if local else ("workers", role, "kinds"), kinds + [kind])))
+        models = values.get("rules", {}).get("models", {})
+        # A role's list replaces its kind's list.
+        key = role if role in models else kind
+        allowed = models.get(key)
+        if allowed is not None and not (model and allows(allowed, model, effort)):
+            asked = " ".join(filter(None, (model, effort)))
+            local = name and key in model_rules(self.project(name).get("rules", {}))
+            path = ("projects", name, "rules", "models", key) if local else ("rules", "models", key)
+            found.append((f"{'model ' + asked if model else 'T3 default model'} is not allowed for "
+                          f"{'role ' + key if key == role else key + ' tasks'}; "
+                          f"{display_key(('rules', 'models', key))} = {literal(allowed)} (from {origins[('rules', 'models', key)]})",
+                          "--model " + allowed[0].replace(" ", " --effort ") if allowed else None,
+                          change(path, allowed + [asked]) if model else None))
         return found
 
     def write(self, data):

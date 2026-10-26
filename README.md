@@ -218,26 +218,35 @@ Nothing is restricted until you add them.
 kind = "scout"
 kinds = ["scout"]          # astra may only run report-only scout tasks
 
-[rules]
-ship_models = ["claudeAgent:claude-opus-5-5"]
-scout_models = ["claudeAgent:claude-opus-5-5", "codex:gpt-6.1-sol"]
+[rules.models]
+ship = ["claudeAgent:claude-opus-5-5"]          # builders run Opus; Codex only when asked
+scout = ["claudeAgent:claude-opus-5-5", "codex:gpt-6.1-sol"]
+reviewer = ["codex:gpt-6.1-sol xhigh"]          # the reviewer role runs Sol at xhigh only
 
-[projects.my-project.rules]
-scout_models = ["codex:gpt-6.1-sol"]   # replaces only the global scout list here
+[projects.my-project.rules.models]
+scout = ["codex:gpt-6.1-sol"]   # replaces only the global scout list here
 ```
 
-`kinds` is a role field and merges like the other role fields. `ship_models`
-and `scout_models` list `providerInstanceId:model` entries; a project list
-replaces only the same key from `[rules]`. Spawn resolves the model through the
-live catalog first, so bare `--model` IDs, role models and T3 project defaults
-are all checked. With a list set, an unknown model (T3 picks its default) is
-refused too. An empty list refuses every spawn of that kind.
+`kinds` is a role field and merges like the other role fields. Each key under
+`[rules.models]` names a task kind (`ship`, `scout`) or a role, and lists
+`providerInstanceId:model` entries, optionally followed by a space and the one
+effort allowed (`"codex:gpt-6.1-sol xhigh"`). An entry without an effort allows
+any effort. A role's list replaces its kind's list for that role. A project list
+replaces only the same key from `[rules.models]`. Spawn resolves the model and
+effort through the live catalog first, so bare `--model` IDs, role models and
+efforts, and T3 project defaults are all checked. With a list set, an unknown
+model (T3 picks its default) is refused too. An empty list refuses every spawn
+it covers. The older `rules.ship_models` / `rules.scout_models` still work as
+`rules.models.ship` / `rules.models.scout`, with a deprecation warning.
 
 A spawn that breaks a rule exits 2 before anything is written or launched,
-names each broken rule with its origin, and suggests a fix. When the captain
-explicitly allows it, add `--override "<captain's exact words>"`; the words and
-the broken rules are saved on the task under `override` and shown by
-`boss status <id>`. `--override` on a spawn that breaks no rule is a usage error.
+names each broken rule with its origin, suggests a spawn that passes, and
+prints the one `boss config set` command that would allow it from now on.
+When the captain explicitly allows it just this once, add
+`--allow-model "<captain's exact words>"` (`--override` is the older name); the
+words and the broken rules are saved in the task journal under `override` and
+shown by `boss status <id>`. `--allow-model` on a spawn that breaks no rule is a
+usage error. `boss status` shows each task's model and effort.
 
 `config show --origin`, `project show` and `boss brief` (on stderr, so the
 preview still matches the sent brief) print the effective rules. Rules are
@@ -391,7 +400,7 @@ the pr-description shape'`. Drop it like any steer. `spawn` requires a nonblank,
 a project has a goal or active steers. It saves the explanation with the task.
 Boss does not ask an LLM to judge it; the captain resolves unclear choices.
 Spawn also refuses tasks that break the [worker rules](#worker-rules) unless
-`--override` carries the captain's exact words.
+`--allow-model` carries the captain's exact words.
 
 ### Away, back and numbered decisions
 

@@ -1,0 +1,161 @@
+# Real bin/boss subprocesses, temp BOSS_HOME, fake T3 MCP (tests.test_boss.FakeT3), real gh.
+
+## 1. Captain's rules: builders Opus, reviewer Sol xhigh, Codex only when asked
+$ boss config set workers.builder.model claudeAgent:claude-opus-5-5
+workers.builder.model: set
+[exit 0]
+
+$ boss config set workers.reviewer.model codex:gpt-test
+workers.reviewer.model: set
+[exit 0]
+
+$ boss config set workers.reviewer.kind scout
+workers.reviewer.kind: set
+[exit 0]
+
+$ boss config set rules.models.ship '["claudeAgent:claude-opus-5-5"]'
+rules.models.ship: set
+[exit 0]
+
+$ boss config set rules.models.reviewer '["codex:gpt-test max"]'
+rules.models.reviewer: set
+[exit 0]
+
+$ boss project show repo
+project: repo
+source: registry
+host: test
+project_id: p1
+repository: zzzubair/hermes-boss
+delivery: direct-PR
+merge: approved
+auto_merge: false
+test_host: unset
+no_mistakes: false
+model_selection: null
+host: "test" origin=$BOSS_HOME/config.toml
+kind: "ship" origin=built-in
+rules.models.reviewer: ["codex:gpt-test max"] origin=$BOSS_HOME/config.toml [rules]
+rules.models.ship: ["claudeAgent:claude-opus-5-5"] origin=$BOSS_HOME/config.toml [rules]
+registry: $BOSS_HOME/config.toml
+notes: absent
+goal: absent
+active_steers: 0
+next: boss spawn repo --title "<task>" --brief-file <file>
+[exit 0]
+
+## 2. Refusals name the rule, a passing retry, and the one config line
+$ boss spawn repo --title 'Fix login' --model codex:gpt-test
+error: refused
+message: spawn breaks the captain's worker rules
+model codex:gpt-test is not allowed for ship tasks; rules.models.ship = ["claudeAgent:claude-opus-5-5"] (from $BOSS_HOME/config.toml [rules])
+to allow it from now on: boss config set rules.models.ship '["claudeAgent:claude-opus-5-5", "codex:gpt-test"]'
+next: retry with --model claudeAgent:claude-opus-5-5 / --allow-model "<captain's exact words>"
+[exit 2]
+
+$ boss spawn repo --title 'Review login' --worker reviewer --effort high
+error: refused
+message: spawn breaks the captain's worker rules
+model codex:gpt-test high is not allowed for role reviewer; rules.models.reviewer = ["codex:gpt-test max"] (from $BOSS_HOME/config.toml [rules])
+to allow it from now on: boss config set rules.models.reviewer '["codex:gpt-test max", "codex:gpt-test high"]'
+next: retry with --model codex:gpt-test --effort max / --allow-model "<captain's exact words>"
+[exit 2]
+
+$ boss spawn repo --title 'Review login' --worker reviewer --model claudeAgent:claude-opus-5-5
+error: refused
+message: spawn breaks the captain's worker rules
+model claudeAgent:claude-opus-5-5 is not allowed for role reviewer; rules.models.reviewer = ["codex:gpt-test max"] (from $BOSS_HOME/config.toml [rules])
+to allow it from now on: boss config set rules.models.reviewer '["codex:gpt-test max", "claudeAgent:claude-opus-5-5"]'
+next: retry with --model codex:gpt-test --effort max / --allow-model "<captain's exact words>"
+[exit 2]
+
+## 3. Allowed spawns
+$ boss spawn repo --title 'Review login' --worker reviewer --effort max
+ec28d954a1f6: spawned test running
+thread: thread-1
+next: boss status ec28d954a1f6
+[exit 0]
+
+$ boss spawn repo --title 'Fix login' --worker builder --effort high
+87e8db5a3ad0: spawned test running
+thread: thread-2
+next: boss status 87e8db5a3ad0
+[exit 0]
+
+## 4. One-time captain override, journaled
+$ boss spawn repo --title 'Fix logout' --model codex:gpt-test --effort high --allow-model 'Use Codex for this one fix, just this once'
+5b7cc376c8eb: spawned test running
+thread: thread-3
+next: boss status 5b7cc376c8eb
+[exit 0]
+
+$ head -1 $BOSS_HOME/tasks/<task>/events.log | jq '.event, .meta.override'
+"launch_intent"
+{
+  "approved": "Use Codex for this one fix, just this once",
+  "violations": [
+    "model codex:gpt-test high is not allowed for ship tasks; rules.models.ship = [\"claudeAgent:claude-opus-5-5\"] (from $BOSS_HOME/config.toml [rules])"
+  ]
+}
+
+$ boss status 5b7cc376c8eb
+5b7cc376c8eb: repo running
+thread: thread-3
+host: test
+model: gpt-test high
+auto_merge: false
+no_mistakes: false
+allowed by captain: "Use Codex for this one fix, just this once"
+  despite: model codex:gpt-test high is not allowed for ship tasks; rules.models.ship = ["claudeAgent:claude-opus-5-5"] (from $BOSS_HOME/config.toml [rules])
+0 pending input requests
+0 linked PRs
+last: 0 assistant messages
+next: boss send 5b7cc376c8eb "<message>"
+[exit 0]
+
+$ boss spawn repo --title 'Fix logout' --model claudeAgent:claude-opus-5-5 --allow-model 'Use Codex for this one fix, just this once'
+error: usage
+message: --allow-model applies only when a worker rule refuses the spawn
+next: retry boss spawn without --allow-model
+[exit 1]
+
+## 5. boss status shows model + effort
+$ boss status
+bin: ~/.t3/worktrees/hermes-boss/boss-model-and-effort-rules-enforced-at-spawn/bin/boss
+description: Supervise T3 coding workers.
+captain: here
+3 active tasks
+| task | project | host | model | state | PR | quiet | next |
+|---|---|---|---|---|---|---|---|
+| Fix logout | repo | test | gpt-test high | working | - | - | wait |
+| Fix login | repo | test | claude-opus-5-5 high | working | - | - | wait |
+| Review login | repo | test | gpt-test max | working | - | - | wait |
+states: running=3
+0 open decisions
+next: boss status <id> for one task (boss status --ids shows them)
+[exit 0]
+
+## 6. Applying the printed config line makes the same spawn pass
+$ boss config set rules.models.ship '["claudeAgent:claude-opus-5-5", "codex:gpt-test high"]'
+rules.models.ship: set
+[exit 0]
+
+$ boss spawn repo --title 'Fix logout again' --model codex:gpt-test --effort high
+9aa15e750162: spawned test running
+thread: thread-4
+next: boss status 9aa15e750162
+[exit 0]
+
+## 7. Bad config fails with the full key path
+$ boss config set rules.models.reviwer '["codex:gpt-test max"]'
+error: config
+message: "rules.models.reviwer: must name a task kind (ship, scout) or a configured role"
+next: edit $BOSS_HOME/config.toml
+[exit 1]
+
+$ boss config set rules.models.ship '["codex:gpt-test max extra"]'
+error: config
+message: "rules.models.ship: must list \"instance:model\" or \"instance:model effort\" strings"
+next: edit $BOSS_HOME/config.toml
+[exit 1]
+

@@ -245,7 +245,7 @@ class Boss:
         require_text(brief, "task brief", 115000)
         images = attachments.load_images(images)
         if override is not None:
-            require_text(override, "--override", 2000)
+            require_text(override, "--allow-model", 2000)
         active = len(self.store.tasks(active=True))
         if active >= self.config.max_active:
             refuse(f"{active} workers are active and the cap is workers.max_active = {self.config.max_active}",
@@ -272,19 +272,18 @@ class Boss:
         base = self.github.default_branch(repo)
         selection = self.model_selection(client, info, project.get("model_selection"), model or project.get("model"), effort or project.get("effort"))
         _, origins = self.config.effective(project_name, {**overrides, **({"host": host} if host else {})})
-        violations = self.config.violations(project, origins, f"{selection['instanceId']}:{selection['model']}" if selection else None)
+        broken = self.config.violations(project_name, project, origins,
+                                        f"{selection['instanceId']}:{selection['model']}" if selection else None,
+                                        selection_effort(selection))
+        violations = [text for text, _, _ in broken]
         if violations and override is None:
-            allowed, kinds = project.get("rules", {}).get(kind + "_models"), project.get("kinds")
-            fixes = []
-            if kinds is not None and kind not in kinds:
-                fixes.append(f"--kind {kinds[0]} or another --worker" if kinds else "another --worker")
-            if allowed and len(violations) > len(fixes):
-                fixes.append(f"--model {allowed[0]}")
+            retries = [retry for _, retry, _ in broken if retry]
             raise BossError("refused", "spawn breaks the captain's worker rules",
-                            "retry with " + " / ".join(fixes + ['--override "<captain\'s exact words>"']), 2, context=violations)
+                            "retry with " + " / ".join(retries + ['--allow-model "<captain\'s exact words>"']), 2,
+                            context=violations + [f"to allow it from now on: {fix}" for _, _, fix in broken if fix])
         if override is not None and not violations:
-            raise BossError("usage", "--override applies only when a worker rule refuses the spawn",
-                            "retry boss spawn without --override", 1)
+            raise BossError("usage", "--allow-model applies only when a worker rule refuses the spawn",
+                            "retry boss spawn without --allow-model", 1)
         # Images ride on the launch itself, so the worker's first turn sees them with the brief.
         # Upload before any ledger entry: a failed upload leaves no half-launched task behind.
         uploaded = attachments.upload(client, images) if images else None
@@ -759,6 +758,11 @@ def pr_body_problems(body, forbidden):
 
 def ci_text(ci):
     return f"{ci['state']} {ci['passed']} passed,{ci['failed']} failed,{ci['pending']} pending,{ci['skipped']} skipped"
+
+
+def selection_effort(selection):
+    options = normalize_options((selection or {}).get("options"))
+    return options.get("reasoningEffort") or options.get("effort")
 
 
 def normalize_options(options):

@@ -17,7 +17,7 @@ from .common import BossError, Redactor, compact, refuse, require_text
 from .config import Config, boss_home, flatten, display_key, key_parts, literal
 from .preferences import goal_path, notes_path
 from .events import classify
-from .service import Boss, ci_text, normalize_options
+from .service import Boss, ci_text, selection_effort
 from .state import Store
 
 
@@ -75,7 +75,8 @@ def parser():
     spawn.add_argument("--model", help="model id or providerInstanceId:model")
     spawn.add_argument("--effort", help="exact effort value supported by that model")
     spawn.add_argument("--fits", metavar="TEXT", help="one line reconciling this task with the project goal and active steers")
-    spawn.add_argument("--override", metavar="QUOTE", help="captain's exact words letting a rule-refused spawn through; saved on the task")
+    spawn.add_argument("--allow-model", "--override", dest="override", metavar="QUOTE",
+                       help="captain's exact words letting a rule-refused spawn through once; saved in the task journal")
     spawn.add_argument("--image", action="append", default=[], metavar="PATH",
                        help="png/jpeg/gif/webp up to 10 MB attached to the brief; repeat up to 8 times")
     brief = commands.add_parser("brief", help="preview worker context and contract with a <task> placeholder; read-only")
@@ -176,8 +177,8 @@ def parser():
 def rule_lines(values, origins):
     """Effective deterministic rules, for the supervisor only."""
     lines = [f"kinds: {literal(values['kinds'])} origin={origins[('kinds',)]}"] if "kinds" in values else []
-    return lines + [f"rules.{key}: {literal(allowed)} origin={origins[('rules', key)]}"
-                    for key, allowed in sorted(values.get("rules", {}).items())]
+    return lines + [f"{display_key(('rules', 'models', key))}: {literal(allowed)} origin={origins[('rules', 'models', key)]}"
+                    for key, allowed in sorted(values.get("rules", {}).get("models", {}).items())]
 
 
 def decision_lines(store, full=False):
@@ -214,8 +215,7 @@ def quiet(stamp):
 
 def model_text(meta, thread):
     selection = meta.get("model_selection") or {}
-    options = normalize_options(selection.get("options"))
-    effort = options.get("reasoningEffort") or options.get("effort")
+    effort = selection_effort(selection)
     model = selection.get("model") or thread.get("model") or "default"
     return f"{model} {effort}" if effort else model
 
@@ -472,13 +472,14 @@ def dispatch(args, boss):
         meta = boss.store.load(args.id)
         view = boss.snapshot(meta)
         lines = [f"{meta['id']}: {meta['project']} {view['status']}" + (" settled" if meta.get("settled") else ""),
-                 f"thread: {meta['thread_id']}", f"host: {meta['host']}",
+                 f"thread: {meta['thread_id']}", f"host: {meta['host']}", f"model: {model_text(meta, view['thread'])}",
                  f"auto_merge: {str(meta.get('auto_merge', False)).lower()}",
                  f"no_mistakes: {str(meta.get('no_mistakes', False)).lower()}"]
         if meta.get("test_host"):
             lines.append(f"test_host: {compact(meta['test_host'])}")
         if meta.get("override"):
-            lines.append(f"override: {compact(meta['override']['approved'])}")
+            lines.append(f"allowed by captain: {compact(meta['override']['approved'])}")
+            lines.extend(f"  despite: {' '.join(text.split())}" for text in meta["override"]["violations"])
         lines.append(f"{len(view['requests'])} pending input requests")
         client = boss.client(meta["host"])
         for request_id in view["requests"]:

@@ -1,0 +1,19 @@
+.........................................................................................................................................................warning: rules.ship_models is deprecated; use rules.models.ship
+.............warning: boss is owned by Hermes app since 16:55; this shell is not a Hermes session
+......warning: boss is owned by Hermes app since 16:55; this shell is not a Hermes session
+.warning: boss is owned by Hermes app since 16:55; this shell is not a Hermes session
+........................warning: projects.repo.auto_merge is deprecated; use merge = "auto"
+.......................warning: projects.repo.auto_merge is deprecated; use merge = "auto"
+..warning: projects.repo.auto_merge is deprecated; use merge = "auto"
+warning: projects.repo.auto_merge is deprecated; use merge = "auto"
+warning: projects.repo.auto_merge is deprecated; use merge = "auto"
+......................................................../usr/lib/python3.12/unittest/case.py:669: ResourceWarning: unclosed file <_io.TextIOWrapper name=7 encoding='UTF-8'>
+  function, args, kwargs = self._cleanups.pop()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+.......warning: boss is owned by Hermes app since 16:55; this shell is not a Hermes session
+warning: boss is owned by Hermes app since 16:55; this shell is not a Hermes session
+....
+----------------------------------------------------------------------
+Ran 289 tests in 54.659s
+
+OK

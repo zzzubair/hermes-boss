@@ -52,7 +52,7 @@ boss spawn <project> --title "<task>" --brief-file <file>
 boss spawn <project> --title "<task>" --brief-file <file> --fits "<how this fits the goal and active steers>"
 boss spawn <project> --title "<investigation>" --kind scout --brief-file <file>
 boss spawn <project> --worker <role> --title "<task>" --brief-file <file>
-boss spawn <project> --worker <role> --title "<task>" --brief-file <file> --override "<captain's exact words>"
+boss spawn <project> --worker <role> --title "<task>" --brief-file <file> --allow-model "<captain's exact words>"
 boss status --project <project> --skip <project> --ids
 boss status <id>
 boss status <id> --full
@@ -160,10 +160,12 @@ task). `land` refuses until he lifts it and you run `boss steer drop`.
   lacks a nonblank `--fits` line. Read the full context printed by the refusal.
   The line must be at most 2000 characters and contain no line breaks.
 - `spawn` refuses with exit 2 when a role's `kinds` excludes the task kind or
-  the resolved model is not in the effective `rules.ship_models` /
-  `rules.scout_models`. Follow the hint (another `--kind`, `--worker` or
-  `--model`). Use `--override` only with the captain's exact words allowing that
-  spawn; boss saves them on the task. Never add model rules to briefs or notes:
+  the resolved model and effort are not in the effective `rules.models.<role>`
+  (or, without one, `rules.models.<kind>`). Follow the hint (another `--kind`,
+  `--worker`, `--model` or `--effort`). Use `--allow-model` only with the
+  captain's exact words allowing that one spawn; boss journals them on the task.
+  If he wants it allowed for good, run the `boss config set` line the refusal
+  printed. Never add model rules to briefs or notes:
   ask the captain to set them in config so boss enforces them.
 - `spawn` refuses past `workers.max_active` unsettled workers (default 15).
   Settle finished workers; only the captain raises the cap.
