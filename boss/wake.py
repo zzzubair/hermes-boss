@@ -3,9 +3,11 @@
 T3 pushes every thread change over its orchestration WebSocket (one
 `orchestration.subscribeShell` stream per configured host). The listener runs
 inside an already-running Hermes host process (gateway, TUI or desktop),
-blocked on that socket. For a boss task's thread it asks `events.classify`
-what the change means; anything but 'working' is held once on disk (deduped by
-the event's key) and injected as one line into the session that owns boss.
+blocked on that socket. Pushes for a boss task's thread that still say it is
+running are dropped unread. When its status, run or pending request changes,
+the push triggers one Boss.snapshot read and `events.classify` says what it
+means; anything but 'working' is held once on disk (deduped by the event's
+key) and injected as one line into the session that owns boss.
 With no owner, or an owner that is offline, the wake stays held and goes out
 on the next push, when a session claims boss, or on the owner's next turn.
 Exactly one listener runs per machine: it holds $BOSS_HOME/wake.lock.
@@ -22,29 +24,11 @@ import urllib.request
 
 from .common import BossError, Redactor
 from .config import Config, boss_home
+from .events import classify
+from .service import Boss
 from .state import Store
 from .websocket import WebSocket
 from . import owner
-
-try:
-    from .events import classify
-except ImportError:
-    # Placeholder until boss/events.py lands (built in a parallel task); remove at merge.
-    from collections import namedtuple
-
-    Event = namedtuple("Event", "kind dedupe_key summary")
-
-    def classify(thread):
-        request, run, status = thread.get("pendingRuntimeRequest"), thread.get("latestRunId"), thread.get("status")
-        if request and request.get("blocking", True):
-            kind = "approval" if "approval" in str(request.get("kind")) else "input"
-            return Event(kind, f"{thread['id']}:request:{request['id']}", "needs " + kind)
-        label = {"completed": "finished_report", "failed": "error", "rolled_back": "error",
-                 "interrupted": "ended_unclear", "cancelled": "ended_unclear"}.get(status)
-        if label and run:
-            return Event(label, f"{thread['id']}:{run}:{status}", {"finished_report": "finished"}.get(label, status))
-        return Event("working", f"{thread['id']}:working", "working")
-
 
 CONSENT_KEY = "plugins.entries.boss.allow_gateway_injection"
 CONSENT_LINE = CONSENT_KEY + ": true"
@@ -53,6 +37,9 @@ SOCKET = "wake.sock"
 HEARTBEAT = "wake-heartbeat"
 LAST = "wake-last.json"
 TICKET = "/api/auth/websocket-ticket/rpc"
+BUSY = {"preparing", "queued", "starting", "running"}
+WORDS = {"input": "needs input", "approval": "needs a permission decision", "finished_pr": "finished with a PR",
+         "finished_report": "finished with a report", "ended_unclear": "turn ended unclear", "error": "error"}
 _lock = threading.Lock()
 _listeners = {}
 
@@ -143,7 +130,7 @@ class Listener:
         self.stop_event = threading.Event()
         self.deliver_lock = threading.Lock()
         self.descriptor = self.server = None
-        self.sockets, self.refused, self.tasks, self.tasks_stamp = {}, None, {}, None
+        self.sockets, self.refused, self.tasks, self.tasks_stamp, self.seen = {}, None, {}, None, {}
         self.thread = threading.Thread(target=self.run, name="boss-wake", daemon=True)
 
     def armed(self):
@@ -244,18 +231,31 @@ class Listener:
         return self.tasks.get((host, thread_id))
 
     def pushed(self, host, thread):
+        request = thread.get("pendingRuntimeRequest") or {}
+        if thread.get("status") in BUSY and not request:
+            return  # most pushes: a running worker's progress, nothing to read
         task = self.task_for(host, thread.get("id"))
-        if task is None:
+        signature = (thread.get("status"), thread.get("latestRunId"), request.get("id"))
+        if task is None or self.seen.get(thread["id"]) == signature:
+            return  # T3 re-pushes the same state (and re-snapshots); read each state once
+        try:
+            with self.store.locked(wait=True):
+                meta = self.store.load(task)
+                if meta.get("settled"):
+                    return
+                # One read per state change, triggered by this push. A fresh Boss keeps no
+                # long-lived MCP session to go stale between events.
+                event = classify(Boss(self.config, self.store, self.config.redact).snapshot(meta))
+                self.seen[thread["id"]] = signature
+                if event.kind == "working":
+                    return
+                text = WORDS[event.kind] + (f": {event.detail}" if event.detail else "")
+                record = self.store.hold_wake(event.dedupe_key, task, event.kind, text)
+                self.store.refresh_attention()
+        except BossError as exc:
+            # Not marked seen: the next push for this thread reads again.
+            log_error(self.home, self.config.redact, f"boss wake read {task} failed: {exc.code} {exc.message}")
             return
-        event = classify(thread)
-        if event.kind == "working":
-            return
-        summary = getattr(event, "summary", None) or event.kind.replace("_", " ")
-        with self.store.locked(wait=True):
-            if self.store.load(task).get("settled"):
-                return
-            record = self.store.hold_wake(event.dedupe_key, task, event.kind, summary)
-            self.store.refresh_attention()
         if record is not None:
             self.deliver()
 

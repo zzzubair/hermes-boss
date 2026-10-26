@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 from boss.common import Redactor
 from boss.config import Config
-from boss.wake import LOCK, Listener, _listeners, endpoints, start_wake
+from boss.wake import LOCK, TICKET, Listener, _listeners, endpoints, start_wake
 from boss.websocket import GUID
 import plugin
 from tests import test_boss as harness
@@ -86,14 +86,17 @@ class FakePush:
                 push.channels.append(channel)
                 push.connections.append(self.path)
                 threading.Thread(target=self.drain, daemon=True).start()
-                while True:
-                    item = channel.get()
-                    if item is None:
-                        self.wfile.write(bytes([0x88, 0]))
+                try:
+                    while True:
+                        item = channel.get()
+                        if item is None:
+                            self.wfile.write(bytes([0x88, 0]))
+                            self.wfile.flush()
+                            return
+                        self.wfile.write(frame(json.dumps({"_tag": "Chunk", "requestId": "1", "values": item})))
                         self.wfile.flush()
-                        return
-                    self.wfile.write(frame(json.dumps({"_tag": "Chunk", "requestId": "1", "values": item})))
-                    self.wfile.flush()
+                except OSError:
+                    pass  # the listener closed its end
 
             def drain(self):
                 try:
@@ -166,6 +169,7 @@ class WakeTest(HermeticTestCase):
     tearDown_cli = harness.CLITest.tearDown
     cli = harness.CLITest.cli
     spawn = harness.CLITest.spawn
+    completed = harness.CLITest.completed
 
     def setUp(self):
         self.setUp_cli()
@@ -173,8 +177,13 @@ class WakeTest(HermeticTestCase):
         self.push = FakePush()
         self.addCleanup(self.push.close)
         os.environ["T3_EVENTS_TOKEN"] = EVENTS_TOKEN
-        # The fake host serves MCP (spawn) and the push stream from two ports; point the stream at push.
+        # MCP (spawn and the listener's snapshot reads) is FakeT3; the push stream is FakePush.
+        streams = patch("boss.wake.endpoints", return_value=(self.push.url.replace("http", "ws", 1).replace("/mcp", "/ws"),
+                                                             self.push.url.replace("/mcp", TICKET)))
+        streams.start()
+        self.addCleanup(streams.stop)
         self.task = self.spawn()
+        self.thread = self.fake.threads[self.task["thread_id"]]
         self.listeners = []
         self.addCleanup(self.stop_all)
 
@@ -184,9 +193,15 @@ class WakeTest(HermeticTestCase):
         _listeners.clear()
 
     def config(self):
-        config = Config(self.home, Redactor(), hermes=self.home / "profile")
-        config.hosts["test"] = {**config.hosts["test"], "url": self.push.url}
-        return config
+        return Config(self.home, Redactor(), hermes=self.home / "profile")
+
+    def reads(self):
+        return sum(1 for name, _ in self.fake.calls if name == "t3_thread_read")
+
+    def state(self, status, run="run-1", **extra):
+        """Set the fake T3 thread and return the shell T3 would push for it."""
+        self.thread.update(status=status, latestRunId=run)
+        return shell(self.task["thread_id"], status, run, **extra)
 
     def listen(self, ctx, connections=1):
         listener = Listener(ctx, self.config(), self.home)
@@ -217,28 +232,47 @@ class WakeTest(HermeticTestCase):
         ctx = Context(self.home / "profile")
         self.listen(ctx)
         self.assertEqual(self.push.subscriptions[0]["tag"], "orchestration.subscribeShell")
-        thread = self.task["thread_id"]
-        self.push.send(snapshot(shell(thread)), updated(shell("someone-elses-thread", "completed")))
-        self.push.send(updated(shell(thread, "completed")))
+        reads = self.reads()
+        # Running progress and other people's threads cost nothing: no T3 read, no wake.
+        self.push.send(snapshot(shell(self.task["thread_id"])), updated(shell("someone-elses-thread", "completed")))
+        self.push.send(*[updated(shell(self.task["thread_id"]), n) for n in range(2, 6)])
+        self.completed(self.task, "BOSS_REPORT: three callers found")
+        self.push.send(updated(self.state("completed"), 6))
         self.assertTrue(ctx.wait_for(1))
+        self.assertEqual(self.reads(), reads + 1)
         content, target = ctx.messages[0]
         self.assertEqual(target, {"role": "user", "session_key": "agent:captain"})
-        self.assertIn(f"[boss wake] {self.task['id']} (Fix thing): finished", content)
+        self.assertIn(f"[boss wake] {self.task['id']} (Fix thing): finished with a report: BOSS_REPORT", content)
         self.assertIn("boss status", content)
-        # T3 pushes the same completion several times and re-snapshots; still one wake.
-        self.push.send(updated(shell(thread, "completed"), 2), updated(shell(thread, "completed"), 3))
-        self.push.send(snapshot(shell(thread, "completed")))
-        self.push.send(updated(shell(thread, "waiting", request={"id": "req-1", "kind": "user-input", "blocking": True})))
+        # T3 pushes the same completion several times and re-snapshots; still one wake, no re-read.
+        self.push.send(updated(self.state("completed"), 7), updated(self.state("completed"), 8))
+        self.push.send(snapshot(self.state("completed")))
+        self.fake.pending = {"req-1": [{"id": "q1", "question": "Which API?", "options": []}]}
+        self.push.send(updated(self.state("waiting", request={"id": "req-1", "kind": "user-input", "blocking": True}), 9))
         self.assertTrue(ctx.wait_for(2))
         self.assertEqual(len(ctx.messages), 2)
-        self.assertIn("needs input", ctx.messages[1][0])
+        self.assertIn("needs input: 1 pending input requests", ctx.messages[1][0])
+        self.assertEqual(self.reads(), reads + 2)
         self.wait(lambda: self.held() == [])
-        self.assertTrue((self.home / "wakes.jsonl").read_text().count('"held"') == 2)
+        self.assertEqual((self.home / "wakes.jsonl").read_text().count('"held"'), 2)
+
+    def test_failed_read_is_logged_and_the_next_push_reads_again(self):
+        self.own("agent:captain", "Discord DM")
+        ctx = Context(self.home / "profile")
+        self.listen(ctx)
+        self.fake.failure = "t3_thread_read"
+        self.push.send(updated(self.state("failed")))
+        self.wait(lambda: (self.home / "wake-errors.log").exists())
+        self.assertNotIn(harness.TOKEN, (self.home / "wake-errors.log").read_text())
+        self.fake.failure = None
+        self.push.send(updated(self.state("failed"), 2))
+        self.assertTrue(ctx.wait_for(1))
+        self.assertIn("error: thread failed", ctx.messages[0][0])
 
     def test_no_owner_holds_on_disk_then_claim_delivers(self):
         ctx = Context(self.home / "profile")
         self.listen(ctx)
-        self.push.send(updated(shell(self.task["thread_id"], "failed")))
+        self.push.send(updated(self.state("failed")))
         self.wait(lambda: len(self.held()) == 1)
         self.assertEqual(ctx.messages, [])
         attention = json.loads((self.home / "attention.json").read_text())
@@ -253,15 +287,14 @@ class WakeTest(HermeticTestCase):
         self.own("agent:captain", "Discord DM")
         ctx = Context(self.home / "profile", accepted=False)
         self.listen(ctx)
-        thread = self.task["thread_id"]
-        self.push.send(updated(shell(thread, "completed")))
+        self.push.send(updated(self.state("completed")))
         self.assertTrue(ctx.wait_for(1))
         self.wait(lambda: (self.home / "wake-errors.log").exists())
         self.assertIn("refused", (self.home / "wake-errors.log").read_text())
         self.assertEqual(len(self.held()), 1)  # refused: not consumed
-        self.push.send(updated(shell(thread, "completed"), 2))  # same event again: no new record
+        self.push.send(updated(self.state("completed"), 2))  # same event again: no new record
         # A second, new event retries delivery of everything held; still refused, still held.
-        self.push.send(updated(shell(thread, "interrupted", run="run-2"), 3))
+        self.push.send(updated(self.state("interrupted", run="run-2"), 3))
         self.assertTrue(ctx.wait_for(2))
         self.assertEqual(len(self.held()), 2)
         # Another session takes over: one injection with both held events, then nothing is held.
@@ -270,8 +303,8 @@ class WakeTest(HermeticTestCase):
         self.assertTrue(ctx.wait_for(3))
         content, target = ctx.messages[2]
         self.assertEqual(target["session_key"], "agent:phone")
-        self.assertIn("finished", content)
-        self.assertIn("interrupted", content)
+        self.assertIn("turn ended unclear", content)
+        self.assertIn("error: thread interrupted", content)
         self.wait(lambda: self.held() == [])
         last = json.loads((self.home / "wake-last.json").read_text())
         self.assertEqual((last["owner"], last["result"]), ("Telegram DM", "delivered"))
@@ -281,7 +314,7 @@ class WakeTest(HermeticTestCase):
         self.own("agent:captain", "Hermes CLI")
         ctx = Context(self.home / "profile", accepted=False)
         listener = self.listen(ctx)
-        self.push.send(updated(shell(self.task["thread_id"], "completed")))
+        self.push.send(updated(self.state("completed")))
         self.assertTrue(ctx.wait_for(1))
         ctx.accepted = True
         hook = plugin.turn_hook(Context(self.home / "profile"))
@@ -295,7 +328,7 @@ class WakeTest(HermeticTestCase):
         self.own("agent:captain", "Discord DM")
         ctx = Context(self.home / "profile", gateway=False, cli=object())
         self.listen(ctx)
-        self.push.send(updated(shell(self.task["thread_id"], "completed")))
+        self.push.send(updated(self.state("completed")))
         self.wait(lambda: len(self.held()) == 1)
         self.assertEqual(ctx.messages, [])
 
@@ -306,8 +339,8 @@ class WakeTest(HermeticTestCase):
         self.store.save(meta, "settled")
         ctx = Context(self.home / "profile")
         self.listen(ctx)
-        self.push.send(updated(shell(self.task["thread_id"], "completed")))
-        self.push.send(updated(shell(self.task["thread_id"], "failed", run="run-2")))
+        self.push.send(updated(self.state("completed")))
+        self.push.send(updated(self.state("failed", run="run-2")))
         self.push.send(snapshot())
         self.wait(lambda: len(self.push.connections) == 1)
         self.assertFalse((self.home / "wakes.jsonl").exists())
@@ -346,7 +379,7 @@ class WakeTest(HermeticTestCase):
             self.listen(ctx)
             self.push.drop()
             self.wait(lambda: len(self.push.connections) == 2)
-        self.push.send(snapshot(shell(self.task["thread_id"], "completed")))
+        self.push.send(snapshot(self.state("completed")))
         self.assertTrue(ctx.wait_for(1))
         self.assertIn("dropped", (self.home / "wake-errors.log").read_text())
 

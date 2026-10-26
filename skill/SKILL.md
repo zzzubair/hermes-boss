@@ -9,8 +9,10 @@ Use `boss` to delegate coding work, check workers, answer their questions,
 and inspect project preferences. Run bare `boss` for the live fleet overview.
 An ambient `boss:` reminder comes from local records; run `boss status` to
 check current T3 state before acting. A `[boss wake]` message is a plugin
-injection in this chat. Run `boss status`, review the changed work using the
-live conversation context, and reply normally to the captain.
+injection: T3 pushed a worker event (needs input or approval, finished, ended
+unclear, failed) and this session owns boss. Run `boss status <id>`, review the
+changed work using the live conversation context, and reply normally to the
+captain.
 
 ## Core commands
 
@@ -54,6 +56,10 @@ boss log "<what the captain said or decided in a check-in>"
 boss back
 boss land <id> --approved "<captain's exact words>"
 boss settle <id>
+boss own
+boss own --take
+boss own status
+boss release
 ```
 
 Projects can be discovered by exact T3 title without registration. Use
@@ -128,41 +134,30 @@ numbered round when he is around.
 - After an uncertain transport failure, inspect status and the ledger before
   retrying a mutation. Never blindly repeat a launch.
 
-## Waking in the captain's chat
+## Ownership
 
-Use `boss init --with-wake --wake-session-key '<gateway routing key>'` or
-`./install.sh --with-wake --wake-origin '<SessionSource JSON>'`. Add
-`--wake-interval <seconds>` to change the 300-second default. Without a target,
-`--with-wake` saves defaults but no thread starts. Existing host/project settings
-are preserved. Both commands print `plugins.entries.boss.allow_gateway_injection: true`;
-the captain must add `allow_gateway_injection: true` under `plugins.entries.boss`
-in that Hermes profile's config. Setup never changes Hermes config or old cron
-jobs. Enable the boss plugin and restart/reload the gateway after configuration.
+Exactly one Hermes session owns boss, and only it gets wakes and may change
+boss. The captain opens it with `/boss` (`/boss take` moves it, `/boss release`
+frees it). Your session is `HERMES_SESSION_KEY`.
 
-Read the target from the profile's `state.db` gateway routing index with the
-read-only command in the repository README. Do not infer identifiers from
-prompt metadata, which may be redacted. Use the stable `session_key`, not the session ID. An origin
-needs platform/chat_id and an authorized captain user_id. Copy any thread,
-chat_type and scope/parent identifiers; omit nulls in TOML. Hermes controls
-profile routing and authorization. Never invent or silently select a chat.
+- A command that changes boss exits 2 with `boss is owned by <label> since
+  <time>` when this session is not the owner. Do not retry or work around it.
+  Tell the captain which session owns boss and that `/boss take` in this chat
+  moves it here. Run `boss own --take` yourself only when he asks to move boss
+  here. Read-only commands (status, show, list, brief) still work.
+- `boss is not open in any session` means nobody owns boss: ask the captain to
+  type `/boss` where he wants it, or run `boss own` when he asks you to open
+  it here.
+- A `boss: owned by <label> ...` context line means another session owns boss.
+  Mention it if he asks about boss work; don't act on boss from here.
+- `boss own` prints a catch-up (changes since the last look, then numbered
+  decisions). Relay it plainly.
 
-One gateway daemon thread runs bounded `boss poll` subprocesses. The CLI and
-one-shot processes start no thread. Boss makes no LLM calls. Quiet polls inject
-nothing and cost zero model tokens. Poll's durable observed state prevents repeat
-wakes, including after restart. The context hook still only reads local records.
-Errors go to `$BOSS_HOME/poll-errors.log` redacted and never enter chat. Refusal
-is logged once per load; consumed changes are not retried. After fixing delivery,
-run `boss status` to catch up. A queued injection does not guarantee delivery;
-check the Hermes gateway log for later routing failures.
-
-Run `boss doctor` with the gateway's profile and boss environment. It checks
-target, consent and competing wake cron jobs. For the legacy fallback, set
-`wake.enabled false`, restart/reload, then use `./install.sh --with-cron` or
-`boss init --with-cron`. Never enable both sources. Manually inspect and
-pause/remove the old `boss-wake` or `boss-poll` job when migrating; do not
-change a live job without the captain's authority. The fallback gate calls no
-LLM, prints `{"wakeAgent": false}` when quiet/on error, and logs redacted errors
-under `logs/poll.log`. Never use `--no-agent` for a waking cron.
+Wakes are pushed by T3 to a listener in the Hermes gateway or app, with no
+polling and no tokens until something happens. If wakes stop, run
+`boss doctor`: it shows the owner, whether the last wake reached it, each host's
+push stream, and the listener's process. Never set up a cron or a polling loop
+to replace them.
 
 ## Portable settings and roles
 
