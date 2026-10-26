@@ -38,7 +38,7 @@ from .inbox import Inbox, owner_busy
 from .service import Boss
 from .state import Store
 from .websocket import WebSocket
-from . import owner
+from . import owner, panel
 
 CONSENT_KEY = "plugins.entries.boss.allow_gateway_injection"
 CONSENT_LINE = CONSENT_KEY + ": true"
@@ -338,12 +338,21 @@ class Listener:
                     minutes = int((self.clock() - since) // 60)
                     event = Event("stalled", thread_id, event.turn_id, key, stall_text(minutes, view["assistant"]))
                 if event.kind != "working":
-                    questions = boss.questions(meta, event.request_ids) if event.request_ids else []
-                    line = describe(meta.get("title"), event, view["prs"], questions)
-                    if event.kind == "done" and event.pr_urls and self.docs_only(boss, meta, view["prs"]):
-                        line += "; docs only, so boss can land it without asking the captain"
-                    held.append(self.inbox.hold(event.dedupe_key, task, event.kind, line,
-                                                run=event.turn_id, request_ids=event.request_ids, pr_urls=event.pr_urls))
+                    # A panel consumes its writers' and judges' finishes and says one line per judged round.
+                    consumed, round_line = panel.advance(boss, meta, event) if meta.get("panel") else (False, None)
+                    if consumed:
+                        if round_line:
+                            held.append(self.inbox.hold(f"panel:{event.dedupe_key}", task, "panel", round_line,
+                                                        run=event.turn_id))
+                    else:
+                        questions = boss.questions(meta, event.request_ids) if event.request_ids else []
+                        line = describe(meta.get("title"), event, view["prs"], questions)
+                        if event.kind == "done" and event.pr_urls and self.docs_only(boss, meta, view["prs"]):
+                            line += "; docs only, so boss can land it without asking the captain"
+                        if round_line:
+                            line += " " + round_line
+                        held.append(self.inbox.hold(event.dedupe_key, task, event.kind, line, run=event.turn_id,
+                                                    request_ids=event.request_ids, pr_urls=event.pr_urls))
                 until = paused_until(event.detail, self.clock()) if event.kind == "paused" else None
                 if until is not None:
                     self.paused[thread_id] = (until, task, event.turn_id, event.detail, self.clock())

@@ -13,6 +13,7 @@ from .setup import initialize, doctor
 from . import __version__
 from . import captain
 from . import owner
+from . import panel
 from .common import BossError, Redactor, compact, refuse, require_text
 from .config import Config, boss_home, flatten, display_key, key_parts, literal
 from .preferences import goal_path, notes_path
@@ -79,6 +80,16 @@ def parser():
                        help="captain's exact words letting a rule-refused spawn through once; saved in the task journal")
     spawn.add_argument("--image", action="append", default=[], metavar="PATH",
                        help="png/jpeg/gif/webp up to 10 MB attached to the brief; repeat up to 8 times")
+    panel_command = commands.add_parser("panel", help="N workers on one brief, then a blind judge; optional revise loop")
+    panel_command.add_argument("project")
+    panel_command.add_argument("--brief-file", metavar="FILE", help="UTF-8 brief; omitted or '-' reads piped stdin")
+    panel_command.add_argument("--workers", required=True, metavar="ROLES", help="comma-separated worker roles, e.g. opus,sol")
+    panel_command.add_argument("--judge", metavar="ROLE", help="worker role for the judge; default the scout role")
+    panel_command.add_argument("--rounds", type=int, default=1, help="judged rounds; after each, the best entry is revised")
+    panel_command.add_argument("--target", type=float, help="stop revising once the best entry scores this (0-10)")
+    panel_command.add_argument("--title", help="panel name in wakes; default the brief's first line")
+    panel_command.add_argument("--kind", choices=("ship", "scout"), default="scout", help="writer kind; default scout")
+    panel_command.add_argument("--fits", metavar="TEXT", help="one line reconciling this panel with the project goal and active steers")
     brief = commands.add_parser("brief", help="preview worker context and contract with a <task> placeholder; read-only")
     brief.add_argument("project")
     brief.add_argument("--worker", help="named worker preset")
@@ -320,7 +331,7 @@ def worktree_text(meta, result):
 def mutating(args):
     """Commands that change the ledger or config; read-only ones always work."""
     command = args.command
-    return (command in ("init", "spawn", "send", "answer", "stop", "land", "settle", "away", "back", "log", "release") or
+    return (command in ("init", "spawn", "panel", "send", "answer", "stop", "land", "settle", "away", "back", "log", "release") or
             (command == "steer" and args.project != "list") or (command == "goal" and args.text is not None) or
             (command == "decide" and args.decision_command != "list") or
             (command == "config" and args.config_command in ("set", "unset")) or
@@ -458,13 +469,18 @@ def dispatch(args, boss):
         if notes.is_file():
             lines.extend(["", "Supervisor notes (not sent to workers)", notes.read_text(encoding="utf-8"), ""])
         return lines + [f'next: boss spawn {compact(args.name)} --title "<task>" --brief-file <file>'], 0
-    if command == "spawn":
+    if command in ("spawn", "panel"):
         if args.brief_file and args.brief_file != "-":
             brief = Path(args.brief_file).read_text(encoding="utf-8")
         elif not sys.stdin.isatty():
             brief = sys.stdin.read(115001)
         else:
-            raise BossError("usage", "supply --brief-file or pipe a brief on stdin", "boss spawn --help", 1)
+            raise BossError("usage", "supply --brief-file or pipe a brief on stdin", f"boss {command} --help", 1)
+    if command == "panel":
+        record = panel.start(boss, args.project, brief, args.workers.split(","), title=args.title, judge=args.judge,
+                             rounds=args.rounds, target=args.target, kind=args.kind, fits=args.fits)
+        return panel.lines(record), 0
+    if command == "spawn":
         meta = boss.spawn(args.project, args.title, brief, args.kind, args.host, args.model, args.effort, args.fits, args.worker,
                           args.override, args.image)
         return [f"{meta['id']}: spawned {meta['host']} {meta['status']}",
