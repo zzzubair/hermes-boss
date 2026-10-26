@@ -101,6 +101,7 @@ class Boss:
         self.config, self.store, self.redact = config, store, redact
         self.github = github or GitHub()
         self.clients = {}
+        self.read_only = False  # a look from outside the owner session: no ledger writes
 
     def client(self, host_name):
         if host_name not in self.clients:
@@ -341,7 +342,8 @@ class Boss:
             refuse(f"task {meta['id']} has an unresolved launch; {len(matches)} matching threads",
                    f"inspect T3 project {meta['project_id']}; never retry launch blindly")
         meta["thread_id"] = matches[0]["threadId"]
-        self.store.save(meta, "launch_recovered")
+        if not self.read_only:
+            self.store.save(meta, "launch_recovered")
 
     def read_messages(self, client, thread_id):
         items, cursor = [], None
@@ -399,7 +401,7 @@ class Boss:
         elif (status_line(text) or ("",))[0] == "done":
             body = text.rstrip().rpartition("\n")[0].strip()
             report = body or status_line(text)[1]
-        if status == "completed" and last and last.get("runId") == thread.get("latestRunId") and report:
+        if status == "completed" and last and last.get("runId") == thread.get("latestRunId") and report and not self.read_only:
             self.store.text(meta["id"], "report.md", report + "\n")
             meta["report_run_id"] = thread["latestRunId"]
         alerts = []
@@ -418,7 +420,7 @@ class Boss:
         observed = {"status": status, "run_id": thread.get("latestRunId"), "requests": requests, "approvals": approvals,
                     "prs": [{"url": p["url"], "state": p["state"], "head": p["headRefOid"], "ci": p["ci"]} for p in prs],
                     "alerts": alerts}
-        if observed != meta.get("observed") or urls != meta.get("pr_urls", []):
+        if (observed != meta.get("observed") or urls != meta.get("pr_urls", [])) and not self.read_only:
             meta.update(observed=observed, status=status, pr_urls=urls)
             self.store.save(meta, "observed")
         return {"thread": thread, "status": status, "requests": requests, "approvals": approvals, "prs": prs,
@@ -432,7 +434,9 @@ class Boss:
                                             requestId=request_id)["questions"]]
 
     def reviewed(self, meta, view):
-        """Reading one task acknowledges its finished or failed run, never merge authority."""
+        """The owner reading one task acknowledges its finished or failed run, never merge authority."""
+        if self.read_only:
+            return
         before = (meta.get("reviewed_run_id"), meta.get("pending_inputs"))
         meta["pending_inputs"] = view["requests"]
         if view["status"] in TERMINAL:

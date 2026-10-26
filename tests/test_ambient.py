@@ -19,6 +19,7 @@ class AmbientTest(unittest.TestCase):
     cli = harness.CLITest.cli
     spawn = harness.CLITest.spawn
     completed = harness.CLITest.completed
+    as_owner = harness.CLITest.as_owner
 
     def test_clean_ledger_injects_nothing_and_prints_nothing(self):
         self.cli("status")
@@ -30,10 +31,12 @@ class AmbientTest(unittest.TestCase):
 
     def test_open_items_never_reach_turn_context_and_watch_counts_them_without_ids(self):
         # Turn context shows inside the captain's own message, so open items go to boss watch instead.
+        self.as_owner()
         decision = self.cli("decide", "add", "Choose an API")[1].split(":", 1)[0]
         meta = self.spawn()
         self.fake.pending = {"request-1": [{"id": "q1", "question": "Which API?", "options": []}]}
         self.cli("status", meta["id"])
+        self.cli("release")  # no owner turn, so no dead-listener line either
         before = len(self.fake.calls)
         with patch("socket.socket.connect", side_effect=AssertionError("network forbidden")), \
                 patch("subprocess.run", side_effect=AssertionError("subprocess forbidden")):

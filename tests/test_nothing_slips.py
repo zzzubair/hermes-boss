@@ -17,7 +17,12 @@ OWNER = "agent:captain"
 
 
 class NothingSlipsTest(unittest.TestCase):
-    setUp = harness.CLITest.setUp
+    def setUp(self):
+        # Only the owner's status reviews a run, so these flows run as the supervisor.
+        harness.CLITest.setUp(self)
+        self.as_owner(OWNER)
+
+    as_owner = harness.CLITest.as_owner
     tearDown = harness.CLITest.tearDown
     cli = harness.CLITest.cli
     spawn = harness.CLITest.spawn

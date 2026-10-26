@@ -654,6 +654,8 @@ def main(argv=None):
                 # stdout stays byte-identical to the spawned brief; workers never see rules.
                 print(redact("\n".join(["supervisor rules (enforced at spawn; not sent to workers):", *rules])), file=sys.stderr)
             return 0
+        # Status from anywhere but the owner session only looks: nothing reviewed, acked or rewritten.
+        boss.read_only = args.command in (None, "status") and not owner.owns(home, os.environ.get("HERMES_SESSION_KEY", ""))
         # A note from another session waits for the ledger instead of being dropped.
         with store.locked(wait=os.environ.get("BOSS_WAIT_FOR_LEDGER") == "1" or args.command == "note"):
             if mutating(args):
@@ -664,7 +666,8 @@ def main(argv=None):
             try:
                 lines, code = dispatch(args, boss)
             finally:
-                store.refresh_attention()
+                if not boss.read_only:
+                    store.refresh_attention()
         if lines:
             print(redact("\n".join(lines)))
         return code

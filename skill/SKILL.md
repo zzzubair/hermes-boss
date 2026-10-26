@@ -238,7 +238,8 @@ task). `land` refuses until he lifts it and you run `boss steer drop`.
   closed or the scout/report is done. It never removes uncommitted or unpushed
   work; it prints "worktree kept" with the reason. `settle --prune-landed`
   cleans leftovers from every settled task on every host.
-- `status <id>` acknowledges a completed run's review reminder. It does not
+- `status <id>` in the owner session acknowledges a completed run's review
+  reminder; from any other session or shell it only looks. It does not
   approve merging or discard, and unanswered input requests remain open.
 - After an uncertain transport failure, inspect status and the ledger before
   retrying a mutation. Never blindly repeat a launch.
@@ -253,7 +254,9 @@ frees it). Your session is `HERMES_SESSION_KEY`.
   <time>` when this session is not the owner. Do not retry or work around it.
   Tell the captain which session owns boss and that `/boss take` in this chat
   moves it here. Run `boss own --take` yourself only when he asks to move boss
-  here. Read-only commands (status, show, list, brief) still work.
+  here. Read-only commands (status, show, list, brief) still work, and status
+  there changes nothing: it never marks a run reviewed or clears the owner's
+  inbox.
 - `boss is not open in any session` means nobody owns boss: ask the captain to
   type `/boss` where he wants it, or run `boss own` when he asks you to open
   it here.

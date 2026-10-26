@@ -17,6 +17,7 @@ class CaptainTest(unittest.TestCase):
     cli = harness.CLITest.cli
     spawn = harness.CLITest.spawn
     completed = harness.CLITest.completed
+    as_owner = harness.CLITest.as_owner
 
     def ok(self, *args):
         code, output = self.cli(*args)
@@ -167,6 +168,7 @@ class CaptainTest(unittest.TestCase):
         self.assertIn("1. Pick storage", self.ok("decide", "ask", "--requested", "what's open?"))
 
     def test_back_timeline_is_chronological_with_checkins_and_no_ids(self):
+        self.as_owner()
         self.ok("away", "going to bed")
         meta = self.spawn("--title", "Fix login")
         self.ok("log", "Checked in from phone: keep going, no rush")
@@ -257,6 +259,7 @@ class CaptainTest(unittest.TestCase):
         self.assertEqual([e["event"] for e in self.events() if e["event"] in ("away", "back", "ask")], ["away", "back"])
 
     def test_back_hands_the_catch_up_to_the_supervisor_through_the_inbox(self):
+        self.as_owner()
         self.ok("away", "going to bed")
         meta = self.spawn("--title", "Fix login")
         for i in range(60):
