@@ -1,5 +1,5 @@
 name: boss
 version: "0.1.0"
-description: "Local ledger reminders, /away and /back, and opt-in gateway wakes in the captain's chat."
+description: "Local ledger reminders, /boss session ownership, /away and /back, and wakes for the owning session."
 provides_hooks:
   - pre_llm_call

@@ -64,11 +64,12 @@ class Store:
         self.home, self.redact = Path(home), redact
 
     @contextmanager
-    def locked(self):
+    def locked(self, wait=False):
+        """One writer. CLI commands refuse when busy; the wake listener waits its turn."""
         self.home.mkdir(parents=True, exist_ok=True, mode=0o700)
         with (self.home / ".lock").open("a") as lock:
             try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(lock, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
             except BlockingIOError:
                 refuse("another boss command holds the ledger", "retry after that command finishes")
             yield
@@ -225,7 +226,7 @@ class Store:
         return self.home / "captain.jsonl"
 
     def captain_events(self):
-        """Append-only captain journal: away, back, check-in logs, ask rounds, unclear marks."""
+        """Append-only captain journal: away, back, check-in logs, ask rounds, unclear marks, ownership."""
         path = self.captain_path()
         if not path.exists():
             return []
@@ -236,7 +237,7 @@ class Store:
                     if not line.endswith("\n"):
                         raise ValueError("incomplete append")
                     record = json.loads(line)
-                    if record["event"] not in ("away", "back", "log", "ask", "unclear"):
+                    if record["event"] not in ("away", "back", "log", "ask", "unclear", "own"):
                         raise ValueError("unknown event " + str(record["event"]))
                     if not datetime.fromisoformat(record["at"]).tzinfo:
                         raise ValueError("timestamp has no timezone")
@@ -248,6 +249,33 @@ class Store:
 
     def captain(self, event, **fields):
         return append_line(self.captain_path(), self.redact.data({"event": event, "at": now(), **fields}))
+
+    def wakes_path(self):
+        return self.home / "wakes.jsonl"
+
+    def wakes(self):
+        """Append-only wake log: 'held' when a pushed event arrives, 'delivered' once the owner got it."""
+        path = self.wakes_path()
+        if not path.exists():
+            return []
+        with path.open(encoding="utf-8") as stream:
+            # A torn final line (crash mid-append) is ignored; every complete line is fsynced.
+            return [json.loads(line) for line in stream if line.endswith("\n")]
+
+    def held_wakes(self):
+        records = self.wakes()
+        delivered = {key for r in records if r["event"] == "delivered" for key in r["keys"]}
+        return [r for r in records if r["event"] == "held" and r["key"] not in delivered]
+
+    def hold_wake(self, key, task, kind, text):
+        """Record one pushed event once; a repeated key (same event pushed again) is ignored."""
+        if any(r["event"] == "held" and r["key"] == key for r in self.wakes()):
+            return None
+        return append_line(self.wakes_path(), self.redact.data(
+            {"event": "held", "key": key, "task": task, "kind": kind, "text": text, "at": now()}))
+
+    def wakes_delivered(self, keys, label):
+        return append_line(self.wakes_path(), {"event": "delivered", "keys": list(keys), "owner": label, "at": now()})
 
     def refresh_attention(self):
         """Materialize a tiny local hook view once per CLI command, under its lock.
@@ -271,15 +299,20 @@ class Store:
                 meta = self.load(directory.name)
                 if meta.get("settled"):
                     continue
-                polled = meta.get("poll_observed") or {}
                 if meta.get("pending_inputs"):
                     items.append({"id": meta["id"], "kind": "input"})
-                elif (meta.get("status") == "completed" and polled.get("status") == "completed" and
-                      polled.get("run_id") and polled["run_id"] != meta.get("reviewed_run_id") and
-                      polled["run_id"] == (meta.get("observed") or {}).get("run_id")):
-                    items.append({"id": meta["id"], "kind": "finished"})
             except (OSError, ValueError, KeyError, TypeError, AttributeError, BossError):
                 continue
+        try:
+            # Pushed events the owner has not received yet (owner offline, or nobody owns boss).
+            seen = {item["id"] for item in items}
+            for wake in self.held_wakes():
+                task = identifier(wake["task"])
+                if task not in seen and not self.load(task).get("settled"):
+                    seen.add(task)
+                    items.append({"id": task, "kind": "input" if wake["kind"] in ("input", "approval") else "finished"})
+        except (OSError, ValueError, KeyError, TypeError, BossError):
+            pass
         attention = {"version": 1, "count": len(items), "items": items[:6]}
         try:
             away = presence(self.captain_events())

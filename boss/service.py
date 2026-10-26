@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import uuid
 
-from .common import BossError, compact, refuse, require_text
+from .common import BossError, refuse, require_text
 from .integrations import GitHub, PR_PATTERN, github_repository, inspect_worktree, resolve_repository
 from .mcp import MCP
 from .preferences import compose_brief, notes_path, project_name, source_note, steering_sections
@@ -334,18 +334,6 @@ class Boss:
             self.store.save(meta, "observed")
         return {"thread": thread, "status": status, "requests": requests, "prs": prs,
                 "assistant": text, "alerts": alerts}
-
-    def poll(self, meta):
-        view = self.snapshot(meta)
-        observed = meta["observed"]
-        changed = observed != meta.get("poll_observed")
-        if changed or meta.get("pending_inputs") != view["requests"]:
-            meta.update(poll_observed=observed, pending_inputs=view["requests"])
-            self.store.save(meta, "polled")
-        if not changed:
-            return []
-        return [line for line in view["alerts"]
-                if not (line == f"{meta['id']}: finished" and meta.get("reviewed_run_id") == observed.get("run_id"))]
 
     def reviewed(self, meta, view):
         """Reading one task acknowledges its completed run, never merge authority."""

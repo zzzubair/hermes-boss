@@ -129,7 +129,7 @@ class BriefTest(HermeticTestCase):
             (paths[key] / "boss" / filename).touch()
         def command(argv, **kwargs):
             return subprocess.CompletedProcess(argv, 0, '[{"name":"boss","status":"enabled"}]', "")
-        with patch("boss.setup.install_paths", return_value=paths), patch("boss.setup.subprocess.run", side_effect=command), patch("boss.setup.wake_cron", return_value=False):
+        with patch("boss.setup.install_paths", return_value=paths), patch("boss.setup.subprocess.run", side_effect=command):
             return self.cli("doctor")
 
     def test_doctor_ignores_notes_and_reports_legacy_rules_once(self):

@@ -7,10 +7,11 @@ from pathlib import Path
 import sys
 import tomllib
 
-from .setup import initialize, doctor, add_wake_arguments
+from .setup import initialize, doctor
 
 from . import __version__
 from . import captain
+from . import owner
 from .common import BossError, Redactor, compact, refuse, require_text
 from .config import Config, boss_home, flatten, display_key, key_parts, literal
 from .preferences import goal_path, notes_path
@@ -38,8 +39,7 @@ def parser():
     init.add_argument("--name", default="local", help="host name to save")
     init.add_argument("--token-env", default="T3_MCP_TOKEN")
     init.add_argument("--force", action="store_true", help="update the named host and default in an existing config")
-    add_wake_arguments(init)
-    commands.add_parser("doctor", help="check installation, host access, wake target/consent and competing cron")
+    commands.add_parser("doctor", help="check installation, host access, owner and the wake listener")
     host = commands.add_parser("host", help="manage explicit MCP endpoints")
     hosts = host.add_subparsers(dest="host_command", required=True)
     host_add = hosts.add_parser("add")
@@ -96,8 +96,6 @@ def parser():
     settle = commands.add_parser("settle", help="unwatch PRs and settle a terminal thread; preserve its worktree")
     settle.add_argument("id")
     settle.add_argument("--discard-approved", metavar="QUOTE", help="captain's explicit authority to leave work unlanded")
-    poll = commands.add_parser("poll", help="one LLM-free pass; changed actionable items only, otherwise silent")
-    poll.add_argument("--hermes-gate", action="store_true", help="Hermes wake script contract; log errors and stay silent")
     project = commands.add_parser("project", help="discover T3 projects and inspect or save preferences")
     projects = project.add_subparsers(dest="project_command", required=True)
     project_list = projects.add_parser("list", help="list T3 projects with registry/notes markers")
@@ -126,6 +124,11 @@ def parser():
     away = commands.add_parser("away", help="mark the captain away; only away/back change presence")
     away.add_argument("note", nargs="*", help="optional note, e.g. going to bed")
     commands.add_parser("back", help="mark the captain back; plain catch-up timeline and numbered decisions")
+    own = commands.add_parser("own", help="open boss in this Hermes session (HERMES_SESSION_KEY); it gets wakes")
+    own.add_argument("status", nargs="?", choices=("status",), help="show the owner; read-only")
+    own.add_argument("--take", action="store_true", help="move ownership here from another session")
+    own.add_argument("--label", help="human name for this session, e.g. 'Discord DM'")
+    commands.add_parser("release", help="leave boss with no owner; wakes are held on disk")
     log = commands.add_parser("log", help="record what the captain said or decided in a check-in")
     log.add_argument("text")
     decide = commands.add_parser("decide", help="record decisions that need the captain")
@@ -207,6 +210,17 @@ def fleet(boss, full=False):
     else:
         lines.append('next: boss spawn <project> --title "<task>" --brief-file <file>')
     return lines, max((e.exit_code for e in errors), default=0)
+
+
+def mutating(args):
+    """Commands that change the ledger or config; read-only ones always work."""
+    command = args.command
+    return (command in ("init", "spawn", "send", "answer", "stop", "land", "settle", "away", "back", "log", "release") or
+            (command == "steer" and args.project != "list") or (command == "goal" and args.text is not None) or
+            (command == "decide" and args.decision_command != "list") or
+            (command == "config" and args.config_command in ("set", "unset")) or
+            (command == "host" and args.host_command in ("add", "remove")) or
+            (command == "project" and args.project_command == "add"))
 
 
 def dispatch(args, boss):
@@ -378,16 +392,16 @@ def dispatch(args, boss):
                      f"next: boss send {args.id} \"<message>\"")
         boss.reviewed(meta, view)
         return lines, 0
-    if command == "poll":
-        lines, code = [], 0
-        for meta in boss.store.tasks(active=True):
-            try:
-                lines.extend(boss.poll(meta))
-            except BossError as exc:
-                # One unavailable host must not hide the rest of the fleet.
-                lines.append(f"{meta['id']}: failed {exc.code} {compact(boss.redact(exc.message))}")
-                code = max(code, exc.exit_code)
-        return lines, code
+    if command == "own":
+        if args.status:
+            return owner.status_lines(boss.store.home), 0
+        surface = os.environ.get("HERMES_SESSION_PLATFORM") or os.environ.get("HERMES_SESSION_SOURCE") or ""
+        lines = owner.own(boss.store, os.environ.get("HERMES_SESSION_KEY", ""), surface, args.label, args.take)
+        from .wake import poke
+        poke(boss.store.home)  # held wakes go to the new owner now, not on some later push
+        return lines, 0
+    if command == "release":
+        return owner.release(boss.store), 0
     if command == "send":
         boss.send(args.id, args.text)
         return [f"{args.id}: sent", f"next: boss status {args.id}"], 0
@@ -447,30 +461,6 @@ def dispatch(args, boss):
 def main(argv=None):
     if argv is None:
         argv = sys.argv[1:]
-    if "--hermes-gate" in argv and argv and argv[0] == "poll":
-        import contextlib
-        import io
-        from datetime import datetime, timezone
-        output, errors = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
-            try:
-                code = main([arg for arg in argv if arg != "--hermes-gate"])
-            except Exception as exc:
-                # A cron gate must also fail quiet on unexpected dependency errors.
-                # Never log raw exceptions here: they may contain unregistered secrets.
-                print(f"error: unexpected {type(exc).__name__}; run boss poll to investigate")
-                code = 3
-        text = output.getvalue().strip()
-        if code:
-            try:
-                log = boss_home() / "logs/poll.log"
-                log.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                with log.open("a") as stream:
-                    stream.write(datetime.now(timezone.utc).isoformat() + " " + text + errors.getvalue() + "\n")
-            except OSError:
-                pass
-        print(text if text and not code else '{"wakeAgent": false}')
-        return 0
     redact = Redactor()
     redact.discover(os.environ)
     try:
@@ -486,7 +476,12 @@ def main(argv=None):
                 # stdout stays byte-identical to the spawned brief; workers never see rules.
                 print(redact("\n".join(["supervisor rules (enforced at spawn; not sent to workers):", *rules])), file=sys.stderr)
             return 0
-        with store.locked():
+        with store.locked(wait=os.environ.get("BOSS_WAIT_FOR_LEDGER") == "1"):
+            if mutating(args):
+                # Only the owning session may change boss; a human shell is warned, not stopped.
+                warning = owner.guard(home, os.environ.get("HERMES_SESSION_KEY", ""))
+                if warning:
+                    print(warning, file=sys.stderr)
             try:
                 lines, code = dispatch(args, boss)
             finally:

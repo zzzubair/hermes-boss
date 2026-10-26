@@ -94,12 +94,9 @@ def run(transcript=print):
             output = command([boss, "doctor"], expected=1, label="boss doctor (plugin disabled; expected failure)")
             assert "fail: plugin enabled" in output
             command(["hermes", "plugins", "enable", "boss"])
-            command([boss, "doctor"], label="boss doctor (cron optional)")
-            command([root / "install.sh", "--with-cron"], label="./install.sh --with-cron")
-            command([root / "install.sh", "--with-cron"], label="./install.sh --with-cron (repeat; no duplicate)")
-            jobs = json.loads((hermes / "cron/jobs.json").read_text())["jobs"]
-            assert len(jobs) == 1 and not jobs[0]["no_agent"]
-            command([boss, "doctor"], label="boss doctor (wake cron installed)")
+            output = command([boss, "doctor"], label="boss doctor (no owner yet; wakes held)")
+            assert "warn: no owner" in output
+            assert not (hermes / "cron").exists()
             command([boss, "config", "set", "projects.repo.repository", "example/repo"], label="boss config set projects.repo.repository example/repo")
             command([boss, "config", "set", "workers.scout.model", "codex:gpt-test"], label="boss config set workers.scout.model codex:gpt-test")
             command([boss, "config", "set", "workers.scout.effort", "low"], label="boss config set workers.scout.effort low")
@@ -111,24 +108,19 @@ def run(transcript=print):
             launch = next(args for name, args in fake.calls if name == "t3_thread_launch")
             assert launch["modelSelection"]["options"] == {"reasoningEffort": "low"}
             assert "Never merge. Never deploy." in launch["message"]
-            command([boss, "poll", "--hermes-gate"], label="boss poll --hermes-gate (running; silent)")
-            fake.threads[meta["thread_id"]]["status"] = "completed"
-            output = command([boss, "poll", "--hermes-gate"], label="boss poll --hermes-gate (completed; wake)")
-            assert "finished" in output
-            assert command([boss, "poll", "--hermes-gate"], label="boss poll --hermes-gate (unchanged)") == '{"wakeAgent": false}\n'
-            fake.failure = "t3_thread_read"
-            assert command([boss, "poll", "--hermes-gate"], label="boss poll --hermes-gate (MCP error; quiet and logged)") == '{"wakeAgent": false}\n'
-            log = home / ".boss/logs/poll.log"
-            assert log.exists() and TOKEN not in log.read_text()
-            fake.failure = None
-            output = command(["sh", hermes / "scripts/boss-poll-gate.sh"], label="sh <HERMES_HOME>/scripts/boss-poll-gate.sh")
-            assert output == '{"wakeAgent": false}\n'
+            # Nothing polls: there is no poll command, and boss is inactive until a session owns it.
+            assert "invalid choice: 'poll'" in command([boss, "poll"], expected=1, label="boss poll (removed)")
+            env["HERMES_SESSION_KEY"] = "agent:main:discord:dm:captain"
+            command([boss, "send", task_id, "hello"], expected=2, label="boss send (Hermes session, boss not open; refused)")
+            command([boss, "own", "--label", "Discord DM"], label="boss own --label 'Discord DM'")
+            command([boss, "own", "status"], label="boss own status")
+            env.pop("HERMES_SESSION_KEY")
             # Failure diagnoses must produce a fix hint and a nonzero exit.
             env.pop("HERMES_HOME")
             output = command([boss, "doctor"], expected=1, label="boss doctor (wrong Hermes home; expected failure)")
             assert "fail:" in output and "fix:" in output
             assert len(fake.threads) == 1
-            transcript("PASS: fresh install, idempotent init/cron, doctor, role spawn, gate transitions, logged errors and legacy ledger location")
+            transcript("PASS: fresh install, idempotent init, doctor, role spawn, no poll command, ownership gate and claim")
     finally:
         fake.close()
 

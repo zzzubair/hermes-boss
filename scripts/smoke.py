@@ -7,7 +7,6 @@ import os
 from pathlib import Path
 import sys
 import tempfile
-import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from boss.cli import main
@@ -54,19 +53,16 @@ def smoke():
         return value
 
     try:
-        for _ in range(90):
-            polled = command(["poll"])
-            if ": failed" in polled or ": interrupted" in polled or "waiting for input" in polled:
-                raise RuntimeError(polled)
-            if ": finished" in polled:
+        # T3 blocks until the run ends; each call stays inside the MCP client timeout.
+        for _ in range(8):
+            if not client.call("t3_thread_wait", threadId=launched["threadId"], timeoutMs=25000)["timedOut"]:
                 break
-            time.sleep(2)
         else:
-            raise RuntimeError("scratch worker did not complete within 180 seconds")
-        print("poll: " + polled.strip())
-        if command(["poll"]):
-            raise RuntimeError("unchanged live poll state produced output")
-        print("poll_repeat: empty")
+            raise RuntimeError("scratch worker did not complete within 200 seconds")
+        status = command(["status", task_id])
+        if " completed" not in status.splitlines()[0]:
+            raise RuntimeError(status)
+        print("status: " + status.splitlines()[0].split(" ", 1)[1])
         report = store.directory(task_id) / "report.md"
         if not report.exists() or report.read_text().strip() != "smoke-ok":
             print(command(["status", task_id, "--full"]), end="")
@@ -77,9 +73,6 @@ def smoke():
         if not live["thread"]["settled"]:
             raise RuntimeError("live thread did not settle")
         print("verified: T3 settled=true")
-        if command(["poll"]):
-            raise RuntimeError("settled task still appears in poll")
-        print("poll_after_settle: empty")
         print("fleet: 0 active tasks")
         return 0
     except Exception as exc:
