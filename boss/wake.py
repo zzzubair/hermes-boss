@@ -4,10 +4,15 @@ T3 pushes every thread change over its orchestration WebSocket (one
 `orchestration.subscribeShell` stream per configured host). The listener runs
 inside an already-running Hermes host process (gateway, TUI or desktop),
 blocked on that socket. Pushes for a boss task's thread that still say it is
-running are dropped unread. When its status, run or pending request changes,
-the push triggers one Boss.snapshot read and `events.classify` says what it
-means; anything but 'working' lands once in the owner's inbox on disk (see
-inbox.py). The listener injects the inbox only while the owner is idle; a
+running are dropped unread, after noting in memory when the thread last
+changed. When its status, run, pending request or PR states change, the push
+triggers one Boss.snapshot read and `events.classify` says what it means;
+anything but 'working', and any PR that merged or closed, lands once in the
+owner's inbox on disk (see inbox.py). Every push and every poke (a claim, the
+owner's turn starting or ending) also sweeps for running tasks quiet longer
+than wake.stall_minutes and paused tasks past their "until" time, and a poke
+re-reads open PRs on GitHub, since T3's copy of a PR's state goes stale when it
+merges outside T3. There is no timer: a silent fleet and owner sweep nothing. The listener injects the inbox only while the owner is idle; a
 running owner turn picks it up from its next tool result or its next turn.
 With no owner, or an owner that is offline, items stay in the inbox and go out
 on the next push, when a session claims boss, or on the owner's next turn.
@@ -20,12 +25,13 @@ import os
 import socket
 import sys
 import threading
+import time
 import urllib.parse
 import urllib.request
 
 from .common import BossError, Redactor
 from .config import Config, boss_home
-from .events import classify, describe
+from .events import FINISHED_PRS, Event, classify, describe, paused_until, pr_events, stall_text
 from .inbox import Inbox, owner_busy
 from .service import Boss
 from .state import Store
@@ -40,6 +46,8 @@ HEARTBEAT = "wake-heartbeat"
 LAST = "wake-last.json"
 TICKET = "/api/auth/websocket-ticket/rpc"
 BUSY = {"preparing", "queued", "starting", "running"}
+STALL_MINUTES = 15
+PR_RECHECK = 300  # seconds: a poke re-reads one task's open PRs on GitHub at most this often
 _lock = threading.Lock()
 _listeners = {}
 
@@ -106,6 +114,21 @@ def shell_threads(message):
     return threads
 
 
+def shell_prs(thread):
+    """(url, STATE) of the PRs a pushed shell carries, for the wake signature."""
+    prs = [*(thread.get("pullRequests") or ()), thread.get("linkedPullRequest")]
+    states = {(p.get("url"), str((p.get("snapshot") or {}).get("state") or p.get("state") or "").upper())
+              for p in prs if isinstance(p, dict) and p.get("url")}
+    return tuple(sorted(states))
+
+
+def epoch(stamp):
+    try:
+        return datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
 def backoff(failures):
     """Seconds before reconnecting a dropped stream (T3 restarts, network blips)."""
     return min(2 ** failures, 300)
@@ -132,6 +155,10 @@ class Listener:
         self.deliver_lock = threading.Lock()
         self.descriptor = self.server = None
         self.sockets, self.refused, self.tasks, self.tasks_stamp, self.seen = {}, None, {}, None, {}
+        # In memory only. activity: thread id -> when it last changed; paused: thread id -> its "until".
+        self.activity, self.paused, self.checked, self.rechecked = {}, {}, set(), {}
+        self.clock = time.time
+        self.sweep_lock = threading.Lock()
         # Completion counters, bumped only after everything a step writes is on disk.
         self.progress = threading.Condition()
         self.counts = {"streams": 0, "drops": 0, "pushes": 0, "pokes": 0}
@@ -198,6 +225,7 @@ class Listener:
                 connection.settimeout(1)
                 try:
                     if connection.recv(16).startswith(b"flush"):
+                        self.sweep(github=True)
                         self.deliver()
                 except Exception as exc:
                     log_error(self.home, self.config.redact, "boss wake poke failed: " + type(exc).__name__)
@@ -252,43 +280,157 @@ class Listener:
     def pushed(self, host, thread):
         """Handle one pushed thread shell, including any delivery it triggers."""
         try:
-            self.handle(host, thread)
+            held = self.handle(host, thread)
+            if self.sweep() or held:
+                self.deliver()
         finally:
             self.done("pushes")
 
     def handle(self, host, thread):
+        """True when this push put something new in the inbox."""
         request = thread.get("pendingRuntimeRequest") or {}
-        if thread.get("status") in BUSY and not request:
-            return  # most pushes: a running worker's progress, nothing to read
+        busy = thread.get("status") in BUSY and not request
+        self.note(host, thread, busy)
+        if busy:
+            return False  # most pushes: a running worker's progress, nothing to read
         task = self.task_for(host, thread.get("id"))
-        signature = (thread.get("status"), thread.get("latestRunId"), request.get("id"))
+        signature = (thread.get("status"), thread.get("latestRunId"), request.get("id"), shell_prs(thread))
         if task is None or self.seen.get(thread["id"]) == signature:
-            return  # T3 re-pushes the same state (and re-snapshots); read each state once
+            return False  # T3 re-pushes the same state (and re-snapshots); read each state once
+        return self.read(task, thread["id"], signature)
+
+    def note(self, host, thread, busy):
+        """Remember when each thread last changed: the stall sweep's clock. Memory only, no I/O."""
+        thread_id, mark = thread.get("id"), thread.get("updatedAt") or thread.get("itemCount")
+        entry = self.activity.get(thread_id)
+        if mark is None or entry is None or entry["mark"] != mark:
+            since = self.clock()
+            if entry is None and mark is not None:
+                # First sight (listener start): T3's own updatedAt, so a hang from before a restart counts.
+                since = min(since, epoch(thread.get("updatedAt")) or since)
+            entry = {"host": host, "mark": mark, "since": since}
+        entry.update(busy=busy, run=thread.get("latestRunId"))
+        self.activity[thread_id] = entry
+        if busy:
+            self.paused.pop(thread_id, None)  # a paused worker that runs again is no longer waiting
+
+    def read(self, task, thread_id, signature=None, quiet=None):
+        """One snapshot read of a task; holds what the owner needs. True when something new was held,
+        None when the read failed.
+
+        `quiet` is (since, key) for a sweep's read of a thread that looked stalled.
+        """
+        held = []
         try:
             with self.store.locked(wait=True):
                 meta = self.store.load(task)
                 if meta.get("settled"):
-                    return
-                # One read per state change, triggered by this push. A fresh Boss keeps no
-                # long-lived MCP session to go stale between events.
+                    return False
+                # One read per state change. A fresh Boss keeps no long-lived MCP session to go
+                # stale between events.
                 boss = Boss(self.config, self.store, self.config.redact)
                 view = boss.snapshot(meta)
                 event = classify(view)
-                record = None
+                if event.kind == "working" and quiet and view["status"] in BUSY:
+                    since, key = quiet
+                    minutes = int((self.clock() - since) // 60)
+                    event = Event("stalled", thread_id, event.turn_id, key, stall_text(minutes, view["assistant"]))
                 if event.kind != "working":
                     questions = boss.questions(meta, event.request_ids) if event.request_ids else []
-                    record = self.inbox.hold(event.dedupe_key, task, event.kind,
-                                             describe(meta.get("title"), event, view["prs"], questions),
-                                             run=event.turn_id, request_ids=event.request_ids, pr_urls=event.pr_urls)
+                    held.append(self.inbox.hold(event.dedupe_key, task, event.kind,
+                                                describe(meta.get("title"), event, view["prs"], questions),
+                                                run=event.turn_id, request_ids=event.request_ids, pr_urls=event.pr_urls))
+                until = paused_until(event.detail, self.clock()) if event.kind == "paused" else None
+                if until is not None:
+                    self.paused[thread_id] = (until, task, event.turn_id, event.detail, self.clock())
+                elif not quiet:
+                    self.paused.pop(thread_id, None)
+                if not meta.get("landed"):  # boss landed it itself: nothing to tell
+                    for pr in pr_events(view):
+                        held.append(self.inbox.hold(pr.dedupe_key, task, pr.kind, describe(meta.get("title"), pr)))
                 # A finished run stays in the owner's attention line until someone reviews it.
                 self.store.refresh_attention()
-                self.seen[thread["id"]] = signature
+                if signature is not None:
+                    self.seen[thread_id] = signature
         except BossError as exc:
             # Not marked seen: the next push for this thread reads again.
             log_error(self.home, self.config.redact, f"boss wake read {task} failed: {exc.code} {exc.message}")
-            return
-        if record is not None:
-            self.deliver()
+            return None
+        return any(record is not None for record in held)
+
+    def sweep(self, github=False):
+        """Hold one 'stalled' event per stall: a running task quiet longer than wake.stall_minutes, or a
+        paused one past its "until". True when something new was held.
+
+        Runs on every push and poke, never on a timer. Memory only until something is due, then one
+        T3 read per stall. With github (pokes only), also re-read open PRs on GitHub.
+        """
+        if not self.sweep_lock.acquire(blocking=github):
+            return False  # another push is sweeping right now
+        now, held = self.clock(), False
+        try:
+            limit = self.wake.get("stall_minutes", STALL_MINUTES) * 60
+            for thread_id, entry in list(self.activity.items()):
+                key = f"{thread_id}:stalled:{entry['run']}:{entry['mark'] or int(entry['since'])}"
+                if not limit or not entry["busy"] or now - entry["since"] < limit or key in self.checked:
+                    continue
+                self.checked.add(key)  # one read per stall, however many pushes follow
+                task = self.task_for(entry["host"], thread_id)
+                result = None if task is None else self.read(task, thread_id, quiet=(entry["since"], key))
+                if result is None and task is not None:
+                    self.checked.discard(key)  # the read failed: the next sweep tries again
+                held = bool(result) or held
+            for thread_id, (until, task, run, detail, since) in list(self.paused.items()):
+                if now >= until:
+                    self.paused.pop(thread_id, None)
+                    held = self.overdue(task, thread_id, run, since, detail) or held
+            if github:
+                held = self.recheck(now) or held
+        except Exception as exc:
+            # A sweep never takes the push stream down; the next push or poke sweeps again.
+            log_error(self.home, self.config.redact, "boss wake sweep failed: " + type(exc).__name__)
+        finally:
+            self.sweep_lock.release()
+        return held
+
+    def overdue(self, task, thread_id, run, since, detail):
+        """A paused worker whose own "until" passed: one stalled event, no T3 read (the line says it all)."""
+        try:
+            with self.store.locked(wait=True):
+                meta = self.store.load(task)
+                if meta.get("settled") or (meta.get("observed") or {}).get("run_id") not in (None, run):
+                    return False
+                minutes = int((self.clock() - since) // 60)
+                event = Event("stalled", thread_id, run, f"{thread_id}:stalled:{run}:paused",
+                              stall_text(minutes, "paused, waiting on " + detail))
+                return self.inbox.hold(event.dedupe_key, task, event.kind, describe(meta.get("title"), event),
+                                       run=run) is not None
+        except (BossError, OSError, ValueError) as exc:
+            log_error(self.home, self.config.redact, f"boss wake paused check {task} failed: {type(exc).__name__}")
+            return False
+
+    def recheck(self, now):
+        """T3's copy of a PR's state goes stale when it merges on GitHub, so a poke asks GitHub.
+
+        Only tasks whose ledger shows an open PR, each at most every PR_RECHECK seconds; a merged
+        or closed one triggers the task's normal read, which holds its PR event.
+        """
+        held, boss = False, None
+        for meta in self.store.tasks(active=True):
+            urls = [p["url"] for p in (meta.get("observed") or {}).get("prs", []) if p.get("state") == "OPEN"]
+            last = self.rechecked.get(meta["id"])
+            if not urls or meta.get("landed") or (last is not None and now - last < PR_RECHECK):
+                continue
+            self.rechecked[meta["id"]] = now
+            boss = boss or Boss(self.config, self.store, self.config.redact)
+            try:
+                finished = any(str(boss.github.view(url)["state"]).upper() in FINISHED_PRS for url in urls)
+            except BossError as exc:
+                log_error(self.home, self.config.redact, f"boss wake PR check {meta['id']} failed: {exc.code} {exc.message}")
+                continue
+            if finished:
+                held = bool(self.read(meta["id"], meta["thread_id"])) or held
+        return held
 
     def target(self):
         try:

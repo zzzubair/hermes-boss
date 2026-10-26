@@ -1,5 +1,6 @@
 """Pushed T3 events reach the owner session: a fake T3 WebSocket server, real listener, real ledger."""
 import base64
+from datetime import datetime, timezone
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -14,7 +15,7 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from boss.common import Redactor
+from boss.common import BossError, Redactor
 from boss.config import Config
 from boss.inbox import NOTE, Inbox, live_turn
 from boss.service import Boss
@@ -27,6 +28,17 @@ from tests.support import HermeticTestCase
 
 EVENTS_TOKEN = "events-secret-token-never-print"
 WAIT = 5
+T0 = datetime(2026, 10, 26, 12, 0, tzinfo=timezone.utc).timestamp()
+
+
+def stamp(seconds):
+    """T3's updatedAt for an epoch time."""
+    return datetime.fromtimestamp(seconds, timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def linked(state):
+    """A pullRequests entry as T3's pushed shell carries it (seen live: snapshot.state is lowercase)."""
+    return {"url": harness.URL, "source": "agent", "snapshot": {"state": state, "title": "Fix the thing"}}
 
 
 def frame(text):
@@ -335,11 +347,13 @@ class WakeTest(HermeticTestCase):
         hook = plugin.turn_hook(Context(self.home / "profile"))
         with patch("boss.wake.start_wake", return_value=listener):
             result = hook(session_id="agent:captain", user_message="hi")
+            self.assertTrue(listener.reached("pokes", self.poked + 1, WAIT))  # turn start sweeps
             # The finished run stays on the attention line until reviewed; the listener holds wake.lock.
             finished = f"boss: 1 need you ({self.task['id']} finished) - run boss status"
             self.assertEqual(result["context"],
                              f"{finished}\n\n[boss inbox]\nFix thing: ended its turn without a status line or any message\n{NOTE}")
             self.assertEqual(hook(session_id="agent:captain", user_message="again"), {"context": finished})
+            self.assertTrue(listener.reached("pokes", self.poked + 2, WAIT))
             # A subagent inherits the owner's session key but is never the owner's turn: no inbox for it.
             self.send(updated(self.state("failed", run="run-2"), 2))
             with patch.dict(os.environ, {"HERMES_SESSION_KEY": "agent:captain"}):
@@ -354,7 +368,11 @@ class WakeTest(HermeticTestCase):
         hook = plugin.turn_hook(Context(self.home / "profile"))
         with patch("boss.wake.start_wake", return_value=listener), \
                 patch.dict(os.environ, {"HERMES_SESSION_KEY": "agent:captain"}):
-            return hook(session_id=session, task_id="t", turn_id="turn-1", user_message="hi", parent_session_id="")
+            result = hook(session_id=session, task_id="t", turn_id="turn-1", user_message="hi", parent_session_id="")
+        # The owner's turn start pokes the listener to sweep; wait until that is done.
+        self.poked += 1
+        self.assertTrue(listener.reached("pokes", self.poked, WAIT))
+        return result
 
     def tool(self, session="sess-1", result='{"output": "ok"}'):
         """One tool result through transform_tool_result, with the keywords Hermes passes."""
@@ -553,6 +571,183 @@ class WakeTest(HermeticTestCase):
             self.assertIsNone(start_wake(Context(self.home / "profile")))
         self.assertEqual(_listeners, {})
 
+    def clocked(self, ctx):
+        """A listener on a test clock (self.now), so quiet time passes without waiting."""
+        self.now = T0
+        listener = self.listen(ctx)
+        listener.clock = lambda: self.now
+        return listener
+
+    def other(self, sequence):
+        """Another thread's progress: a push that triggers a sweep but is nothing to read."""
+        return updated(shell("someone-elses-thread", updatedAt=stamp(self.now)), sequence)
+
+    def test_running_worker_quiet_too_long_wakes_once_per_stall(self):
+        self.own("agent:captain", "Discord DM")
+        ctx = Context(self.home / "profile")
+        self.clocked(ctx)
+        words = "Running the full suite in one blocking wait, then I open the PR. " * 3
+        self.thread["items"] = [{"type": "assistant_message", "createdBy": "agent", "text": words, "itemId": "i1",
+                                 "runId": "run-1", "textTruncated": False}]
+        reads = self.reads()
+        self.send(updated(self.state("running", updatedAt=stamp(T0)), 1))
+        self.now = T0 + 14 * 60
+        self.send(self.other(2))
+        self.assertEqual((self.reads(), ctx.messages), (reads, []))  # quiet, not yet too long: memory only
+        self.now = T0 + 25 * 60
+        self.send(self.other(3))
+        self.assertEqual(self.reads(), reads + 1)
+        tail = "..." + " ".join(words.split())[-117:]
+        self.assertEqual(ctx.messages, [(f"[boss inbox]\nFix thing: no progress for 25 min (last: {tail})\n{NOTE}",
+                                         {"role": "user", "session_key": "agent:captain"})])
+        # One wake per stall: more pushes, a poke and a re-snapshot neither read nor wake again.
+        self.now = T0 + 40 * 60
+        self.send(self.other(4), snapshot(self.state("running", updatedAt=stamp(T0))))
+        self.own("agent:captain", "Discord DM")
+        self.assertEqual((self.reads(), len(ctx.messages)), (reads + 1, 1))
+        # Progress resets the clock; a new stall later is a new wake.
+        self.send(updated(self.state("running", updatedAt=stamp(self.now)), 5))
+        self.now += 15 * 60
+        self.send(self.other(6))
+        self.assertEqual((self.reads(), len(ctx.messages)), (reads + 2, 2))
+        self.assertIn("Fix thing: no progress for 15 min", ctx.messages[1][0])
+        self.assertNotIn(self.task["id"], ctx.messages[1][0])
+
+    def test_a_restart_counts_quiet_time_from_t3_and_stall_minutes_is_configurable(self):
+        Config(self.home, Redactor()).change("wake.stall_minutes", 5)
+        self.own("agent:captain", "Discord DM")
+        ctx = Context(self.home / "profile")
+        self.clocked(ctx)
+        # The listener's first sight of a thread (a fresh start's snapshot): T3's own updatedAt says it went quiet.
+        self.send(snapshot(self.state("running", updatedAt=stamp(T0 - 6 * 60))))
+        self.assertEqual(ctx.messages[0][0], f"[boss inbox]\nFix thing: no progress for 6 min\n{NOTE}")
+        with self.assertRaises(BossError):
+            Config(self.home, Redactor()).change("wake.stall_minutes", -1)
+
+    def test_zero_stall_minutes_turns_the_check_off_and_a_waiting_worker_is_never_stalled(self):
+        Config(self.home, Redactor()).change("wake.stall_minutes", 0)
+        self.own("agent:captain", "Discord DM")
+        ctx = Context(self.home / "profile")
+        self.clocked(ctx)
+        self.send(updated(self.state("running", updatedAt=stamp(T0)), 1))
+        self.now = T0 + 120 * 60
+        self.send(self.other(2))
+        self.assertEqual(ctx.messages, [])
+
+    def test_a_stall_read_that_finds_the_turn_finished_reports_that_instead(self):
+        self.own("agent:captain", "Discord DM")
+        ctx = Context(self.home / "profile")
+        self.clocked(ctx)
+        self.send(updated(self.state("running", updatedAt=stamp(T0)), 1))
+        self.completed(self.task, "BOSS: done: three callers found")  # its completion push never came
+        self.now = T0 + 20 * 60
+        self.send(self.other(2))
+        self.assertEqual(ctx.messages[0][0], f"[boss inbox]\nFix thing: finished: three callers found\n{NOTE}")
+
+    def test_paused_worker_past_its_until_time_wakes_once_as_stalled(self):
+        self.own("agent:captain", "Discord DM")
+        ctx = Context(self.home / "profile")
+        self.clocked(ctx)
+        self.completed(self.task, "Deploy queued.\nBOSS: paused: the staging deploy until 12:30 UTC")
+        self.send(updated(self.state("completed", updatedAt=stamp(T0)), 1))
+        self.assertEqual(ctx.messages[0][0],
+                         f"[boss inbox]\nFix thing: paused, waiting on the staging deploy until 12:30 UTC\n{NOTE}")
+        reads = self.reads()
+        self.now = T0 + 29 * 60
+        self.send(self.other(2))
+        self.assertEqual(len(ctx.messages), 1)
+        self.now = T0 + 40 * 60
+        self.send(self.other(3))
+        self.assertEqual(ctx.messages[1][0], "[boss inbox]\nFix thing: no progress for 40 min "
+                                             f"(last: paused, waiting on the staging deploy until 12:30 UTC)\n{NOTE}")
+        self.send(self.other(4))
+        self.own("agent:captain", "Discord DM")
+        self.assertEqual((len(ctx.messages), self.reads()), (2, reads))  # once, and the line needed no T3 read
+
+    def test_paused_worker_that_resumes_is_not_reported_when_its_until_passes(self):
+        self.own("agent:captain", "Discord DM")
+        ctx = Context(self.home / "profile")
+        self.clocked(ctx)
+        self.completed(self.task, "BOSS: paused: CI until 12:10 UTC")
+        self.send(updated(self.state("completed", updatedAt=stamp(T0)), 1))
+        self.send(updated(self.state("running", run="run-2", updatedAt=stamp(T0 + 60)), 2))
+        self.now = T0 + 11 * 60
+        self.send(updated(self.state("running", run="run-2", updatedAt=stamp(self.now)), 3))
+        self.assertEqual(len(ctx.messages), 1)
+
+    def test_pr_merged_in_a_pushed_shell_wakes_once(self):
+        self.own("agent:captain", "Discord DM")
+        ctx = Context(self.home / "profile")
+        self.listen(ctx)
+        self.gh.pr["title"] = "Fix the thing"
+        self.fake.prs = [harness.URL]
+        self.completed(self.task, f"BOSS: done: {harness.URL}")
+        self.send(updated(self.state("completed", pullRequests=[linked("open")]), 1))
+        self.assertIn(f'finished, PR "Fix the thing" {harness.URL}', ctx.messages[0][0])
+        # The captain merges on GitHub; T3 syncs its copy and pushes the same run with a new PR state.
+        self.gh.pr["state"] = "MERGED"
+        self.send(updated(self.state("completed", pullRequests=[linked("merged")]), 2))
+        self.assertEqual(ctx.messages[1][0], f"[boss inbox]\nFix thing: PR merged {harness.URL}\n{NOTE}")
+        reads = self.reads()
+        self.send(updated(self.state("completed", pullRequests=[linked("merged")]), 3),
+                  snapshot(self.state("completed", pullRequests=[linked("merged")])))
+        self.assertEqual((len(ctx.messages), self.reads()), (2, reads))
+
+    def test_pr_closed_without_merging_wakes_once(self):
+        self.own("agent:captain", "Discord DM")
+        ctx = Context(self.home / "profile")
+        self.listen(ctx)
+        self.fake.prs = [harness.URL]
+        self.completed(self.task, f"BOSS: done: {harness.URL}")
+        self.send(updated(self.state("completed", pullRequests=[linked("open")]), 1))
+        self.gh.pr["state"] = "CLOSED"
+        self.send(updated(self.state("completed", pullRequests=[linked("closed")]), 2))
+        self.assertEqual(ctx.messages[1][0], f"[boss inbox]\nFix thing: PR closed {harness.URL}\n{NOTE}")
+
+    def test_pr_landed_by_boss_itself_is_not_announced(self):
+        self.own("agent:captain", "Discord DM")
+        ctx = Context(self.home / "profile")
+        self.listen(ctx)
+        self.fake.prs = [harness.URL]
+        meta = self.store.load(self.task["id"])
+        meta["landed"] = True
+        self.store.save(meta, "landed")
+        self.gh.pr["state"] = "MERGED"
+        self.completed(self.task, f"BOSS: done: {harness.URL}")
+        self.send(updated(self.state("completed", pullRequests=[linked("merged")]), 1))
+        self.assertEqual(ctx.messages, [])
+        self.assertFalse(any(r.get("kind", "").startswith("pr-") for r in Inbox(self.home).records()))
+
+    def test_pr_merged_on_github_is_found_at_the_owner_turn_start_when_t3s_copy_is_stale(self):
+        # Seen live: T3 often keeps a PR "open" after the captain merges it on GitHub.
+        self.own("agent:captain", "Hermes app")
+        ctx = Context(self.home / "profile")
+        listener = self.clocked(ctx)
+        views, view = [], self.gh.view
+        self.gh.view = lambda url: views.append(url) or view(url)
+        self.fake.prs = [harness.URL]
+        self.completed(self.task, f"BOSS: done: {harness.URL}")
+        self.send(updated(self.state("completed", pullRequests=[linked("open")]), 1))
+        self.assertEqual(len(ctx.messages), 1)
+        before = len(views)
+        # The owner's turn start asks GitHub about open PRs; its end (another poke) is within the
+        # recheck window, so GitHub is not asked again.
+        self.owner_turn(listener)
+        self.turn_end(session_id="sess-1", completed=True)
+        self.assertEqual(len(views), before + 1)
+        self.gh.pr["state"] = "MERGED"  # merged on GitHub; T3 never re-pushes
+        self.now = T0 + 5 * 60
+        self.owner_turn(listener)
+        self.assertEqual(self.tool(), '{"output": "ok"}\n\n[boss inbox]\n'
+                                      f"Fix thing: PR merged {harness.URL}\n{NOTE}")
+        self.turn_end(session_id="sess-1", completed=True)
+        self.assertEqual(len(ctx.messages), 1)  # seen mid-turn; nothing left to inject
+        # The ledger now says merged: later turns never ask GitHub about it again.
+        asked = len(views)
+        self.now = T0 + 60 * 60
+        self.owner_turn(listener)
+        self.assertEqual(len(views), asked)
+
     def test_endpoints_follow_the_mcp_origin(self):
         self.assertEqual(endpoints("https://t3.example.ts.net/mcp"),
                          ("wss://t3.example.ts.net/ws", "https://t3.example.ts.net/api/auth/websocket-ticket/rpc"))
@@ -575,7 +770,7 @@ class NoPollingTest(HermeticTestCase):
         # backoff after a dropped T3 stream. A healthy listener blocks on its socket.
         self.assertEqual(found, [
             'boss/config.py: # interval_seconds is a leftover from timed polling; tolerated so old configs load, never read.',
-            'boss/config.py: fields(wake, {"enabled": bool, "interval_seconds": int, "origin": dict, "session_key": str}, "wake")',
+            'boss/config.py: fields(wake, {"enabled": bool, "interval_seconds": int, "origin": dict, "session_key": str, "stall_minutes": int}, "wake")',
             'boss/setup.py: if "interval_seconds" in wake:',
             'boss/setup.py: lines.append("info: wake.interval_seconds is unused now that wakes are pushed; boss config unset wake.interval_seconds")',
             'boss/wake.py: self.stop_event.wait(backoff(failures))',

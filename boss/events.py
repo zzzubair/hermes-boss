@@ -13,15 +13,24 @@ A finished turn's status line is the primary signal. A pending T3 question or
 permission prompt says the worker is waiting now; a question also carries its
 answerable request ids. A turn that ends with no status line is ended_unclear,
 surfaced with the worker's last words, never swallowed.
+
+pr_events() says which of the task's PRs merged or closed (often by the captain
+on GitHub, not by boss), so the supervisor can settle the task at once. The wake
+listener builds 'stalled' events itself, from how long a thread was quiet.
 """
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 import re
 
 KINDS = ("needs-decision", "approval", "blocked", "paused", "done", "error", "ended_unclear", "working")
 ERROR_STATUSES = {"failed", "interrupted", "cancelled", "rolled_back"}
 ENDED_STATUSES = {"completed", "idle"}
 QUOTE_CHARS = 300
+TAIL_CHARS = 120
 STATUS_LINE = re.compile(r"BOSS:\s*(done|needs-decision|blocked|paused):\s*(\S.*)")
+UNTIL = re.compile(r"\buntil\s+(?:(\d{4}-\d{2}-\d{2})[T ])?(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?\s*(?:Z|UTC|GMT|\+00:?00)?\b",
+                   re.IGNORECASE)
+FINISHED_PRS = {"MERGED": "merged", "CLOSED": "closed"}
 
 
 @dataclass(frozen=True)
@@ -77,6 +86,48 @@ def classify(view):
     return event("ended_unclear", quote)
 
 
+def pr_events(view):
+    """One event per PR of the task that is merged or closed; its key names the PR, so each surfaces once."""
+    thread_id = view["thread"]["threadId"]
+    events = []
+    for pr in view.get("prs") or ():
+        word = FINISHED_PRS.get(str(pr.get("state") or "").upper())
+        if word:
+            # No turn: a merge is about the PR, so a newer worker turn never makes it stale.
+            events.append(Event("pr-" + word, thread_id, None, f"{thread_id}:pr-{word}:{pr['url']}", pr["url"]))
+    return events
+
+
+def paused_until(detail, seen):
+    """When a paused worker said its wait ends ("until <UTC time>"), as epoch seconds; None if it named no time.
+
+    A bare time of day is the next one after `seen`, the moment boss read the paused line.
+    """
+    match = UNTIL.search(detail or "")
+    if not match:
+        return None
+    day, hour, minute, second = match[1], int(match[2]), int(match[3]), int(match[4] or 0)
+    if hour > 23 or minute > 59 or second > 59:
+        return None
+    base = datetime.fromtimestamp(seen, timezone.utc)
+    try:
+        date = datetime.strptime(day, "%Y-%m-%d").date() if day else base.date()
+    except ValueError:
+        return None
+    until = datetime(date.year, date.month, date.day, hour, minute, second, tzinfo=timezone.utc)
+    if not day and until <= base:
+        until += timedelta(days=1)
+    return until.timestamp()
+
+
+def stall_text(minutes, last):
+    """'no progress for 25 min (last: <tail of the worker's last words>)'."""
+    tail = " ".join(str(last or "").split())
+    if len(tail) > TAIL_CHARS:
+        tail = "..." + tail[-(TAIL_CHARS - 3):]
+    return f"no progress for {minutes} min" + (f" (last: {tail})" if tail else "")
+
+
 def options_text(options):
     labels = [str(o.get("label") or o.get("value") or "") if isinstance(o, dict) else str(o) for o in options or ()]
     labels = [" ".join(label.split())[:60] for label in labels if label.strip()]
@@ -108,6 +159,10 @@ def describe(title, event, prs=(), questions=()):
         return f"{title}: blocked: {detail}"
     if kind == "paused":
         return f"{title}: paused, waiting on {detail}"
+    if kind == "stalled":
+        return f"{title}: {detail}"
+    if kind in ("pr-merged", "pr-closed"):
+        return f"{title}: PR {kind[3:]} {detail}"
     if kind == "approval":
         return f"{title}: waiting on a permission prompt in T3"
     if kind == "error":

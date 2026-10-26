@@ -2,7 +2,9 @@
 import re
 import unittest
 
-from boss.events import KINDS, QUOTE_CHARS, classify, describe, status_line
+from datetime import datetime, timezone
+
+from boss.events import KINDS, Event, QUOTE_CHARS, classify, describe, paused_until, pr_events, stall_text, status_line
 
 PR = "https://github.com/acme/widget/pull/7"
 
@@ -162,3 +164,44 @@ class DescribeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PullRequestEventTests(unittest.TestCase):
+    """A PR merged or closed outside boss (the captain on GitHub) is one plain line, once per PR."""
+
+    def test_merged_and_closed_prs_each_make_one_event_open_ones_none(self):
+        v = view(prs=[PR, PR + "0", PR + "1"])
+        v["prs"][0]["state"], v["prs"][1]["state"] = "MERGED", "closed"
+        events = pr_events(v)
+        self.assertEqual([(e.kind, e.dedupe_key, e.turn_id) for e in events],
+                         [("pr-merged", f"thread-1:pr-merged:{PR}", None), ("pr-closed", f"thread-1:pr-closed:{PR}0", None)])
+        self.assertEqual([describe("Fix the widget", e) for e in events],
+                         [f"Fix the widget: PR merged {PR}", f"Fix the widget: PR closed {PR}0"])
+        self.assertEqual(pr_events(view(prs=[PR])), [])
+
+
+class StallTests(unittest.TestCase):
+    NOON = datetime(2026, 10, 26, 12, 0, tzinfo=timezone.utc).timestamp()
+
+    def at(self, text):
+        return datetime(*map(int, re.findall(r"\d+", text)), tzinfo=timezone.utc).timestamp()
+
+    def test_paused_until_reads_the_utc_time_the_worker_named(self):
+        for detail, expected in (
+                ("CI on the PR until 2026-10-26T14:30Z", "2026-10-26 14:30"),
+                ("the deploy until 2026-10-27 09:05:30 UTC", "2026-10-27 09:05:30"),
+                ("staging until 12:30 UTC", "2026-10-26 12:30"),
+                ("the nightly run, until 11:00", "2026-10-27 11:00")):  # a time already past today is tomorrow's
+            with self.subTest(detail=detail):
+                self.assertEqual(paused_until(detail, self.NOON), self.at(expected))
+        for detail in ("the captain's answer", "until later", "until 25:00 UTC", "until 2026-13-40T10:00Z", ""):
+            with self.subTest(detail=detail):
+                self.assertIsNone(paused_until(detail, self.NOON))
+
+    def test_stall_text_names_the_quiet_time_and_the_tail_of_the_last_words(self):
+        self.assertEqual(stall_text(25, "  Running the\nsuite  "), "no progress for 25 min (last: Running the suite)")
+        self.assertEqual(stall_text(15, ""), "no progress for 15 min")
+        long = "a" * 200 + " the end"
+        self.assertEqual(stall_text(30, long), "no progress for 30 min (last: ..." + long[-117:] + ")")
+        stalled = Event("stalled", "thread-1", "run-1", "thread-1:stalled:run-1:t", stall_text(25, "Running the suite"))
+        self.assertEqual(describe("Fix the widget", stalled), "Fix the widget: no progress for 25 min (last: Running the suite)")
