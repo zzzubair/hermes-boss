@@ -586,6 +586,15 @@ neither by default.
   the session id its `pre_llm_call` recorded), never another session's or a
   subagent's.
 
+Delivery while the owner is idle depends on that `boss watch`. When tasks are
+active and no process holds `watch.lock` (the owner forgot to re-arm it, or
+compaction, a new session or a gateway restart lost it), the first tool result
+of each owner turn ends with
+`boss: no boss watch running; start it: boss watch (background, notify on exit)`.
+`boss own` and `/boss` / `/boss take` end with the same line, unless the owner
+re-opens boss while its own watch is already waiting. It never goes into
+turn-start context.
+
 The owner's `pre_llm_call` only records the busy mark
 (`$BOSS_HOME/owner-turn.json`) and, when tasks are active and no process holds
 `wake.lock`, adds the one line `boss: worker updates are not arriving; run

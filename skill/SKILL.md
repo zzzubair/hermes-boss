@@ -29,7 +29,9 @@ after `/boss` opens boss here. After you handle a watch result, start
 `boss watch` again, once. Never run two: a new one replaces the old one,
 which exits saying it took nothing (ignore that notice). `boss watch` from any
 other session is refused. A watch that says boss moved to another session is
-done; don't restart it here.
+done; don't restart it here. A tool result, `/boss` or `boss own` ending with
+`boss: no boss watch running; start it: boss watch (background, notify on exit)`
+means none is running now: start one at once.
 
 Bare `boss` (or `boss status`) prints one table: task, project, host, model,
 state (the worker's last status line), PR and CI, how long it has been quiet,

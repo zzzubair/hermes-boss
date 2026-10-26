@@ -1,5 +1,6 @@
 """Pushed T3 events reach the owner session: a fake T3 WebSocket server, real listener, real ledger."""
 import base64
+import fcntl
 from datetime import datetime, timezone
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -380,6 +381,12 @@ class WakeTest(HermeticTestCase):
         self.assertIn("Fix thing: finished: shipped\nCaptain went away at ", output)
         self.assertEqual([r["via"] for r in self.inbox_log("acked")], ["watch"])
 
+    def watching(self):
+        """The owner keeps a boss watch running: hold watch.lock as its process would."""
+        descriptor = os.open(self.home / "watch.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        self.addCleanup(os.close, descriptor)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+
     def owner_turn(self, listener, session="sess-1"):
         """Start the owner's top-level turn through the real pre_llm_call hook; returns its context result."""
         hook = plugin.turn_hook(Context(self.home / "profile"))
@@ -405,6 +412,7 @@ class WakeTest(HermeticTestCase):
 
     def test_worker_finishing_mid_turn_is_seen_in_the_same_turn(self):
         self.own("agent:captain", "Hermes app")
+        self.watching()
         ctx = Context(self.home / "profile")
         listener = self.listen(ctx)
         self.assertIsNone(self.owner_turn(listener))
@@ -738,6 +746,7 @@ class WakeTest(HermeticTestCase):
     def test_pr_merged_on_github_is_found_at_the_owner_turn_start_when_t3s_copy_is_stale(self):
         # Seen live: T3 often keeps a PR "open" after the captain merges it on GitHub.
         self.own("agent:captain", "Hermes app")
+        self.watching()
         ctx = Context(self.home / "profile")
         listener = self.clocked(ctx)
         views, view = [], self.gh.view

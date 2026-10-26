@@ -14,6 +14,7 @@ from boss.inbox import NOTE, SOCKET, Inbox
 import plugin
 from tests import test_boss as harness
 from tests.support import HermeticTestCase
+from tests.test_wake import Context
 
 OWNER = "agent:captain"
 WAIT = 5
@@ -159,3 +160,105 @@ class WatchTest(HermeticTestCase):
         self.assertEqual(Inbox(self.home).open_items(), [])
         captain = [json.loads(line)["event"] for line in (self.home / "captain.jsonl").read_text().splitlines()]
         self.assertEqual([e for e in captain if e in ("away", "back")], ["away", "back"])
+
+
+class WatchReminderTest(HermeticTestCase):
+    """Without a boss watch an idle owner hears nothing, so its tool results and boss own say to start one."""
+    setUp = harness.CLITest.setUp
+    tearDown = harness.CLITest.tearDown
+    spawn = harness.CLITest.spawn
+    own = WatchTest.own
+    start = WatchTest.start
+    captain_event = WatchTest.captain_event
+    RESULT = '{"output": "ok"}'
+
+    def cli(self, *args, key=OWNER, stdin="investigate this"):
+        return WatchTest.cli(self, *args, key=key, stdin=stdin)
+
+    def turn(self, session="sess-1", key=OWNER, parent=""):
+        """One top-level turn starting, through the plugin's pre_llm_call bookkeeping."""
+        with patch("plugin.current_session_key", return_value=key):
+            plugin.turn_start({"session_id": session, "parent_session_id": parent, "user_message": "hi"})
+
+    def tool(self, session="sess-1"):
+        return plugin.on_tool_result(tool_name="terminal", args={}, result=self.RESULT, session_id=session,
+                                     task_id="t", tool_call_id="call-1", turn_id="turn-1")
+
+    def active(self):
+        return json.loads((self.home / "attention.json").read_text())["active"]
+
+    def test_owner_turn_without_a_watch_is_reminded_once_per_turn(self):
+        self.own()
+        self.spawn()
+        self.assertEqual(self.active(), 1)
+        self.turn()
+        self.assertEqual(self.tool(), f"{self.RESULT}\n\n{watch.REMIND}")
+        self.assertEqual(watch.REMIND, "boss: no boss watch running; start it: boss watch (background, notify on exit)")
+        self.assertIsNone(self.tool())  # once per turn
+        self.turn()
+        self.assertEqual(self.tool(), f"{self.RESULT}\n\n{watch.REMIND}")  # a new turn is told again
+        thread, _, codes = self.start()
+        self.turn()
+        self.assertIsNone(self.tool())  # a watch is waiting: nothing to say
+        self.captain_event("Captain is back at 17:10.")
+        thread.join(WAIT)
+        self.assertEqual(codes, [0])
+        self.turn()
+        self.assertEqual(self.tool(), f"{self.RESULT}\n\n{watch.REMIND}")  # it delivered and exited, not re-armed
+
+    def test_no_reminder_while_no_task_is_active(self):
+        self.own()
+        self.cli("status")
+        self.assertEqual(self.active(), 0)
+        self.turn()
+        self.assertIsNone(self.tool())
+
+    def test_reminder_follows_the_inbox_block_on_one_tool_result(self):
+        self.own()
+        self.spawn()
+        self.turn()
+        self.captain_event("Captain is back at 17:10.")
+        self.assertEqual(self.tool(), f"{self.RESULT}\n\n[boss inbox]\nCaptain is back at 17:10.\n{NOTE}\n{watch.REMIND}")
+        self.assertIsNone(self.tool())
+
+    def test_other_sessions_never_get_the_reminder(self):
+        self.own()
+        self.spawn()
+        # Another session's turn records nothing, and its tool results are untouched, with or without an owner turn.
+        self.turn(session="sess-tui", key="agent:tui")
+        self.assertIsNone(self.tool(session="sess-tui"))
+        self.turn()
+        self.assertIsNone(self.tool(session="sess-tui"))
+        # A subagent of the owner shares its session key but neither its turn nor its session id.
+        self.turn(session="sess-child", parent="sess-1")
+        self.assertIsNone(self.tool(session="sess-child"))
+        # Boss moved mid-turn: the old owner's running turn is no longer the owner's.
+        self.own("agent:phone", "Telegram DM", "--take")
+        self.assertIsNone(self.tool())
+        # Never in turn-start context: the app shows that inside the captain's own message.
+        for key in (OWNER, "agent:phone", "agent:tui"):
+            with patch("plugin.current_session_key", return_value=key):
+                context = (plugin.on_pre_llm_call(session_id="sess-1", user_message="boss?") or {}).get("context", "")
+            self.assertNotIn("boss watch", context)
+
+    def test_own_and_take_end_with_the_watch_instruction(self):
+        code, output = self.cli("own", "--label", "Hermes app")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(output.splitlines()[-2:], [watch.REMIND, "next: boss"])
+        thread, _, codes = self.start()
+        # Re-opening while its own watch waits: nothing to start.
+        code, output = self.cli("own")
+        self.assertEqual(code, 0, output)
+        self.assertNotIn(watch.REMIND, output)
+        # A take moves boss to a session with no watch of its own, whatever still holds the lock.
+        code, output = self.cli("own", "--take", "--label", "Telegram DM", key="agent:phone")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(output.splitlines()[-2:], [watch.REMIND, "next: boss"])
+        self.captain_event("Captain is back at 17:10.")
+        thread.join(WAIT)
+        self.assertEqual(codes, [0])
+        # /boss and /boss take in chat end with it too (the plugin hides next: hints).
+        handler = plugin.boss_command(Context(self.home / "profile"))
+        self.assertTrue(handler("take", session_key="agent:tui", platform="tui").endswith(f"\n{watch.REMIND}"))
+        self.assertIn("Released boss", handler("release", session_key="agent:tui", platform="tui"))
+        self.assertTrue(handler("", session_key="agent:discord", platform="discord").endswith(f"\n{watch.REMIND}"))
