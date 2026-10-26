@@ -12,7 +12,7 @@ import urllib.error
 import urllib.request
 
 from .common import BossError
-from .config import hermes_home, literal
+from .config import allows, hermes_home, literal, model_rules, rule_entry
 from . import owner
 from .wake import CONSENT_KEY, CONSENT_LINE, HEARTBEAT, LAST, LOCK, endpoints, legacy_target
 
@@ -187,38 +187,43 @@ def owner_lines(boss):
 
 
 def rule_findings(boss):
-    """Lint worker rules: unknown models on the live host, roles that break them, empty lists."""
+    """Lint worker rules: unknown models or efforts on the live host, roles that break them, empty lists."""
     config, findings, known, seen = boss.config, [], {}, set()
     scopes = [None, *config.projects]
     checked = False
     for scope in scopes:
-        rules = config.project(scope).get("rules", {}) if scope else config.data.get("rules", {})
-        prefix = f"projects.{scope}.rules" if scope else "rules"
+        rules = model_rules(config.project(scope).get("rules", {}) if scope else config.data.get("rules", {}))
+        prefix = f"projects.{scope}.rules.models" if scope else "rules.models"
         host = config.effective(scope)[0]["host"]
         for key, allowed in rules.items():
             checked = True
             if not allowed:
-                findings.append(("warn", f"{prefix}.{key} is empty; every {key.split('_')[0]} spawn needs --override",
+                findings.append(("warn", f"{prefix}.{key} is empty; every {key} spawn needs --allow-model",
                                  f"list allowed models or boss config unset {prefix}.{key}"))
             for entry in allowed:
-                instance, model = entry.split(":", 1)
+                model_id, effort = rule_entry(entry)
+                instance, model = model_id.split(":", 1)
                 if not host:
                     findings.append(("warn", f"{prefix}.{key}: cannot check {entry} without a host", "boss init"))
                     continue
-                if (host, entry) not in known:
+                if (host, model_id) not in known:
                     try:
                         catalog = boss.client(host).call("orchestrator_capabilities", search=model)
-                        known[host, entry] = any(p["providerInstanceId"] == instance and any(m["id"] == model for m in p["models"])
-                                                 for p in catalog["providers"])
+                        known[host, model_id] = next((m for p in catalog["providers"] if p["providerInstanceId"] == instance
+                                                      for m in p["models"] if m["id"] == model), None)
                     except BossError as exc:
-                        known[host, entry] = exc
-                result = known[host, entry]
+                        known[host, model_id] = exc
+                result = known[host, model_id]
                 if isinstance(result, BossError):
                     findings.append(("optional", f"{prefix}.{key}: cannot check {entry} on host {host}: {result.message}",
                                      f"boss host test {shlex.quote(host)}"))
-                elif not result:
-                    findings.append(("fail", f"{prefix}.{key}: {entry} is not in host {host}'s live T3 catalog",
+                elif result is None:
+                    findings.append(("fail", f"{prefix}.{key}: {model_id} is not in host {host}'s live T3 catalog",
                                      "use providerInstanceId:model from orchestrator_capabilities"))
+                elif effort and not any(o["id"] in ("reasoningEffort", "effort") and effort in o.get("values", [])
+                                        for o in result.get("options", [])):
+                    findings.append(("fail", f"{prefix}.{key}: {model_id} has no effort {effort} on host {host}",
+                                     "use an effort value from orchestrator_capabilities"))
         for role in config.roles(scope):
             values, origins = config.effective(scope, {"worker": role})
             where = f"role {role}" + (f" in project {scope}" if scope else "")
@@ -229,14 +234,16 @@ def rule_findings(boss):
                     seen.add(("kinds", role, values["kind"], tuple(kinds)))
                     findings.append(("fail", f"{where}: default kind {values['kind']} is not in kinds {literal(kinds)}",
                                      f"set kind or kinds in {origins[('kinds',)]}"))
+            models = values.get("rules", {}).get("models", {})
             for kind in kinds if kinds is not None else [values["kind"]]:
-                allowed = values.get("rules", {}).get(kind + "_models")
-                model = values.get("model")
-                if allowed is None or not model or model in allowed or (role, model, kind, tuple(allowed)) in seen:
+                key = role if role in models else kind
+                allowed, model, effort = models.get(key), values.get("model"), values.get("effort")
+                if allowed is None or not model or allows(allowed, model, effort) or (role, model, effort, key, tuple(allowed)) in seen:
                     continue
-                seen.add((role, model, kind, tuple(allowed)))
-                findings.append(("fail", f"{where}: model {model} breaks rules.{kind}_models {literal(allowed)}",
-                                 f"change {origins[('model',)]} or {origins[('rules', kind + '_models')]}"))
+                seen.add((role, model, effort, key, tuple(allowed)))
+                asked = " ".join(filter(None, (model, effort)))
+                findings.append(("fail", f"{where}: model {asked} breaks rules.models.{key} {literal(allowed)}",
+                                 f"change {origins[('model',)]} or {origins[('rules', 'models', key)]}"))
     if checked and not any(level == "fail" for level, _, _ in findings):
         findings.insert(0, ("ok", "worker rules", ""))
     return findings
