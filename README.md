@@ -266,7 +266,16 @@ reads a task snapshot and says what it needs: `input`, `approval`,
 is `ended_unclear` and quotes the first 300 characters of the last reply,
 because it is probably a question asked in plain text. Each event has a
 `dedupe_key` (thread, kind, and turn or request IDs), so one event wakes the
-captain once.
+captain once. `approval` needs a real pending permission request: T3's
+`pendingRequestCount` minus the question requests it lists. A bare `waiting`
+status with nothing pending is `working`; T3 shows it for a moment as a turn
+finishes.
+
+Each worker gets its own worktree on a branch named after its title:
+`boss/fix-the-ledger-lock` (lowercase letters, digits and hyphens, at most 40
+characters, cut at a whole word). A `-2`, `-3` suffix is added only when origin
+or the ledger already has that branch. The T3 thread title and the ledger keep
+the task ID; `land` and `settle` match the branch saved on the task.
 
 ## Writing briefs
 
@@ -310,6 +319,7 @@ boss log 'What he said or decided in a check-in'
 boss back                       # also /back: catch-up timeline and decisions
 boss land <id> --approved 'The captain exact words'
 boss settle <id>
+boss settle --prune-landed      # remove leftover worktrees of settled, landed tasks on all hosts
 boss own                        # also /boss: open boss in this Hermes session
 boss own --take                 # also /boss take: move it here from another session
 boss own status
@@ -379,7 +389,14 @@ or changes-requested review, and the captain's explicit quote. It matches the
 approved head SHA and confirms the merged result. `settle` checks live thread,
 PR and worktree evidence before unwatching and settling. It refuses unlanded
 work and missing reports. Use `--discard-approved` only with explicit captain
-authority. Settlement preserves the worktree and ledger.
+authority. Settlement keeps the ledger. Once the thread is settled, boss
+removes the worker's worktree and local branch on its host (over its `ssh`
+when remote) if the work is done: a merged or closed PR, or a finished scout
+or report. The host re-checks right before removing and refuses, keeping the
+worktree, when it has uncommitted work or commits origin does not have (not in
+the default branch, not on the pushed branch, not a PR's head). Each refusal is
+printed with its reason. `boss settle --prune-landed` does the same for every
+already-settled task on every host, reading old tasks' worktree paths from T3.
 
 Launch intent is journaled before the network mutation. An uncertain launch is
 reconciled by its unique title marker, never blindly retried. Commands serialize

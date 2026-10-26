@@ -2,15 +2,26 @@
 import copy
 import json
 from pathlib import Path
+import re
 import uuid
 
 from .common import BossError, refuse, require_text
-from .integrations import GitHub, PR_PATTERN, github_repository, inspect_worktree, resolve_repository
+from .integrations import GitHub, PR_PATTERN, github_repository, inspect_worktree, remove_worktree, resolve_repository
 from .mcp import MCP
 from .preferences import compose_brief, notes_path, project_name, source_note, steering_sections
 
 
 TERMINAL = {"completed", "failed", "interrupted", "cancelled", "rolled_back", "idle"}
+SLUG_CHARS = 40
+
+
+def slug(title):
+    """'Fix: the Ledger lock!' -> 'fix-the-ledger-lock'; lowercase a-z0-9 and hyphens, whole words when cut."""
+    text = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    if len(text) <= SLUG_CHARS:
+        return text
+    cut = text[:SLUG_CHARS + 1].rpartition("-")[0]
+    return cut or text[:SLUG_CHARS]
 
 
 def footer(kind, delivery, *, origin=False):
@@ -221,9 +232,10 @@ class Boss:
             raise BossError("usage", "--override applies only when a worker rule refuses the spawn",
                             "retry boss spawn without --override", 1)
         task_id = self.store.new_id()
+        branch = self.free_branch(repo, slug(title) or task_id)
         meta = {"id": task_id, "project": project_name, "project_id": project["project_id"],
                 "host": host_name, "repository": repo, "title": title, "kind": kind,
-                "delivery": delivery, "branch": "boss/" + task_id, "base": base,
+                "delivery": delivery, "branch": branch, "base": base,
                 "model_selection": selection, "thread_id": None, "settled": False,
                 "status": "launching", "merge": project["merge"], "auto_merge": project["auto_merge"],
                 "no_mistakes": project["no_mistakes"], "test_host": project.get("test_host"),
@@ -253,6 +265,14 @@ class Boss:
                 raise BossError("model", f"task {task_id}: T3 returned different model settings; interruption requested",
                                 f"boss status {task_id}")
         return meta
+
+    def free_branch(self, repository, name):
+        """boss/<name>, or boss/<name>-2, -3... when origin or the ledger already has it."""
+        taken = {m.get("branch") for m in self.store.tasks()} | self.github.branches(repository, "boss/" + name)
+        branch, number = "boss/" + name, 2
+        while branch in taken:
+            branch, number = f"boss/{name}-{number}", number + 1
+        return branch
 
     def recover(self, meta):
         if meta.get("thread_id"):
@@ -289,6 +309,9 @@ class Boss:
             refuse("thread project differs from the task ledger", f"inspect task {meta['id']}")
         status = thread["status"]
         requests = sorted(client.call("t3_pending_request_list", threadId=meta["thread_id"])["requestIds"])
+        # T3 lists only question requests, but pendingRequestCount counts every pending
+        # runtime request; the rest are permission prompts (approvals).
+        approvals = max(0, (thread.get("pendingRequestCount") or 0) - len(requests))
         linked = client.call("list_thread_pull_requests", threadId=meta["thread_id"])["pullRequests"]
         # Retain prior links so unlinking cannot make an open PR disappear from guards.
         urls = sorted(set(p["url"] for p in linked) | set(meta.get("pr_urls", [])))
@@ -320,19 +343,21 @@ class Boss:
                  "cancelled": "interrupted", "rolled_back": "failed"}.get(status)
         if label:
             alerts.append(f"{meta['id']}: {label}")
-        if requests or status == "waiting":
-            alerts.append(f"{meta['id']}: waiting for input" + (" requests=" + ",".join(requests) if requests else ""))
+        if requests:
+            alerts.append(f"{meta['id']}: waiting for input requests=" + ",".join(requests))
+        if approvals:
+            alerts.append(f"{meta['id']}: waiting for {approvals} permission decisions in T3")
         for pr in prs:
             if pr["state"] == "OPEN":
                 alerts.append(f"{meta['id']}: PR opened {pr['url']}")
                 alerts.append(f"{meta['id']}: CI changed {pr['url']} {ci_text(pr['ci'])}")
-        observed = {"status": status, "run_id": thread.get("latestRunId"), "requests": requests,
+        observed = {"status": status, "run_id": thread.get("latestRunId"), "requests": requests, "approvals": approvals,
                     "prs": [{"url": p["url"], "state": p["state"], "head": p["headRefOid"], "ci": p["ci"]} for p in prs],
                     "alerts": alerts}
         if observed != meta.get("observed") or urls != meta.get("pr_urls", []):
             meta.update(observed=observed, status=status, pr_urls=urls)
             self.store.save(meta, "observed")
-        return {"thread": thread, "status": status, "requests": requests, "prs": prs,
+        return {"thread": thread, "status": status, "requests": requests, "approvals": approvals, "prs": prs,
                 "assistant": text, "alerts": alerts}
 
     def reviewed(self, meta, view):
@@ -447,9 +472,10 @@ class Boss:
             refuse("PR repository or branches differ from the task", f"boss status {meta['id']}")
 
     def settle(self, task_id, discard=None):
+        """Settle the thread, then remove its worktree if its work is landed or reported."""
         meta = self.store.load(task_id)
         if meta.get("settled"):
-            return
+            return meta.get("worktree")
         snapshot = self.snapshot(meta)
         if snapshot["status"] not in TERMINAL or snapshot["requests"]:
             refuse("worker must stop and resolve inputs before settlement", f"boss stop {task_id}")
@@ -503,6 +529,51 @@ class Boss:
             raise BossError("t3", "T3 did not confirm settlement", f"boss status {task_id}")
         meta.update(settled=True, discard_approved=discard)
         self.store.save(meta, "settled")
+        return self.clean_worktree(meta, snapshot["thread"].get("worktreePath"), snapshot["prs"])
+
+    def clean_worktree(self, meta, path, prs):
+        """Remove a settled task's worktree and local branch on its host, never unsaved work."""
+        if meta.get("scratch") or not path:
+            return None
+        finished = [p for p in prs if p["state"] in ("MERGED", "CLOSED") and
+                    PR_PATTERN.fullmatch(p["url"])[1].lower() == meta["repository"].lower()]
+        if not finished and meta["kind"] != "scout" and meta["delivery"] != "local-only":
+            result = {"state": "kept", "reason": "no merged or closed PR"}
+        else:
+            try:
+                result = remove_worktree(self.config.hosts[meta["host"]], path, meta["base"],
+                                         {meta["branch"], *(p["headRefName"] for p in finished)},
+                                         {p["headRefOid"] for p in finished})
+            except BossError as exc:
+                result = {"state": "kept", "reason": f"cleanup failed: {exc.message}"}
+        result = {"path": path, **result}
+        if result != meta.get("worktree"):
+            meta["worktree"] = result
+            self.store.save(meta, "worktree_" + result["state"])
+        return result
+
+    def prune_landed(self):
+        """Clean every settled task's leftover worktree, on every host, in one pass."""
+        results = []
+        for meta in self.store.tasks():
+            if not meta.get("settled") or meta.get("scratch") or \
+                    (meta.get("worktree") or {}).get("state") in ("removed", "gone"):
+                continue
+            try:
+                path = (meta.get("worktree") or {}).get("path")
+                if not path:
+                    thread = self.client(meta["host"]).call("t3_thread_read", threadId=meta["thread_id"],
+                                                            limit=1, runLimit=1)["thread"]
+                    if thread["projectId"] != meta["project_id"]:
+                        refuse("thread project differs from the task ledger", f"inspect task {meta['id']}")
+                    path = thread.get("worktreePath")
+                prs = [self.github.view(url) for url in meta.get("pr_urls", [])]
+                result = self.clean_worktree(meta, path, prs)
+            except BossError as exc:
+                result = {"state": "error", "reason": exc.message}
+            if result is not None:
+                results.append((meta, result))
+        return results
 
 
 def ci_text(ci):

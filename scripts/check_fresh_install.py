@@ -21,6 +21,8 @@ if pathlib.Path(sys.argv[0]).name == "gh":
         print("fake GitHub authentication ok")
     elif args[:2] == ["repo", "view"]:
         print(json.dumps({"defaultBranchRef": {"name": "main"}}))
+    elif args[:1] == ["api"] and "/git/matching-refs/heads/boss/" in args[1]:
+        print("[]")
     else:
         sys.exit("unexpected fake gh command")
 else:
@@ -105,6 +107,7 @@ def run(transcript=print):
             task_id = output.split(":", 1)[0]
             meta = json.loads((home / ".boss/tasks" / task_id / "meta.json").read_text())
             assert meta["worker"] == "scout" and meta["kind"] == "scout"
+            assert meta["branch"] == "boss/fresh-install-scout", meta["branch"]
             launch = next(args for name, args in fake.calls if name == "t3_thread_launch")
             assert launch["modelSelection"]["options"] == {"reasoningEffort": "low"}
             assert "Never merge. Never deploy." in launch["message"]

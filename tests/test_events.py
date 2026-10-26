@@ -6,9 +6,9 @@ from boss.events import KINDS, QUOTE_CHARS, classify
 PR = "https://github.com/acme/widget/pull/7"
 
 
-def view(status="completed", *, run="run-1", requests=(), prs=(), assistant=""):
+def view(status="completed", *, run="run-1", requests=(), approvals=0, prs=(), assistant=""):
     return {"thread": {"threadId": "thread-1", "latestRunId": run, "status": status},
-            "status": status, "requests": list(requests),
+            "status": status, "requests": list(requests), "approvals": approvals,
             "prs": [{"url": url, "state": "OPEN"} for url in prs],
             "assistant": assistant, "alerts": []}
 
@@ -23,9 +23,20 @@ class ClassifyTests(unittest.TestCase):
     def test_input_wins_over_a_finished_looking_turn(self):
         self.assertEqual(classify(view("completed", requests=["req-1"], prs=[PR], assistant=PR)).kind, "input")
 
-    def test_waiting_without_a_question_is_a_permission_prompt(self):
-        event = classify(view("waiting"))
+    def test_pending_permission_request_is_an_approval(self):
+        event = classify(view("waiting", approvals=1))
         self.assertEqual((event.kind, event.dedupe_key), ("approval", "thread-1:approval:run-1"))
+        self.assertIn("1 pending permission", event.detail)
+
+    def test_bare_waiting_as_a_turn_finishes_is_not_an_approval(self):
+        # Live on oracle: T3 pushed "waiting" with no pending request in the same second
+        # a scout finished, then "completed" with its BOSS_REPORT.
+        self.assertEqual(classify(view("waiting", assistant="BOSS_REPORT: done")).kind, "working")
+        self.assertEqual(classify(view("waiting")).dedupe_key, None)
+        self.assertEqual(classify(view("completed", assistant="BOSS_REPORT: done")).kind, "finished_report")
+
+    def test_input_wins_over_a_pending_permission(self):
+        self.assertEqual(classify(view("waiting", requests=["req-1"], approvals=1)).kind, "input")
 
     def test_finished_with_the_pr_named_in_the_final_reply(self):
         event = classify(view(prs=[PR], assistant=f"Opened {PR}. 120 tests pass."))
@@ -85,7 +96,7 @@ class ClassifyTests(unittest.TestCase):
 
     def test_every_kind_is_covered(self):
         seen = {classify(v).kind for v in (
-            view("waiting", requests=["r"]), view("waiting"), view(prs=[PR], assistant=PR),
+            view("waiting", requests=["r"]), view("waiting", approvals=1), view(prs=[PR], assistant=PR),
             view(assistant="BOSS_REPORT: ok"), view(assistant="Hm?"), view("failed"), view("running"))}
         self.assertEqual(seen, set(KINDS))
 
