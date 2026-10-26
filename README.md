@@ -252,7 +252,12 @@ boss answer <id> <request-id/0> 'Answer text'
 boss stop <id>
 boss decide add 'Captain decision needed' --task <id>
 boss decide list
-boss decide close <decision-id> 'Captain resolution'
+boss decide ask                 # number open decisions 1..N for the captain
+boss decide close 1 'yes'       # by number from the latest round, or by id
+boss decide unclear 2 'Which name did he mean?'
+boss away 'going to bed'        # also /away or /afk in the Hermes chat
+boss log 'What he said or decided in a check-in'
+boss back                       # also /back: catch-up timeline and decisions
 boss land <id> --approved 'The captain exact words'
 boss settle <id>
 boss poll
@@ -268,6 +273,33 @@ record a project steer. `--replaces` supersedes an earlier steer without
 rewriting its history. `spawn` requires a nonblank, single-line `--fits` when
 a project has a goal or active steers. It saves the explanation with the task.
 Boss does not ask an LLM to judge it; the captain resolves unclear choices.
+
+### Away, back and numbered decisions
+
+Only `/away` (alias `/afk`, optional note) and `/back` change whether the
+captain is around. The Hermes plugin registers them and runs the same
+`boss away` and `boss back` commands. Any other message in between is a
+check-in and never changes that state. While he is away, the context hook adds
+one line telling the supervisor not to ask him anything, to act on its own
+judgement and to queue decisions for `/back`. `boss decide ask` is refused
+while he is away unless he asked for the list (`--requested`). Away never
+weakens what he says: a decision close, steer, land or settle from a check-in
+has full authority. Record the rest of what he says with `boss log`.
+
+`/back` prints, without any model call, how long he was away and every ledger
+event since then in time order: workers started, finished, failed, stopped,
+landed and settled, PRs opened, steers, decisions opened and closed, and
+check-in log entries. Long lists are grouped by hour. It then shows the open
+decisions as a new numbered round. That text carries no task IDs or SHAs.
+`/away` twice keeps the first time; `/back` when he is not away says so and
+still lists decisions.
+
+`boss decide ask` records each round, so the captain can reply "1 yes 3 no".
+`decide close` and `decide unclear` take a number from the latest round or a
+decision ID. `--round <n>` names the round he answered; older rounds are
+refused. Unanswered decisions stay open and come back marked "asked again".
+`decide unclear` adds what was unclear to the next round. Answered decisions
+never come back. Bare `boss` shows presence and the latest round's numbers.
 
 ### Retracting a steer
 
