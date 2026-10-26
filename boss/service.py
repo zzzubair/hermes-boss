@@ -6,13 +6,18 @@ import re
 import uuid
 
 from .common import BossError, refuse, require_text
+from .events import status_line
 from .integrations import GitHub, PR_PATTERN, github_repository, inspect_worktree, remove_worktree, resolve_repository
 from .mcp import MCP
 from .preferences import compose_brief, notes_path, project_name, source_note, steering_sections
+from .state import now
 
 
 TERMINAL = {"completed", "failed", "interrupted", "cancelled", "rolled_back", "idle"}
 SLUG_CHARS = 40
+STATUS_FORMS = ("BOSS: done: <PR url or one-line report> / BOSS: needs-decision: <question> / "
+                "BOSS: blocked: <why> / BOSS: paused: <what you wait on>")
+MARK = "[boss] "  # Firstmate's from-firstmate marker: the supervisor speaking, never the captain
 
 
 def slug(title):
@@ -35,17 +40,26 @@ def footer(kind, delivery, *, origin=False):
         "(AskUserQuestion in Claude Code, request_user_input in Codex). Never ask in plain text. "
         "After asking, stop: take no further action until the answer arrives, and end the turn if the tool returns without one. "
         "Never poll, sleep or wait in a loop spending turns.",
+        "End EVERY turn with exactly one status line as the last line of your final message, with nothing after it: "
+        f"{STATUS_FORMS}. boss reads only that line to learn how the turn ended; a turn without one is reported as unclear.",
+        "Ask a question through the question tool first; the needs-decision line repeats it. "
+        "After needs-decision or blocked, end the turn at once.",
+        "A message that starts with [boss] is from the boss supervisor, not the captain. "
+        "Act on it, then end that turn with a status line as usual.",
     ]
     if kind == "scout":
         rules.append("Scout: investigate and write a report. Do not open a PR. Leave the worktree clean. "
-                     "Your final assistant message must start with BOSS_REPORT: followed by the complete report; boss saves it in its ledger.")
+                     "Your final message is the complete report, which boss saves in its ledger, "
+                     "ending with BOSS: done: <one-line summary>.")
     elif delivery == "local-only":
         rules.append("Ship, local-only: implement, verify and commit on this branch. Do not push or open a PR. "
-                     "Stop with a clean branch and a final BOSS_REPORT: message describing changes and verification. "
+                     "Stop with a clean branch; your final message describes the changes and verification "
+                     "and ends with BOSS: done: <one-line report>. "
                      "The captain must arrange landing separately; boss never merges local branches.")
     else:
         rules.append("Ship, direct-PR: implement, verify, commit and push this branch. Open exactly ONE PR against the origin default branch, "
-                     "link it to this thread with link_pull_request, then stop. Include the PR URL and verification in your final reply.")
+                     "link it to this thread with link_pull_request, then stop. Put the verification in your final message "
+                     "and end it with BOSS: done: <PR url>.")
     if origin:
         rules.insert(1, source_note(Path(__file__), True).rstrip())
     return "\n\n" + "\n".join(rules) + "\n"
@@ -333,8 +347,15 @@ class Boss:
                 if next_offset == offset:
                     raise BossError("protocol", "assistant text pagination did not advance")
                 offset = next_offset
-        # A report is explicit, complete, terminal, and belongs to the latest run.
-        report = text.partition("BOSS_REPORT:")[2].strip() if text.lstrip().startswith("BOSS_REPORT:") else ""
+        # A report is explicit, complete, terminal, and belongs to the latest run: the final
+        # message above its done line (or the one-line report alone). BOSS_REPORT: is the
+        # older form, still read for workers briefed before status lines.
+        report = ""
+        if text.lstrip().startswith("BOSS_REPORT:"):
+            report = text.partition("BOSS_REPORT:")[2].strip()
+        elif (status_line(text) or ("",))[0] == "done":
+            body = text.rstrip().rpartition("\n")[0].strip()
+            report = body or status_line(text)[1]
         if status == "completed" and last and last.get("runId") == thread.get("latestRunId") and report:
             self.store.text(meta["id"], "report.md", report + "\n")
             meta["report_run_id"] = thread["latestRunId"]
@@ -358,7 +379,14 @@ class Boss:
             meta.update(observed=observed, status=status, pr_urls=urls)
             self.store.save(meta, "observed")
         return {"thread": thread, "status": status, "requests": requests, "approvals": approvals, "prs": prs,
-                "assistant": text, "alerts": alerts}
+                "assistant": text, "assistant_run": last.get("runId") if last else None, "alerts": alerts}
+
+    def questions(self, meta, request_ids):
+        """The question bodies (question text and options) of pending T3 input requests."""
+        client = self.client(meta["host"])
+        return [question for request_id in request_ids
+                for question in client.call("t3_pending_request_read", threadId=meta["thread_id"],
+                                            requestId=request_id)["questions"]]
 
     def reviewed(self, meta, view):
         """Reading one task acknowledges its completed run, never merge authority."""
@@ -367,6 +395,7 @@ class Boss:
         if view["status"] == "completed":
             meta["reviewed_run_id"] = view["thread"].get("latestRunId")
         if before != (meta.get("reviewed_run_id"), meta.get("pending_inputs")):
+            meta["handled_at"] = now()  # inbox items about what was just reviewed are stale
             self.store.save(meta, "reviewed")
 
     def active_task(self, task_id):
@@ -381,10 +410,12 @@ class Boss:
         self.recover(meta)
         client = self.client(meta["host"])
         request_id = uuid.uuid4().hex
-        self.store.save(meta, "send_intent", client_request_id=request_id, text=text)
-        result = client.call("t3_thread_send", threadId=meta["thread_id"], message=text,
+        message = text if text.startswith(MARK.strip()) else MARK + text
+        self.store.save(meta, "send_intent", client_request_id=request_id, text=message)
+        result = client.call("t3_thread_send", threadId=meta["thread_id"], message=message,
                              clientRequestId=request_id)
         meta.pop("report_run_id", None)
+        meta["handled_at"] = now()
         if meta.get("status") == "completed":
             meta["reviewed_run_id"] = (meta.get("observed") or {}).get("run_id")
         self.store.save(meta, "sent", client_request_id=request_id, result=result)
@@ -418,6 +449,9 @@ class Boss:
         self.store.save(meta, "answer_intent", request_id=request_id, answers=answers)
         result = client.call("t3_pending_request_respond", threadId=meta["thread_id"], requestId=request_id, answers=answers)
         meta["pending_inputs"] = [r for r in meta.get("pending_inputs", []) if r != request_id]
+        if meta.get("observed"):
+            meta["observed"]["requests"] = [r for r in meta["observed"].get("requests", []) if r != request_id]
+        meta["handled_at"] = now()
         self.store.save(meta, "answered", request_id=request_id, result=result)
 
     def stop(self, task_id):

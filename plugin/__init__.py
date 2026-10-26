@@ -1,4 +1,10 @@
-"""Bounded local context hook, /boss ownership, /away and /back, plus the owner-routed wake loop."""
+"""Bounded local context hook, /boss ownership, /away and /back, the owner's inbox, plus the wake listener.
+
+The owner's inbox (boss/inbox.py) reaches its model three ways: appended to a tool
+result mid-turn (transform_tool_result), as context at turn start (pre_llm_call),
+and, only while no owner turn runs, injected by the listener. Turn start and end
+hooks keep the on-disk busy mark the listener checks.
+"""
 from datetime import datetime
 import json
 import os
@@ -79,10 +85,86 @@ def away_line(away):
             " anything he says or decides in a check-in counts in full, record it with boss log.")
 
 
+def boss_home_path():
+    return Path(os.environ.get("BOSS_HOME", "~/.boss")).expanduser()
+
+
+def owner_turn(owner, kwargs):
+    """The owner's session key when this pre_llm_call is the owner's own top-level turn, else None.
+
+    A subagent inherits its parent's session key, so a turn with a parent session never counts.
+    """
+    if not isinstance(owner, dict) or not isinstance(owner.get("session_key"), str) or kwargs.get("parent_session_id"):
+        return None
+    sessions = {current_session_key(), str(kwargs.get("session_id") or "")} - {""}
+    return owner["session_key"] if owner["session_key"] in sessions else None
+
+
+def turn_start_inbox(kwargs):
+    """Mark the owner's turn busy and hand it the inbox as context; None for any other session."""
+    home = boss_home_path()
+    owner = read_small(home / "owner.json")
+    key = owner_turn(owner, kwargs)
+    if key is None:
+        return None
+    boss_package()
+    from boss import inbox
+    from boss.state import Store
+    inbox.turn_started(home, key, str(kwargs.get("session_id") or ""))
+    return inbox.Inbox(home).take(Store(home, None).load, "turn", owner.get("label", ""))
+
+
+def on_tool_result(**kwargs):
+    """transform_tool_result: a worker that reported mid-turn is seen in this same turn.
+
+    Only a tool the owner's running turn called (its session id, recorded at turn
+    start) gets the inbox appended; every other session's results are untouched.
+    """
+    try:
+        result = kwargs.get("result")
+        session_id = str(kwargs.get("session_id") or "")
+        if not isinstance(result, str) or not session_id:
+            return None
+        boss_package()
+        from boss import inbox
+        home = boss_home_path()
+        box = inbox.Inbox(home)
+        turn = inbox.live_turn(home)
+        if turn is None or turn.get("session_id") != session_id:
+            return None
+        inbox.turn_touched(home, turn)
+        if not box.maybe_open():
+            return None
+        owner = read_small(home / "owner.json")
+        if not isinstance(owner, dict) or owner.get("session_key") != turn.get("session_key"):
+            return None
+        from boss.state import Store
+        block = box.take(Store(home, None).load, "tool", owner.get("label", ""))
+        return f"{result}\n\n{block}" if block else None
+    except Exception:
+        # Never break the owner's tool call over the inbox.
+        return None
+
+
+def turn_end_hook(**kwargs):
+    """on_session_end / agent_loop_stopped: the owner is idle, so the listener may inject what is left."""
+    try:
+        boss_package()
+        from boss import inbox
+        from boss.wake import poke
+        home = boss_home_path()
+        if inbox.turn_ended(home, session_id=str(kwargs.get("session_id") or "") or None,
+                            session_key=str(kwargs.get("session_key") or "") or None):
+            poke(home)
+    except Exception:
+        pass
+    return None
+
+
 def on_pre_llm_call(**kwargs):
     """Hermes passes turn metadata as kwargs and accepts {context: text} or None."""
     try:
-        home = Path(os.environ.get("BOSS_HOME", "~/.boss")).expanduser()
+        home = boss_home_path()
         data = read_small(home / "attention.json")
         if not isinstance(data, dict) or data.get("version") != 1:
             return None
@@ -180,7 +262,7 @@ def boss_command(ctx):
         boss_package()
         from boss.owner import label_for
         label = label_for(surface, source)
-        home = Path(os.environ.get("BOSS_HOME", "~/.boss")).expanduser()
+        home = boss_home_path()
         try:
             before = read_small(home / "owner.json")
         except (OSError, ValueError):
@@ -217,11 +299,13 @@ def turn_hook(ctx):
                 from boss.wake import start_wake
                 if start_wake(ctx) is not None:
                     started.append(True)
-            context = (result or {}).get("context", "")
-            if context.startswith("boss:") and " need you " in context and "owned by" not in context:
-                # The owner is back and something is waiting: ask the listener to deliver held wakes.
-                from boss.wake import poke
-                poke(Path(os.environ.get("BOSS_HOME", "~/.boss")).expanduser())
+        except Exception:
+            pass
+        try:
+            block = turn_start_inbox(kwargs)
+            if block:
+                context = (result or {}).get("context")
+                result = {"context": f"{context}\n\n{block}" if context else block}
         except Exception:
             pass
         return result
@@ -230,6 +314,9 @@ def turn_hook(ctx):
 
 def register(ctx):
     ctx.register_hook("pre_llm_call", turn_hook(ctx))
+    ctx.register_hook("transform_tool_result", on_tool_result)
+    ctx.register_hook("on_session_end", turn_end_hook)
+    ctx.register_hook("agent_loop_stopped", turn_end_hook)
     command = getattr(ctx, "register_command", None)
     if command is not None:
         command("boss", boss_command(ctx), description="Open boss in this session: it gets wakes and a catch-up",

@@ -16,6 +16,8 @@ from unittest.mock import patch
 
 from boss.common import Redactor
 from boss.config import Config
+from boss.inbox import NOTE, Inbox, live_turn
+from boss.service import Boss
 from boss.wake import LOCK, TICKET, Listener, _listeners, endpoints, start_wake
 from boss.websocket import GUID
 import plugin
@@ -131,6 +133,10 @@ class FakePush:
         self.server.server_close()
 
 
+def plugin_busy(home):
+    return live_turn(home) is not None
+
+
 def shell(thread_id, status="running", run="run-1", request=None, **extra):
     return {"id": thread_id, "title": "worker", "status": status, "latestRunId": run,
             "pendingRuntimeRequest": request, "settledAt": None, **extra}
@@ -231,7 +237,10 @@ class WakeTest(HermeticTestCase):
         return output
 
     def held(self):
-        return self.store.held_wakes()
+        return Inbox(self.home).open_items()
+
+    def inbox_log(self, event):
+        return [r for r in Inbox(self.home).records() if r["event"] == event]
 
     def test_pushed_event_reaches_owner_session_once(self):
         self.own("agent:captain", "Discord DM")
@@ -243,25 +252,26 @@ class WakeTest(HermeticTestCase):
         self.send(snapshot(shell(self.task["thread_id"])), updated(shell("someone-elses-thread", "completed")))
         self.send(*[updated(shell(self.task["thread_id"]), n) for n in range(2, 6)])
         self.assertEqual((self.reads(), ctx.messages), (reads, []))
-        self.completed(self.task, "BOSS_REPORT: three callers found")
+        self.completed(self.task, "Three callers, all in cli.py.\nBOSS: done: three callers found")
         self.send(updated(self.state("completed"), 6))
         self.assertEqual(self.reads(), reads + 1)
         self.assertEqual(len(ctx.messages), 1)
         content, target = ctx.messages[0]
         self.assertEqual(target, {"role": "user", "session_key": "agent:captain"})
-        self.assertIn(f"[boss wake] {self.task['id']} (Fix thing): finished with a report: BOSS_REPORT", content)
-        self.assertIn("boss status", content)
+        self.assertEqual(content, f"[boss inbox]\nFix thing: finished: three callers found\n{NOTE}")
+        self.assertNotIn(self.task["id"], content)
         # T3 pushes the same completion several times and re-snapshots; still one wake, no re-read.
         self.send(updated(self.state("completed"), 7), updated(self.state("completed"), 8))
         self.send(snapshot(self.state("completed")))
         self.assertEqual((len(ctx.messages), self.reads()), (1, reads + 1))
-        self.fake.pending = {"req-1": [{"id": "q1", "question": "Which API?", "options": []}]}
+        self.fake.pending = {"req-1": [{"id": "q1", "question": "Which API?", "options": [{"label": "REST"}, {"label": "GraphQL"}]}]}
         self.send(updated(self.state("waiting", request={"id": "req-1", "kind": "user-input", "blocking": True}), 9))
         self.assertEqual(len(ctx.messages), 2)
-        self.assertIn("needs input: 1 pending input requests", ctx.messages[1][0])
+        self.assertEqual(ctx.messages[1][0],
+                         f'[boss inbox]\nFix thing: needs a decision: "Which API?" (options: REST / GraphQL)\n{NOTE}')
         self.assertEqual(self.reads(), reads + 2)
         self.assertEqual(self.held(), [])
-        self.assertEqual((self.home / "wakes.jsonl").read_text().count('"held"'), 2)
+        self.assertEqual([r["via"] for r in self.inbox_log("acked")], ["inject", "inject"])
 
     def test_failed_read_is_logged_and_the_next_push_reads_again(self):
         self.own("agent:captain", "Discord DM")
@@ -276,7 +286,7 @@ class WakeTest(HermeticTestCase):
         self.fake.failure = None
         self.send(updated(self.state("failed"), 2))
         self.assertEqual(len(ctx.messages), 1)
-        self.assertIn("error: thread failed", ctx.messages[0][0])
+        self.assertIn("Fix thing: stopped, the thread failed", ctx.messages[0][0])
 
     def test_no_owner_holds_on_disk_then_claim_delivers(self):
         ctx = Context(self.home / "profile")
@@ -284,8 +294,6 @@ class WakeTest(HermeticTestCase):
         self.send(updated(self.state("failed")))
         self.assertEqual(len(self.held()), 1)
         self.assertEqual(ctx.messages, [])
-        attention = json.loads((self.home / "attention.json").read_text())
-        self.assertEqual(attention["items"], [{"id": self.task["id"], "kind": "finished"}])
         self.own("agent:captain", "Hermes app")  # claiming pokes the listener
         self.assertEqual(len(ctx.messages), 1)
         self.assertEqual(ctx.messages[0][1]["session_key"], "agent:captain")
@@ -302,35 +310,133 @@ class WakeTest(HermeticTestCase):
         self.assertEqual(len(self.held()), 1)  # refused: not consumed
         self.send(updated(self.state("completed"), 2))  # same event again: no new record, no retry
         self.assertEqual((len(ctx.messages), len(self.held())), (1, 1))
-        # A second, new event retries delivery of everything held; still refused, still held.
+        # A second, new event retries delivery; the first is now stale (the worker moved on), still refused.
         self.send(updated(self.state("interrupted", run="run-2"), 3))
-        self.assertEqual((len(ctx.messages), len(self.held())), (2, 2))
-        # Another session takes over: one injection with both held events, then nothing is held.
+        self.assertEqual((len(ctx.messages), len(self.held())), (2, 1))
+        self.assertEqual([r["reason"] for r in self.inbox_log("dropped")], ["worker moved on to a newer turn"])
+        # Another session takes over: one injection with the live event, then nothing is held.
         ctx.accepted = True
         self.own("agent:phone", "Telegram DM", "--take")
         self.assertEqual(len(ctx.messages), 3)
         content, target = ctx.messages[2]
         self.assertEqual(target["session_key"], "agent:phone")
-        self.assertIn("turn ended unclear", content)
-        self.assertIn("error: thread interrupted", content)
+        self.assertEqual(content, f"[boss inbox]\nFix thing: stopped, the thread interrupted\n{NOTE}")
         self.assertEqual(self.held(), [])
         last = json.loads((self.home / "wake-last.json").read_text())
         self.assertEqual((last["owner"], last["result"]), ("Telegram DM", "delivered"))
 
-    def test_owner_turn_delivers_held_wakes(self):
-        # Owner offline when the event arrives; the owner's next turn pokes the listener.
+    def test_owner_turn_start_delivers_held_items_as_context(self):
+        # Owner offline when the event arrives; the owner's next turn gets it as context, once.
         self.own("agent:captain", "Hermes CLI")
         ctx = Context(self.home / "profile", accepted=False)
         listener = self.listen(ctx)
         self.send(updated(self.state("completed")))
         self.assertEqual(len(ctx.messages), 1)
-        ctx.accepted = True
         hook = plugin.turn_hook(Context(self.home / "profile"))
         with patch("boss.wake.start_wake", return_value=listener):
             result = hook(session_id="agent:captain", user_message="hi")
-        self.assertIn("need you", result["context"])
-        self.assertTrue(listener.reached("pokes", 1, WAIT))
-        self.assertEqual(len(ctx.messages), 2)
+            self.assertEqual(result["context"],
+                             f"[boss inbox]\nFix thing: ended its turn without a status line or any message\n{NOTE}")
+            self.assertIsNone(hook(session_id="agent:captain", user_message="again"))
+            # A subagent inherits the owner's session key but is never the owner's turn.
+            self.send(updated(self.state("failed", run="run-2"), 2))
+            with patch.dict(os.environ, {"HERMES_SESSION_KEY": "agent:captain"}):
+                self.assertIsNone(hook(session_id="child", parent_session_id="agent:captain", user_message="sub"))
+        self.assertEqual(len(ctx.messages), 1)  # the owner's turn is running: the listener never injects into it
+        self.assertEqual([r["via"] for r in self.inbox_log("acked")], ["turn"])
+        self.assertEqual(len(self.held()), 1)
+
+    def owner_turn(self, listener, session="sess-1"):
+        """Start the owner's top-level turn through the real pre_llm_call hook; returns its context result."""
+        hook = plugin.turn_hook(Context(self.home / "profile"))
+        with patch("boss.wake.start_wake", return_value=listener), \
+                patch.dict(os.environ, {"HERMES_SESSION_KEY": "agent:captain"}):
+            return hook(session_id=session, task_id="t", turn_id="turn-1", user_message="hi", parent_session_id="")
+
+    def tool(self, session="sess-1", result='{"output": "ok"}'):
+        """One tool result through transform_tool_result, with the keywords Hermes passes."""
+        with patch.dict(os.environ, {"HERMES_SESSION_KEY": "agent:captain"}):
+            return plugin.on_tool_result(tool_name="terminal", args={}, result=result, session_id=session, task_id="t",
+                                         tool_call_id="call-1", turn_id="turn-1", api_request_id="", duration_ms=3,
+                                         status="ok", error_type=None, error_message=None)
+
+    def turn_end(self, **kwargs):
+        plugin.turn_end_hook(**kwargs)
+        self.poked += 1
+        self.assertTrue(self.listener.reached("pokes", self.poked, WAIT))
+
+    def test_worker_finishing_mid_turn_is_seen_in_the_same_turn(self):
+        self.own("agent:captain", "Hermes app")
+        ctx = Context(self.home / "profile")
+        listener = self.listen(ctx)
+        self.assertIsNone(self.owner_turn(listener))
+        self.assertIsNone(self.tool())  # nothing waiting: the result is untouched
+        self.gh.pr["title"] = "Fix the thing"
+        self.fake.prs = [harness.URL]
+        self.completed(self.task, f"All 40 tests pass.\nBOSS: done: {harness.URL}")
+        self.send(updated(self.state("completed")))
+        self.assertEqual(ctx.messages, [])  # never injected while the owner's turn runs
+        # Another session's tool, or a subagent's (same session key, own session id), is untouched.
+        self.assertIsNone(self.tool(session="sess-other"))
+        self.assertEqual(self.tool(), '{"output": "ok"}\n\n[boss inbox]\n'
+                                      f'Fix thing: finished, PR "Fix the thing" {harness.URL}\n{NOTE}')
+        self.assertIsNone(self.tool())  # acked once
+        self.turn_end(session_id="sess-1", completed=True)
+        self.assertEqual(ctx.messages, [])  # nothing left for an idle injection
+        self.assertEqual([r["via"] for r in self.inbox_log("acked")], ["tool"])
+
+    def test_worker_finishing_after_the_last_tool_call_is_injected_once_the_turn_ends(self):
+        self.own("agent:captain", "Hermes app")
+        ctx = Context(self.home / "profile")
+        listener = self.listen(ctx)
+        self.owner_turn(listener)
+        self.completed(self.task, "BOSS: blocked: no GitHub token on this host")
+        self.send(updated(self.state("completed")))
+        self.assertEqual(ctx.messages, [])
+        # Another session's turn ending changes nothing; the owner's own end makes it idle.
+        plugin.turn_end_hook(session_id="sess-other")
+        self.assertTrue(plugin_busy(self.home))
+        self.turn_end(session_id="sess-1", completed=True)
+        self.assertEqual(ctx.messages, [(f"[boss inbox]\nFix thing: blocked: no GitHub token on this host\n{NOTE}",
+                                         {"role": "user", "session_key": "agent:captain"})])
+        self.assertEqual([r["via"] for r in self.inbox_log("acked")], ["inject"])
+        # A gateway /stop ends the turn the same way (agent_loop_stopped names the session key).
+        self.owner_turn(listener)
+        self.assertTrue(plugin_busy(self.home))
+        self.turn_end(session_key="agent:captain", platform="discord", reason="stop")
+        self.assertFalse(plugin_busy(self.home))
+
+    def test_replied_answered_and_merged_items_are_dropped_not_delivered(self):
+        self.own("agent:captain", "Hermes app")
+        ctx = Context(self.home / "profile", accepted=False)
+        self.listen(ctx)
+        # Already replied to: boss send after the event arrived handles it. Sends are marked [boss].
+        self.completed(self.task, "Should I also rename the flag?")
+        self.send(updated(self.state("completed")))
+        self.assertEqual(self.cli("send", self.task["id"], "yes, rename it")[0], 0)
+        sent = [a["message"] for n, a in self.fake.calls if n == "t3_thread_send"]
+        self.assertEqual(sent, ["[boss] yes, rename it"])
+        # Already answered: the question is no longer pending.
+        self.fake.pending = {"req-1": [{"id": "q1", "question": "Which API?", "options": []}]}
+        self.send(updated(self.state("waiting", run="run-2", request={"id": "req-1", "kind": "user-input"}), 2))
+        self.assertEqual(self.cli("answer", self.task["id"], "req-1", "REST")[0], 0)
+        ctx.accepted = True
+        self.own("agent:captain", "Hermes app")  # re-opening pokes the listener
+        self.assertEqual(len(ctx.messages), 2)  # only the two refused attempts; nothing stale went out
+        self.assertEqual(sorted(r["reason"] for r in self.inbox_log("dropped")),
+                         ["already handled: boss replied to or reviewed the worker after this", "question already answered"])
+        # Merged: a PR the worker reported is merged before the owner sees it.
+        self.fake.prs = [harness.URL]
+        self.completed(self.task, f"BOSS: done: {harness.URL}")
+        self.thread["items"][-1]["runId"] = "run-3"  # this turn's own message
+        ctx.accepted = False
+        self.send(updated(self.state("completed", run="run-3"), 3))
+        self.gh.pr["state"] = "MERGED"
+        Boss(self.config(), self.store, Redactor(), github=self.gh).snapshot(self.store.load(self.task["id"]))
+        ctx.accepted = True
+        self.own("agent:captain", "Hermes app")
+        self.assertEqual(len(ctx.messages), 3)
+        self.assertEqual(self.inbox_log("dropped")[-1]["reason"], "PR merged")
         self.assertEqual(self.held(), [])
 
     def test_cli_process_never_injects(self):
@@ -351,7 +457,7 @@ class WakeTest(HermeticTestCase):
         reads = self.reads()
         self.send(updated(self.state("completed")), updated(self.state("failed", run="run-2")), snapshot())
         self.assertEqual((self.reads(), ctx.messages), (reads, []))
-        self.assertFalse((self.home / "wakes.jsonl").exists())
+        self.assertFalse((self.home / "inbox.jsonl").exists())
 
     def test_one_listener_machine_wide_and_takeover(self):
         first = self.listen(Context(self.home / "profile"))
@@ -416,7 +522,8 @@ class WakeTest(HermeticTestCase):
                 patch("boss.wake.Config", side_effect=lambda home, redact, hermes: self.config()):
             plugin.register(ctx)
         self.addCleanup(lambda: [cleanup() for cleanup in ctx.cleanups])
-        self.assertEqual([name for name, _ in ctx.hooks], ["pre_llm_call"])
+        self.assertEqual([name for name, _ in ctx.hooks],
+                         ["pre_llm_call", "transform_tool_result", "on_session_end", "agent_loop_stopped"])
         self.assertEqual(len(ctx.cleanups), 1)
         listener = next(iter(_listeners.values()))
         self.assertTrue(listener.reached("streams", 1, WAIT))

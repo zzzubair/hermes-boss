@@ -32,14 +32,14 @@ def smoke():
     instance, model = args.model.split(":", 1)
     launched = client.call("t3_thread_launch", scratch=True, title="boss v1 live smoke",
                            modelSelection={"instanceId": instance, "model": model, "options": {"reasoningEffort": "low"}},
-                           message="Reply exactly BOSS_REPORT: smoke-ok. Do not use tools, edit files, create PRs or deploy.")
+                           message="Do not use tools, edit files, create PRs or deploy. Reply with exactly this one line:\nBOSS: done: smoke-ok")
     store = Store(home, redactor)
     task_id = store.new_id()
     meta = {"id": task_id, "project": "scratch", "project_id": launched["projectId"],
             "host": "smoke", "repository": "", "title": "boss v1 live smoke", "kind": "scout",
             "delivery": "local-only", "branch": "", "base": "", "thread_id": launched["threadId"],
             "settled": False, "scratch": True, "status": launched.get("status")}
-    store.text(task_id, "brief.md", "Reply exactly BOSS_REPORT: smoke-ok.\n")
+    store.text(task_id, "brief.md", "Reply with exactly this one line:\nBOSS: done: smoke-ok\n")
     store.save(meta, "launched")
     print(f"spawn: scratch thread={launched['threadId']}", flush=True)
 

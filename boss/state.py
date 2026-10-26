@@ -250,33 +250,6 @@ class Store:
     def captain(self, event, **fields):
         return append_line(self.captain_path(), self.redact.data({"event": event, "at": now(), **fields}))
 
-    def wakes_path(self):
-        return self.home / "wakes.jsonl"
-
-    def wakes(self):
-        """Append-only wake log: 'held' when a pushed event arrives, 'delivered' once the owner got it."""
-        path = self.wakes_path()
-        if not path.exists():
-            return []
-        with path.open(encoding="utf-8") as stream:
-            # A torn final line (crash mid-append) is ignored; every complete line is fsynced.
-            return [json.loads(line) for line in stream if line.endswith("\n")]
-
-    def held_wakes(self):
-        records = self.wakes()
-        delivered = {key for r in records if r["event"] == "delivered" for key in r["keys"]}
-        return [r for r in records if r["event"] == "held" and r["key"] not in delivered]
-
-    def hold_wake(self, key, task, kind, text):
-        """Record one pushed event once; a repeated key (same event pushed again) is ignored."""
-        if any(r["event"] == "held" and r["key"] == key for r in self.wakes()):
-            return None
-        return append_line(self.wakes_path(), self.redact.data(
-            {"event": "held", "key": key, "task": task, "kind": kind, "text": text, "at": now()}))
-
-    def wakes_delivered(self, keys, label):
-        return append_line(self.wakes_path(), {"event": "delivered", "keys": list(keys), "owner": label, "at": now()})
-
     def refresh_attention(self):
         """Materialize a tiny local hook view once per CLI command, under its lock.
 
@@ -303,16 +276,6 @@ class Store:
                     items.append({"id": meta["id"], "kind": "input"})
             except (OSError, ValueError, KeyError, TypeError, AttributeError, BossError):
                 continue
-        try:
-            # Pushed events the owner has not received yet (owner offline, or nobody owns boss).
-            seen = {item["id"] for item in items}
-            for wake in self.held_wakes():
-                task = identifier(wake["task"])
-                if task not in seen and not self.load(task).get("settled"):
-                    seen.add(task)
-                    items.append({"id": task, "kind": "input" if wake["kind"] in ("input", "approval") else "finished"})
-        except (OSError, ValueError, KeyError, TypeError, BossError):
-            pass
         attention = {"version": 1, "count": len(items), "items": items[:6]}
         try:
             away = presence(self.captain_events())

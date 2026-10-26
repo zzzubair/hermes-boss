@@ -253,20 +253,38 @@ with a warning. Supplying both keys in the same block is an error.
 
 `delivery` is `direct-PR` or `local-only`. Direct-PR ship workers commit, push
 and open exactly one PR against the origin default branch. Local-only workers
-commit locally and return a `BOSS_REPORT:`. Scouts investigate and return a
-report with a clean worktree. `test_host` and `no_mistakes` are supervisor
+commit locally and report in their final message. Scouts investigate and
+return a report with a clean worktree; the final message above its
+`BOSS: done:` line is saved as `report.md` (`BOSS_REPORT:` from workers
+briefed earlier is still read). `test_host` and `no_mistakes` are supervisor
 preferences; include any relevant instructions in the task's brief.
 
-Every worker asks questions only through its harness's question tool, which
-T3 turns into an input request (`AskUserQuestion` in Claude Code,
-`request_user_input` in Codex), then stops until answered. `boss.events.classify`
-reads a task snapshot and says what it needs: `input`, `approval`,
-`finished_pr` (the final reply names a linked PR), `finished_report`,
-`error`, `working`, or `ended_unclear`. A turn that ends with none of these
-is `ended_unclear` and quotes the first 300 characters of the last reply,
-because it is probably a question asked in plain text. Each event has a
-`dedupe_key` (thread, kind, and turn or request IDs), so one event wakes the
-captain once. `approval` needs a real pending permission request: T3's
+Workers report the way Firstmate's crew does: every turn ends with exactly
+one status line, the last line of the final message:
+
+```text
+BOSS: done: <PR url | one-line report>
+BOSS: needs-decision: <question>
+BOSS: blocked: <why>
+BOSS: paused: <what it waits on>
+```
+
+After `needs-decision` or `blocked` the worker ends its turn at once and never
+polls. Questions still go through the harness's question tool, which T3 turns
+into an input request (`AskUserQuestion` in Claude Code, `request_user_input`
+in Codex); the status line repeats the question. Messages from the supervisor
+(`boss send`) arrive marked `[boss] ...`, so the worker can tell boss from the
+captain typing into the thread.
+
+`boss.events.classify` reads a task snapshot and says what it needs. A pending
+question is `needs-decision` (with its request IDs to answer) and a pending
+permission prompt is `approval`; a failed or interrupted thread is `error`.
+Otherwise a finished turn's status line decides: `done`, `needs-decision`,
+`blocked` or `paused`. Only a line from the latest run counts. A turn that
+ends with no status line is `ended_unclear` and quotes the first 300
+characters of the last reply, because it is probably a question asked in
+plain text. Each event has a `dedupe_key` (thread, kind, and turn or request
+IDs), so one event reaches the owner once. `approval` needs a real pending permission request: T3's
 `pendingRequestCount` minus the question requests it lists. A bare `waiting`
 status with nothing pending is `working`; T3 shows it for a moment as a turn
 finishes.
@@ -443,20 +461,48 @@ messaging gateway, the Ink TUI backend, or the desktop/web app). It blocks on
 T3's push stream and costs no CPU or tokens while nothing happens. Pushes
 that say a worker is still running are dropped unread. When a task's thread
 changes status, run or pending request, that push triggers one status read and
-`boss.events.classify` decides what it means. Anything but `working`
-(input, approval, finished with a PR or report, an unclear end, an error) is
-held once in `$BOSS_HOME/wakes.jsonl` under its `dedupe_key`. It is then injected
-as one user line, `[boss wake] <task> (<title>): finished with a PR: <url>`,
-into the owner session with `ctx.inject_message(session_key=owner)`. Hermes
-routes the key to the TUI/desktop host first, then the messaging gateway. PR
-check results arrive the same way: T3's `watch_pull_request` wakes the worker,
-and its new turn is pushed like any other.
+`boss.events.classify` decides what it means. Anything but `working` lands
+once in the owner's inbox, `$BOSS_HOME/inbox.jsonl`, under its `dedupe_key`.
+The inbox is append-only and is the truth: an item leaves it only when it
+reached the owner's model (`acked`, with the path it took) or went stale
+(`dropped`, with why). Nothing is lost because a turn was busy.
 
-One event wakes the owner once, including across restarts and T3 re-pushes.
-With no owner, or an owner that refuses the injection (offline, app closed),
-the wake stays held on disk and shows in the owner's `boss:` context line. It
-is delivered with the next pushed event, the moment a session claims or takes
-boss, or on the owner's next turn. Exactly one listener runs per machine: it
+The inbox reaches the owner session, and only the owner, three ways:
+
+- **Mid-turn.** When the owner's running turn calls any tool, the plugin's
+  `transform_tool_result` hook appends the open items to that tool's result.
+  A worker that finishes while the owner is mid-turn is seen in that same
+  turn. Only tools of the owner's own top-level turn are touched (matched by
+  the session id its `pre_llm_call` recorded), never another session's or a
+  subagent's.
+- **Turn start.** The owner's `pre_llm_call` adds open items as context.
+- **Idle.** Only while no owner turn runs does the listener inject them with
+  `ctx.inject_message(session_key=owner)`. When an owner turn ends
+  (`on_session_end`, or `agent_loop_stopped` for a gateway `/stop`), the
+  plugin pokes the listener to inject anything that arrived after the turn's
+  last tool call. The busy mark is `$BOSS_HOME/owner-turn.json`; a mark whose
+  process is gone, or that is two hours old, counts as idle.
+
+At delivery, items that no longer need anyone are dropped: the task is settled
+or landed, its PR merged or closed, its question answered, boss already
+replied to or reviewed the worker (`boss send`, `boss answer`,
+`boss status <id>`), or the worker moved on to a newer turn. Each task keeps
+one line, its newest event. Delivered text is plain words, task title first,
+with the payload and no IDs:
+
+```text
+[boss inbox]
+Fix the ledger lock: finished, PR "Fix the ledger lock" https://github.com/acme/widget/pull/7
+Add the panel: needs a decision: "Which API?" (options: REST / GraphQL)
+(boss: handle it; ask the captain only if you need a decision)
+```
+
+PR check results arrive the same way: T3's `watch_pull_request` wakes the
+worker, and its new turn is pushed like any other. With no owner, or an owner
+that refuses the injection (offline, app closed), items stay in the inbox until
+the next pushed event, the moment a session claims or takes boss, or the
+owner's next turn. An older `wakes.jsonl` is moved to `inbox.jsonl` on first
+use, keeping undelivered wakes. Exactly one listener runs per machine: it
 holds `$BOSS_HOME/wake.lock`, and any other Hermes process waits on that lock
 without polling, taking over if the holder exits. A dropped stream reconnects
 with backoff, and T3's fresh snapshot covers the gap. Errors go to

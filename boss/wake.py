@@ -6,9 +6,10 @@ inside an already-running Hermes host process (gateway, TUI or desktop),
 blocked on that socket. Pushes for a boss task's thread that still say it is
 running are dropped unread. When its status, run or pending request changes,
 the push triggers one Boss.snapshot read and `events.classify` says what it
-means; anything but 'working' is held once on disk (deduped by the event's
-key) and injected as one line into the session that owns boss.
-With no owner, or an owner that is offline, the wake stays held and goes out
+means; anything but 'working' lands once in the owner's inbox on disk (see
+inbox.py). The listener injects the inbox only while the owner is idle; a
+running owner turn picks it up from its next tool result or its next turn.
+With no owner, or an owner that is offline, items stay in the inbox and go out
 on the next push, when a session claims boss, or on the owner's next turn.
 Exactly one listener runs per machine: it holds $BOSS_HOME/wake.lock.
 """
@@ -24,7 +25,8 @@ import urllib.request
 
 from .common import BossError, Redactor
 from .config import Config, boss_home
-from .events import classify
+from .events import classify, describe
+from .inbox import Inbox, owner_busy
 from .service import Boss
 from .state import Store
 from .websocket import WebSocket
@@ -38,8 +40,6 @@ HEARTBEAT = "wake-heartbeat"
 LAST = "wake-last.json"
 TICKET = "/api/auth/websocket-ticket/rpc"
 BUSY = {"preparing", "queued", "starting", "running"}
-WORDS = {"input": "needs input", "approval": "needs a permission decision", "finished_pr": "finished with a PR",
-         "finished_report": "finished with a report", "ended_unclear": "turn ended unclear", "error": "error"}
 _lock = threading.Lock()
 _listeners = {}
 
@@ -127,6 +127,7 @@ class Listener:
         self.ctx, self.config, self.home = ctx, config, home
         self.wake = config.data.get("wake", {})
         self.store = Store(home, config.redact)
+        self.inbox = Inbox(home, config.redact)
         self.stop_event = threading.Event()
         self.deliver_lock = threading.Lock()
         self.descriptor = self.server = None
@@ -270,13 +271,16 @@ class Listener:
                     return
                 # One read per state change, triggered by this push. A fresh Boss keeps no
                 # long-lived MCP session to go stale between events.
-                event = classify(Boss(self.config, self.store, self.config.redact).snapshot(meta))
+                boss = Boss(self.config, self.store, self.config.redact)
+                view = boss.snapshot(meta)
+                event = classify(view)
+                record = None
+                if event.kind != "working":
+                    questions = boss.questions(meta, event.request_ids) if event.request_ids else []
+                    record = self.inbox.hold(event.dedupe_key, task, event.kind,
+                                             describe(meta.get("title"), event, view["prs"], questions),
+                                             run=event.turn_id, request_ids=event.request_ids, pr_urls=event.pr_urls)
                 self.seen[thread["id"]] = signature
-                if event.kind == "working":
-                    return
-                text = WORDS[event.kind] + (f": {event.detail}" if event.detail else "")
-                record = self.store.hold_wake(event.dedupe_key, task, event.kind, text)
-                self.store.refresh_attention()
         except BossError as exc:
             # Not marked seen: the next push for this thread reads again.
             log_error(self.home, self.config.redact, f"boss wake read {task} failed: {exc.code} {exc.message}")
@@ -295,26 +299,27 @@ class Listener:
         return legacy_target(self.wake)
 
     def deliver(self):
-        """Inject every held wake as one message to the owner; mark them delivered only if accepted."""
+        """Inject the inbox into an idle owner; ack only what the owner's host accepted.
+
+        Never while the owner's turn runs: that turn sees the inbox on its next tool
+        result or its next turn, and its end pokes this listener for the rest.
+        """
         with self.deliver_lock:
             target = self.target()
             if target is None or not self.armed() or self.stop_event.is_set():
                 return False
-            with self.store.locked(wait=True):
-                held = self.store.held_wakes()
-            if not held:
+            if owner_busy(self.home, target.get("session_key")):
                 return False
-            titles = {}
-            for wake in held:
-                if wake["task"] not in titles:
-                    try:
-                        titles[wake["task"]] = self.store.load(wake["task"]).get("title") or wake["task"]
-                    except BossError:
-                        titles[wake["task"]] = wake["task"]
-            lines = [f"{wake['task']} ({' '.join(titles[wake['task']].split())[:60]}): {wake['text']}" for wake in held]
             label = target.pop("label")
-            content = self.config.redact("[boss wake] " + "; ".join(lines))[:1500]
-            accepted = self.ctx.inject_message(content + ". Run boss status <id> to review.", role="user", **target)
+            sent = []
+
+            def send(text):
+                sent.append(self.ctx.inject_message(text, role="user", **target))
+                return sent[0]
+            self.inbox.take(self.store.load, "inject", label, send)
+            if not sent:
+                return False  # nothing open, or everything open was stale
+            accepted = sent[0]
             self.record(label, accepted)
             if not accepted:
                 if self.refused != label:
@@ -324,9 +329,6 @@ class Listener:
                     self.refused = label
                 return False
             self.refused = None
-            with self.store.locked(wait=True):
-                self.store.wakes_delivered([wake["key"] for wake in held], label)
-                self.store.refresh_attention()
             return True
 
     def record(self, label, accepted):
