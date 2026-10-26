@@ -125,6 +125,26 @@ class AdoptParkTest(HermeticTestCase):
         self.assertEqual([(i["kind"], i["line"]) for i in held], [("pr-merged", f"Old Firstmate work: PR merged {URL}")])
         self.assertNotIn(meta["id"], held[0]["line"])
 
+    def test_status_outside_the_owner_session_only_looks_at_an_adopted_pr(self):
+        # Seen in the readiness check: another session's look saved the merged PR into the ledger,
+        # so the listener's next GitHub recheck skipped it and Zubair never heard it merged.
+        harness.CLITest.as_owner(self, "agent:owner")
+        meta = self.adopt()
+        listener = self.listener()
+        self.assertFalse(listener.sweep(github=True))
+        self.gh.pr.update(state="MERGED", mergeCommit={"oid": "b" * 40})
+        task = self.home / "tasks" / meta["id"]
+        before = {p.name: p.read_bytes() for p in task.iterdir()}
+        for key in ("agent:someone-else", None):
+            self.session = key
+            self.assertIn(f"{URL}: merged", self.ok("status", meta["id"]))
+            self.assertIn(f"{URL} merged", self.row("Old Firstmate work"))
+        self.assertEqual({p.name: p.read_bytes() for p in task.iterdir()}, before)
+        listener.clock = lambda: 10 ** 10
+        self.assertTrue(listener.sweep(github=True))
+        self.assertEqual([(i["kind"], i["line"]) for i in Inbox(self.home).open_items()],
+                         [("pr-merged", f"Old Firstmate work: PR merged {URL}")])
+
     # park --------------------------------------------------------------------
 
     def finished_with_pr(self):

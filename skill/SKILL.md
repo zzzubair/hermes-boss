@@ -279,7 +279,8 @@ has no `deploy` table, ask Zubair to add one; never invent the commands. Use
   work; it prints "worktree kept" with the reason. `settle --prune-landed`
   cleans leftovers from every settled task on every host.
 - `status <id>` in the owner session acknowledges a completed run's review
-  reminder; from any other session or shell it only looks. It does not
+  reminder; from any other session or shell it only looks, and never waits on
+  a running boss command. It does not
   approve merging or discard, and unanswered input requests remain open.
 - After an uncertain transport failure, inspect status and the ledger before
   retrying a mutation. Never blindly repeat a launch.
@@ -312,6 +313,13 @@ frees it). Your session is `HERMES_SESSION_KEY`.
   Treat it as work the captain left for you: reconcile it with the project
   goal and steers, record a steer or check-in if it carries his words, then
   act or queue it. Images and long text are in the folder the line names.
+- An inbox line `lost touch with <host> since <time>; workers there may be
+  unheard` means that host's push stream has been down for 10 minutes or more
+  (`wake.host_down_minutes`), so a worker there could finish or ask a question
+  without boss hearing it. Run `boss doctor` and `boss status`, check that
+  host, and tell Zubair if it stays down. `back in touch with <host>` means the
+  stream is back and anything you missed comes through now. If the stream is
+  back before you read the first line, neither line reaches you.
 - `boss own` prints a catch-up (changes since the last look, then numbered
   decisions). Relay it plainly.
 

@@ -12,7 +12,9 @@ owner's inbox on disk (see inbox.py). Every push and every poke (a claim, the
 owner's turn starting or ending) also sweeps for running tasks quiet longer
 than wake.stall_minutes and paused tasks past their "until" time, and a poke
 re-reads open PRs on GitHub, since T3's copy of a PR's state goes stale when it
-merges outside T3. There is no timer: a silent fleet and owner sweep nothing.
+merges outside T3. The same sweep holds one line for a host whose stream has
+stayed down longer than wake.host_down_minutes, and its reconnect holds one
+"back in touch" line. There is no timer: a silent fleet and owner sweep nothing.
 The owner's `boss watch` (a tracked background command) or its running turn's
 next tool result picks the inbox up. Only with wake.inject_when_idle does the listener
 inject it, while the owner is idle; an injected message shows as if the captain
@@ -49,6 +51,7 @@ LAST = "wake-last.json"
 TICKET = "/api/auth/websocket-ticket/rpc"
 BUSY = {"preparing", "queued", "starting", "running"}
 STALL_MINUTES = 15
+HOST_DOWN_MINUTES = 10
 PR_RECHECK = 300  # seconds: a poke re-reads one task's open PRs on GitHub at most this often
 _lock = threading.Lock()
 _listeners = {}
@@ -93,11 +96,15 @@ def open_stream(mcp_url, token):
         ticket = json.load(response)["ticket"]
     query = urllib.parse.urlencode({"wsTicket": ticket, "orchestrationProtocol": 2, "clientSurface": "boss"})
     stream = WebSocket(ws_url + "?" + query)
-    # Block on the socket indefinitely; the kernel's TCP keepalive notices a dead peer.
-    stream.sock.settimeout(None)
-    stream.sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-    stream.send(json.dumps({"_tag": "Request", "id": "1", "tag": "orchestration.subscribeShell",
-                            "payload": {"omitOlderSettled": True, "omitIdleSubagents": True}, "headers": []}))
+    try:
+        # Block on the socket indefinitely; the kernel's TCP keepalive notices a dead peer.
+        stream.sock.settimeout(None)
+        stream.sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        stream.send(json.dumps({"_tag": "Request", "id": "1", "tag": "orchestration.subscribeShell",
+                                "payload": {"omitOlderSettled": True, "omitIdleSubagents": True}, "headers": []}))
+    except BaseException:
+        stream.close()
+        raise
     return stream
 
 
@@ -159,6 +166,8 @@ class Listener:
         self.sockets, self.refused, self.tasks, self.tasks_stamp, self.seen = {}, None, {}, None, {}
         # In memory only. activity: thread id -> when it last changed; paused: thread id -> its "until".
         self.activity, self.paused, self.checked, self.rechecked = {}, {}, set(), {}
+        # host -> {"since": when its stream dropped, "told": its lost-touch line was held}; memory only.
+        self.down, self.down_lock = {}, threading.Lock()
         self.clock = time.time
         self.sweep_lock = threading.Lock()
         # Completion counters, bumped only after everything a step writes is on disk.
@@ -244,6 +253,7 @@ class Listener:
                 stream = open_stream(self.config.hosts[name]["url"], token)
                 self.sockets[name] = stream
                 self.beat(f"listening host={name}")
+                self.reconnected(name)
                 self.done("streams")
                 failures = 0
                 while not self.stop_event.is_set():
@@ -260,6 +270,8 @@ class Listener:
                 if self.stop_event.is_set():
                     return
                 failures += 1
+                with self.down_lock:
+                    self.down.setdefault(name, {"since": self.clock(), "told": False})
                 log_error(self.home, self.config.redact, f"boss wake {name} stream dropped: {type(exc).__name__}")
                 self.done("drops")
             finally:
@@ -397,6 +409,7 @@ class Listener:
                 if now >= until:
                     self.paused.pop(thread_id, None)
                     held = self.overdue(task, thread_id, run, since, detail) or held
+            held = self.out_of_touch(now) or held
             if github:
                 held = self.recheck(now) or held
         except Exception as exc:
@@ -405,6 +418,33 @@ class Listener:
         finally:
             self.sweep_lock.release()
         return held
+
+    def out_of_touch(self, now):
+        """One line per host whose push stream has stayed down past wake.host_down_minutes: its
+        workers may finish or ask with nobody hearing. True when a line was held."""
+        limit, held = self.wake.get("host_down_minutes", HOST_DOWN_MINUTES) * 60, False
+        with self.down_lock:
+            for host, entry in self.down.items():
+                if not limit or entry["told"] or now - entry["since"] < limit:
+                    continue
+                entry["told"] = True
+                since = datetime.fromtimestamp(entry["since"]).astimezone().strftime("%H:%M")
+                held = self.inbox.hold(f"host-down:{host}:{int(entry['since'])}", None, "host-down",
+                                       f"lost touch with {host} since {since}; workers there may be unheard") is not None or held
+        return held
+
+    def reconnected(self, host):
+        """A stream is back. Say so once, only if its lost-touch line went out; one nobody saw yet
+        is dropped instead, since T3's fresh snapshot now covers the gap."""
+        with self.down_lock:
+            entry = self.down.pop(host, None)
+        if not entry or not entry["told"]:
+            return
+        if self.inbox.drop(f"host-down:{host}:{int(entry['since'])}", "back in touch before anyone saw it"):
+            return
+        if self.inbox.hold(f"host-back:{host}:{int(entry['since'])}", None, "host-back",
+                           f"back in touch with {host}") is not None:
+            self.deliver()
 
     def overdue(self, task, thread_id, run, since, detail):
         """A paused worker whose own "until" passed: one stalled event, no T3 read (the line says it all)."""

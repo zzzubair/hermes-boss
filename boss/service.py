@@ -429,7 +429,7 @@ class Boss:
         observed = {"status": "idle", "run_id": None, "requests": [], "approvals": 0,
                     "prs": [{"url": p["url"], "state": p["state"], "head": p["headRefOid"], "ci": p["ci"]} for p in prs],
                     "alerts": []}
-        if observed != meta.get("observed"):
+        if observed != meta.get("observed") and not self.read_only:
             meta.update(observed=observed, status="idle")
             self.store.save(meta, "observed")
         thread = {"threadId": "adopted:" + meta["id"], "projectId": meta["project_id"], "status": "idle", "latestRunId": None}
