@@ -21,10 +21,18 @@ class WebSocket:
         if parts.scheme not in ("ws", "wss"):
             raise ValueError("websocket URL must be ws:// or wss://")
         port = parts.port or (443 if parts.scheme == "wss" else 80)
-        raw = socket.create_connection((parts.hostname, port), timeout=timeout)
-        if parts.scheme == "wss":
-            raw = ssl.create_default_context().wrap_socket(raw, server_hostname=parts.hostname)
-        self.sock, self.buffer = raw, b""
+        self.sock, self.buffer = socket.create_connection((parts.hostname, port), timeout=timeout), b""
+        try:
+            if parts.scheme == "wss":
+                self.sock = ssl.create_default_context().wrap_socket(self.sock, server_hostname=parts.hostname)
+            self._handshake(parts)
+        except BaseException:
+            # A refused or broken upgrade (T3 restarting) must not leave the socket to the garbage
+            # collector: anything that keeps the error alive would keep it open in CLOSE-WAIT.
+            self.sock.close()
+            raise
+
+    def _handshake(self, parts):
         key = base64.b64encode(os.urandom(16)).decode()
         path = parts.path or "/"
         if parts.query:

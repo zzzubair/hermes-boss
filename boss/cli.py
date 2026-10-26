@@ -1,5 +1,6 @@
 """Content-first command line with stable, terse records."""
 import argparse
+from contextlib import nullcontext
 import copy
 from datetime import datetime, timezone
 import json
@@ -690,10 +691,12 @@ def main(argv=None):
                 # stdout stays byte-identical to the spawned brief; workers never see rules.
                 print(redact("\n".join(["supervisor rules (enforced at spawn; not sent to workers):", *rules])), file=sys.stderr)
             return 0
-        # Status from anywhere but the owner session only looks: nothing reviewed, acked or rewritten.
+        # Status from anywhere but the owner session only looks: nothing reviewed, acked or rewritten,
+        # so it skips the writer lock too (every ledger file is replaced atomically) and never waits on it.
         boss.read_only = args.command in (None, "status") and not owner.owns(home, os.environ.get("HERMES_SESSION_KEY", ""))
         # A note from another session waits for the ledger instead of being dropped.
-        with store.locked(wait=os.environ.get("BOSS_WAIT_FOR_LEDGER") == "1" or args.command == "note"):
+        with nullcontext() if boss.read_only else store.locked(
+                wait=os.environ.get("BOSS_WAIT_FOR_LEDGER") == "1" or args.command == "note"):
             if mutating(args):
                 # Only the owning session may change boss; a human shell is warned, not stopped.
                 warning = owner.guard(home, os.environ.get("HERMES_SESSION_KEY", ""))

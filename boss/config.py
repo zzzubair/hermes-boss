@@ -223,9 +223,10 @@ class Config:
         rules(data.get("rules", {}), "rules")
         wake = data.get("wake", {})
         # interval_seconds is a leftover from timed polling; tolerated so old configs load, never read.
-        fields(wake, {"enabled": bool, "inject_when_idle": bool, "interval_seconds": int, "origin": dict, "session_key": str, "stall_minutes": int}, "wake")
-        if wake.get("stall_minutes", 0) < 0:
-            self.fail("wake.stall_minutes", "must be 0 (off) or more")
+        fields(wake, {"enabled": bool, "host_down_minutes": int, "inject_when_idle": bool, "interval_seconds": int, "origin": dict, "session_key": str, "stall_minutes": int}, "wake")
+        for key in ("stall_minutes", "host_down_minutes"):
+            if wake.get(key, 0) < 0:
+                self.fail("wake." + key, "must be 0 (off) or more")
         if "origin" in wake and "session_key" in wake:
             self.fail("wake", "use origin or session_key, not both")
         if "origin" in wake:

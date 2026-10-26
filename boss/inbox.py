@@ -81,6 +81,14 @@ class Inbox:
         notify(self.home)
         return record
 
+    def drop(self, key, reason):
+        """Close one open item before anyone saw it. True when it was open."""
+        with self.locked():
+            if not any(item["key"] == key for item in self.open_items()):
+                return False
+            append_line(self.path, {"event": "dropped", "key": key, "reason": reason, "at": now()})
+        return True
+
     def maybe_open(self):
         """Cheap stat check: False only when the file is unchanged since it was last seen empty."""
         try:

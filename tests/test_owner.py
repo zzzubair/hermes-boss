@@ -137,6 +137,24 @@ class OwnerTest(HermeticTestCase):
         self.assertEqual(live(), [])
         self.assertTrue((self.home / "tasks" / meta["id"] / "report.md").exists())
 
+    def test_a_look_from_outside_the_owner_session_never_takes_or_waits_for_the_ledger_lock(self):
+        meta = self.spawn()
+        self.cli("own", "--label", "Discord DM", key="agent:discord")
+        harness.CLITest.completed(self, meta, "BOSS: done: shipped it")
+        before = self.ledger()
+        with (self.home / ".lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)  # a long boss command (say boss land) is running
+            for key in ("agent:app", None):
+                for args in (("status", meta["id"]), ("status",), ()):
+                    code, output, _ = self.cli(*args, key=key)
+                    self.assertEqual(code, 0, output)
+                    self.assertNotIn("holds the ledger", output)
+            # The owner's own look reviews the run, so it is a writer and still waits its turn.
+            code, output, _ = self.cli("status", meta["id"], key="agent:discord")
+            self.assertEqual(code, 2, output)
+            self.assertIn("another boss command holds the ledger", output)
+        self.assertEqual(self.ledger(), before)  # attention.json included
+
     def test_status_with_nobody_owning_boss_only_looks(self):
         meta = self.spawn()
         harness.CLITest.completed(self, meta, "BOSS: done: shipped it")

@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import queue
 import re
+import socket
 import struct
 import subprocess
 import sys
@@ -21,7 +22,7 @@ from boss.config import Config
 from boss.inbox import NOTE, Inbox, live_turn
 from boss.service import Boss
 from boss.wake import LOCK, TICKET, Listener, _listeners, endpoints, start_wake
-from boss.websocket import GUID
+from boss.websocket import GUID, WebSocket
 import plugin
 from tests import test_boss as harness
 from tests.support import HermeticTestCase
@@ -68,6 +69,7 @@ class FakePush:
     def __init__(self):
         self.connections, self.subscriptions = [], []
         self.channels = []
+        self.down = False  # True: the host is unreachable, every reconnect fails
         self.registered = threading.Condition()  # notified once a subscriber can receive pushes
         push = self
 
@@ -76,6 +78,11 @@ class FakePush:
                 pass
 
             def do_POST(self):
+                if push.down:
+                    self.send_response(503)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 if self.path != "/api/auth/websocket-ticket/rpc" or self.headers.get("Authorization") != "Bearer " + EVENTS_TOKEN:
                     self.send_response(401)
                     self.end_headers()
@@ -774,6 +781,94 @@ class WakeTest(HermeticTestCase):
         self.owner_turn(listener)
         self.assertEqual(len(views), asked)
 
+    def test_a_refused_stream_upgrade_closes_its_socket_at_once(self):
+        # Seen while T3 restarts: the upgrade is refused. The socket must close then, not whenever
+        # the garbage collector frees an error that something (a logger, a traceback) still holds.
+        server = socket.create_server(("127.0.0.1", 0))
+        self.addCleanup(server.close)
+        ended = queue.Queue()
+
+        def refuse():
+            peer, _ = server.accept()
+            with peer:
+                peer.recv(65536)
+                peer.sendall(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n")
+                peer.settimeout(WAIT)
+                try:
+                    ended.put(peer.recv(1))  # b"" once the client closes its end
+                except OSError as exc:
+                    ended.put(exc)
+        threading.Thread(target=refuse, daemon=True).start()
+        kept = None
+        try:
+            WebSocket(f"ws://127.0.0.1:{server.getsockname()[1]}/ws")
+        except ConnectionError as exc:
+            kept = exc  # its traceback keeps the failed handshake's frame alive, as a logger would
+        self.assertIn("503", str(kept))
+        self.assertEqual(ended.get(timeout=WAIT + 1), b"")  # closed while the error is still alive
+
+    def lose_touch(self, ctx):
+        """A clocked listener whose only host goes away at T0 and keeps refusing reconnects."""
+        listener = self.clocked(ctx)
+        self.push.down = True
+        self.push.drop()
+        self.assertTrue(listener.reached("drops", 2, WAIT))  # the drop, then a refused reconnect
+        return listener
+
+    def come_back(self, listener):
+        self.push.down = False
+        self.assertTrue(listener.reached("streams", 2, WAIT))
+        self.assertTrue(self.push.connected(2))
+
+    def test_a_host_out_of_touch_for_ten_minutes_says_so_once_and_once_more_when_back(self):
+        self.own("agent:captain", "Hermes app")
+        self.watching()
+        ctx = Context(self.home / "profile")
+        since = datetime.fromtimestamp(T0).astimezone().strftime("%H:%M")
+        with patch("boss.wake.backoff", return_value=0.01):
+            listener = self.lose_touch(ctx)
+            self.now = T0 + 9 * 60  # a blip: T3 restarting takes seconds
+            self.owner_turn(listener)
+            self.assertIsNone(self.tool())
+            self.now = T0 + 11 * 60  # no timer: Zubair's next turn is what notices
+            self.owner_turn(listener)
+            self.assertEqual(self.tool(), '{"output": "ok"}\n\n[boss inbox]\n'
+                                          f"lost touch with test since {since}; workers there may be unheard\n{NOTE}")
+            self.now = T0 + 60 * 60
+            self.owner_turn(listener)
+            self.assertIsNone(self.tool())  # said once, however long it stays down
+            self.come_back(listener)
+        self.assertEqual([i["line"] for i in self.held()], ["back in touch with test"])
+        self.assertEqual(self.tool(), '{"output": "ok"}\n\n[boss inbox]\nback in touch with test\n' + NOTE)
+        self.assertNotIn("captain", (self.home / "inbox.jsonl").read_text())
+
+    def test_a_host_back_before_anyone_saw_it_was_lost_leaves_nothing_to_read(self):
+        self.inject = False  # the default: an idle owner sees the inbox at its next turn
+        self.own("agent:captain", "Hermes app")
+        self.watching()
+        ctx = Context(self.home / "profile")
+        with patch("boss.wake.backoff", return_value=0.01):
+            listener = self.lose_touch(ctx)
+            self.now = T0 + 11 * 60
+            listener.pushed("elsewhere", self.other(1)["thread"])  # a push from another host sweeps too
+            self.assertEqual([i["kind"] for i in self.held()], ["host-down"])
+            self.come_back(listener)
+        self.assertEqual(self.held(), [])
+        self.assertEqual([r["reason"] for r in self.inbox_log("dropped")], ["back in touch before anyone saw it"])
+
+    def test_zero_host_down_minutes_turns_the_lost_touch_line_off(self):
+        Config(self.home, Redactor()).change("wake.host_down_minutes", 0)
+        with self.assertRaises(BossError):
+            Config(self.home, Redactor()).change("wake.host_down_minutes", -1)
+        self.own("agent:captain", "Hermes app")
+        ctx = Context(self.home / "profile")
+        with patch("boss.wake.backoff", return_value=0.01):
+            listener = self.lose_touch(ctx)
+            self.now = T0 + 24 * 60 * 60
+            self.owner_turn(listener)
+            self.come_back(listener)
+        self.assertEqual(Inbox(self.home).records(), [])
+
     def test_endpoints_follow_the_mcp_origin(self):
         self.assertEqual(endpoints("https://t3.example.ts.net/mcp"),
                          ("wss://t3.example.ts.net/ws", "https://t3.example.ts.net/api/auth/websocket-ticket/rpc"))
@@ -796,7 +891,7 @@ class NoPollingTest(HermeticTestCase):
         # backoff after a dropped T3 stream. A healthy listener blocks on its socket.
         self.assertEqual(found, [
             'boss/config.py: # interval_seconds is a leftover from timed polling; tolerated so old configs load, never read.',
-            'boss/config.py: fields(wake, {"enabled": bool, "inject_when_idle": bool, "interval_seconds": int, "origin": dict, "session_key": str, "stall_minutes": int}, "wake")',
+            'boss/config.py: fields(wake, {"enabled": bool, "host_down_minutes": int, "inject_when_idle": bool, "interval_seconds": int, "origin": dict, "session_key": str, "stall_minutes": int}, "wake")',
             'boss/setup.py: if "interval_seconds" in wake:',
             'boss/setup.py: lines.append("info: wake.interval_seconds is unused now that wakes are pushed; boss config unset wake.interval_seconds")',
             'boss/wake.py: self.stop_event.wait(backoff(failures))',

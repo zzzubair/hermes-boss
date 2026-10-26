@@ -621,8 +621,10 @@ that does not own boss, naming the owner and how to take over. Read-only
 commands (status, show, list, brief, doctor) always work. `boss status` and
 bare `boss` change nothing outside the owner session: from another session or
 any shell they never mark a run reviewed, never clear the owner's inbox items
-and never rewrite task snapshots or `attention.json`. Only the owner's own
-look counts as reviewing a run. A human shell
+and never rewrite task snapshots (adopted PRs included) or `attention.json`.
+They also skip the ledger lock, so they never wait on or block a running boss
+command; every ledger file is replaced atomically, so a look never sees half a
+write. Only the owner's own look counts as reviewing a run. A human shell
 without `HERMES_SESSION_KEY` may change boss but gets a one-line warning when
 a session owns it.
 
@@ -740,6 +742,16 @@ holds `$BOSS_HOME/wake.lock`, and any other Hermes process waits on that lock
 without polling, taking over if the holder exits. A dropped stream reconnects
 with backoff, and T3's fresh snapshot covers the gap. Errors go to
 `$BOSS_HOME/wake-errors.log`, redacted.
+
+A host whose stream stays down longer than `wake.host_down_minutes` (default
+10; 0 turns it off) holds one line,
+`lost touch with oracle since 14:02; workers there may be unheard`, because
+its workers can finish or ask without anyone hearing. Like the stall check, it
+is noticed on the next push from another host or the next poke (your next
+turn), not on a timer. When the stream reconnects, one more line says
+`back in touch with oracle`. If the stream comes back before anyone read the
+first line, both are dropped. A refused or broken reconnect closes its socket
+at once, so repeated drops leave no sockets behind.
 
 Setup, once per profile:
 
