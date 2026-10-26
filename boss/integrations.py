@@ -71,6 +71,14 @@ class GitHub:
         except (KeyError, TypeError, ValueError) as exc:
             raise BossError("github", f"cannot resolve origin default branch: {exc}") from None
 
+    def branches(self, repository, prefix):
+        """Origin branch names starting with prefix, in one call."""
+        try:
+            refs = json.loads(run(["gh", "api", f"repos/{repository}/git/matching-refs/heads/{prefix}"]))
+            return {r["ref"].removeprefix("refs/heads/") for r in refs}
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            raise BossError("github", f"invalid branch list: {exc}") from None
+
     def merge(self, pr):
         run(["gh", "pr", "merge", pr["url"], "--squash", "--match-head-commit", pr["headRefOid"]])
 
@@ -106,17 +114,77 @@ except Exception as e:
 '''
 
 
-def inspect_worktree(host, path, branch, base):
-    argv = ["python3", "-c", GIT_PROBE, path, branch, base]
+def on_host(host, script, *args):
+    argv = ["python3", "-c", script, *args]
     if host.get("ssh"):
         argv = ["ssh", "-oBatchMode=yes", "-oConnectTimeout=10", host["ssh"], shlex.join(argv)]
+    return run(argv, timeout=100)
+
+
+def inspect_worktree(host, path, branch, base):
     try:
-        data = json.loads(run(argv, timeout=100))
+        data = json.loads(on_host(host, GIT_PROBE, path, branch, base))
         if not all(k in data for k in ("head", "branch", "origin", "dirty", "in_default", "pushed")):
             raise ValueError("incomplete git evidence")
         return data
     except ValueError as exc:
         raise BossError("git", f"invalid worktree evidence: {exc}") from None
+
+
+# Removes a finished worker's worktree and local branch on its host. It re-checks
+# right before removing, so work made after settle's inspection is never lost:
+# uncommitted or unpushed work refuses. Work is safe when origin has the commit:
+# in the default branch, on the pushed branch, or the head of a merged/closed PR.
+WORKTREE_REMOVE = r'''
+import json, pathlib, subprocess, sys
+path, base, branches, safe_heads = sys.argv[1], sys.argv[2], json.loads(sys.argv[3]), json.loads(sys.argv[4])
+def git(*args, cwd=path, allow_failure=False):
+    p = subprocess.run(["git", "-C", cwd, *args], text=True, capture_output=True, timeout=60)
+    if p.returncode and not allow_failure:
+        raise RuntimeError("git " + args[0] + " failed: " + p.stderr.strip()[:300])
+    return p
+def done(**result):
+    print(json.dumps(result))
+    sys.exit(0)
+try:
+    if not pathlib.Path(path).is_dir():
+        done(state="gone")
+    top = git("rev-parse", "--show-toplevel").stdout.strip()
+    listed = git("worktree", "list", "--porcelain").stdout.split("\n\n")
+    primary = listed[0].splitlines()[0].removeprefix("worktree ")
+    if pathlib.Path(top).resolve() != pathlib.Path(path).resolve():
+        done(state="kept", reason="path is not a worktree root")
+    if pathlib.Path(primary).resolve() == pathlib.Path(path).resolve():
+        done(state="kept", reason="path is the primary checkout")
+    head = git("rev-parse", "HEAD").stdout.strip()
+    branch = git("branch", "--show-current").stdout.strip()
+    if branch and branch not in branches:
+        done(state="kept", reason="worktree is on another branch: " + branch)
+    if git("status", "--porcelain", "--untracked-files=all").stdout:
+        done(state="kept", reason="uncommitted work")
+    git("fetch", "--no-tags", "origin", base)
+    landed = git("merge-base", "--is-ancestor", head, "FETCH_HEAD", allow_failure=True).returncode == 0
+    remote = git("ls-remote", "--heads", "origin", "refs/heads/" + branch).stdout.split() if branch else []
+    if not (landed or head in safe_heads or (remote and remote[0] == head)):
+        done(state="kept", reason="unpushed commits")
+    git("worktree", "remove", path, cwd=primary)
+    deleted = bool(branch) and not git("branch", "-D", branch, cwd=primary, allow_failure=True).returncode
+    done(state="removed", branch=branch if deleted else None)
+except Exception as e:
+    print(json.dumps({"error": str(e)}))
+    sys.exit(3)
+'''
+
+
+def remove_worktree(host, path, base, branches, safe_heads):
+    """Remove a worktree only if nothing in it would be lost; returns state/reason."""
+    try:
+        data = json.loads(on_host(host, WORKTREE_REMOVE, path, base, json.dumps(sorted(branches)), json.dumps(sorted(safe_heads))))
+        if data.get("state") not in ("removed", "kept", "gone"):
+            raise ValueError("unknown worktree removal result")
+        return data
+    except ValueError as exc:
+        raise BossError("git", f"invalid worktree removal result: {exc}") from None
 
 
 def repository_from_origin(origin):

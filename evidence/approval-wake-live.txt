@@ -1,0 +1,26 @@
+Live check on oracle: T3 0.1.3-nightly.20261026.3717 (t3 serve), 2026-10-26.
+
+1. Where T3 keeps a pending permission request (installed T3 server, oracle):
+   pendingRequestCount: projection.runtimeRequests.filter((request) => request.status === "pending").length,
+   requestIds: projection.runtimeRequests.filter((request) => request.kind === "user_input" && request.status === "pending").map((request) => request.id) 
+   So pendingRequestCount counts every pending runtime request (approvals included), while
+   t3_pending_request_list returns user_input questions only. Pending approvals = count - questions.
+   T3's own web client agrees: hasPendingApprovals = pendingRuntimeRequest !== null && kind is not user_input/auth_refresh.
+
+2. Live MCP reads of boss task aee7e1e16ee8 (thread mcp:de6c3bdd-...), same shape boss reads:
+   t3_thread_read .thread: status=completed pendingRequestCount=0 ; t3_pending_request_list: {"requestIds": []}
+   The pilot's push capture (evidence/push-wake-live.txt) had, for this thread:
+     13:12:05 waiting pendingRuntimeRequest=None, then 13:12:05 completed.
+
+3. Old classify (main) on a bare waiting with nothing pending: approval   <- the false permission wake
+
+4. Real Boss.snapshot + events.classify (this branch) over the live read, replaying the pilot states:
+   live thread fields: {'status': 'completed', 'pendingRequestCount': 0, 'latestRunId': 'run:thread:mcp%3Ade6c3bdd-9751-49b0-a28b-bb3114147298:ordinal:1'} pending list: {'requestIds': []}
+   live read, unchanged                                       status=completed pendingRequestCount=0 questions=0 -> approvals=0 kind=finished_pr
+   pilot 13:12:05 push: waiting, nothing pending              status=waiting   pendingRequestCount=0 questions=0 -> approvals=0 kind=working
+   pilot 13:12:05 push: completed one second later            status=completed pendingRequestCount=0 questions=0 -> approvals=0 kind=finished_pr
+   waiting on a permission prompt (count 1, no question)      status=waiting   pendingRequestCount=1 questions=0 -> approvals=1 kind=approval
+   waiting on a question (count 1, listed)                    status=waiting   pendingRequestCount=1 questions=1 -> approvals=0 kind=input
+
+Not done live: raising a real permission prompt needs a new approval-required T3 thread; this worker
+may not launch threads. The approval row above uses the live thread with pendingRequestCount set to 1.

@@ -93,8 +93,10 @@ def parser():
     land = commands.add_parser("land", help="merge one green PR with explicit captain approval")
     land.add_argument("id")
     land.add_argument("--approved", metavar="QUOTE", help="captain's exact words; required by guard")
-    settle = commands.add_parser("settle", help="unwatch PRs and settle a terminal thread; preserve its worktree")
-    settle.add_argument("id")
+    settle = commands.add_parser("settle", help="unwatch PRs, settle a terminal thread, remove its worktree once landed")
+    settle.add_argument("id", nargs="?")
+    settle.add_argument("--prune-landed", action="store_true",
+                        help="remove leftover worktrees of every settled, landed task on all hosts")
     settle.add_argument("--discard-approved", metavar="QUOTE", help="captain's explicit authority to leave work unlanded")
     project = commands.add_parser("project", help="discover T3 projects and inspect or save preferences")
     projects = project.add_subparsers(dest="project_command", required=True)
@@ -210,6 +212,17 @@ def fleet(boss, full=False):
     else:
         lines.append('next: boss spawn <project> --title "<task>" --brief-file <file>')
     return lines, max((e.exit_code for e in errors), default=0)
+
+
+def worktree_text(meta, result):
+    host = meta["host"]
+    if result["state"] == "removed":
+        return f"worktree removed on {host}: {result['path']}" + (f", branch {result['branch']} deleted" if result.get("branch") else "")
+    if result["state"] == "gone":
+        return f"worktree already gone on {host}: {result['path']}"
+    if result["state"] == "error":
+        return f"worktree check failed on {host}: {result['reason']}; retry boss settle --prune-landed"
+    return f"worktree kept on {host}: {result['reason']} ({result['path']})"
 
 
 def mutating(args):
@@ -386,7 +399,7 @@ def dispatch(args, boss):
             lines.append(f"{pr['url']}: {pr['state'].lower()} ci={ci_text(pr['ci'])}")
         lines.append("last: " + (json.dumps(view["assistant"], ensure_ascii=False) if full else compact(view["assistant"] or "0 assistant messages", 360)))
         lines.append(f"next: boss answer {args.id} <request> \"<answer>\"" if view["requests"] else
-                     f"next: open T3 thread {meta['thread_id']} to review pending permissions" if view["status"] == "waiting" else
+                     f"next: open T3 thread {meta['thread_id']} to review pending permissions" if view["approvals"] else
                      f'next: boss land {args.id} --approved "<captain quote>"' if view["status"] == "completed" and any(p["state"] == "OPEN" and p["ci"]["state"] == "green" for p in view["prs"]) else
                      f"next: boss settle {args.id}" if view["status"] == "completed" and not any(p["state"] == "OPEN" for p in view["prs"]) else
                      f"next: boss send {args.id} \"<message>\"")
@@ -415,8 +428,14 @@ def dispatch(args, boss):
         boss.land(args.id, args.approved)
         return [f"{args.id}: landed", f"next: boss settle {args.id}"], 0
     if command == "settle":
-        boss.settle(args.id, args.discard_approved)
-        return [f"{args.id}: settled", "next: boss"], 0
+        if args.prune_landed == bool(args.id) or (args.prune_landed and args.discard_approved):
+            raise BossError("usage", "give a task id, or --prune-landed alone", "boss settle --help", 1)
+        if args.prune_landed:
+            lines = [f"{meta['id']}: {worktree_text(meta, result)}" for meta, result in boss.prune_landed()]
+            return (lines or ["0 leftover worktrees"]) + ["next: boss"], 0
+        meta = boss.store.load(args.id)
+        result = boss.settle(args.id, args.discard_approved)
+        return [f"{args.id}: settled", *([f"worktree: {worktree_text(meta, result)}"] if result else []), "next: boss"], 0
     if command == "away":
         note = " ".join(args.note)
         if note:

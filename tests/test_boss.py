@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from boss.cli import main
 from boss.common import BossError, Redactor
 from boss.config import Config
-from boss.integrations import ci_summary, inspect_worktree
+from boss.integrations import ci_summary, inspect_worktree, remove_worktree
 from boss.mcp import MCP
 from boss.state import Store, atomic_write
 from tests.support import HermeticTestCase
@@ -148,13 +148,16 @@ class FakeT3:
 
 class FakeGitHub:
     def __init__(self):
-        self.branch, self.merges = "trunk", []
+        self.branch, self.merges, self.origin_branches = "trunk", [], set()
         self.pr = {"url": URL, "state": "OPEN", "isDraft": False, "headRefOid": "a" * 40,
                    "headRefName": "", "baseRefName": "trunk", "mergeStateStatus": "CLEAN", "reviewDecision": "APPROVED",
                    "statusCheckRollup": [{"conclusion": "SUCCESS"}], "mergeCommit": None}
 
     def default_branch(self, repository):
         return self.branch
+
+    def branches(self, repository, prefix):
+        return {b for b in self.origin_branches if b.startswith(prefix)}
 
     def view(self, url):
         result = copy.deepcopy(self.pr)
@@ -190,8 +193,13 @@ delivery = "direct-PR"
                          "dirty": False, "in_default": True, "pushed": False}
         self.probe = patch("boss.service.inspect_worktree", side_effect=lambda *a: dict(self.evidence))
         self.probe.start()
+        self.removals, self.removal = [], {"state": "removed", "branch": None}
+        self.remover = patch("boss.service.remove_worktree",
+                             side_effect=lambda *a: self.removals.append(a) or dict(self.removal))
+        self.remover.start()
 
     def tearDown(self):
+        self.remover.stop()
         self.probe.stop()
         self.gh_patch.stop()
         self.fake.close()
@@ -232,7 +240,7 @@ delivery = "direct-PR"
     def test_spawn_worktree_footer_and_persistence(self):
         meta = self.spawn("--model", "codex:gpt-test", "--effort", "max")
         launch = next(a for n, a in self.fake.calls if n == "t3_thread_launch")
-        self.assertEqual(launch["workspaceStrategy"], {"type": "worktree", "branch": "boss/" + meta["id"], "baseRef": "trunk", "startFromOrigin": True})
+        self.assertEqual(launch["workspaceStrategy"], {"type": "worktree", "branch": "boss/fix-thing", "baseRef": "trunk", "startFromOrigin": True})
         self.assertEqual(launch["modelSelection"], {"instanceId": "codex", "model": "gpt-test", "options": {"reasoningEffort": "max"}})
         brief = (self.store.directory(meta["id"]) / "brief.md").read_text()
         for text in ("investigate this", "Never merge", "Never deploy", "configured Git user", "exactly ONE PR",
@@ -477,6 +485,135 @@ serviceTier = "priority"
                 self.assertFalse(self.store.load(meta["id"])["settled"])
         self.assertFalse(any(n == "t3_thread_organize" for n, _ in self.fake.calls))
 
+    def test_bare_waiting_is_not_a_permission_prompt_but_a_pending_count_is(self):
+        meta = self.spawn()
+        thread = self.fake.threads[meta["thread_id"]]
+        thread.update(status="waiting", pendingRequestCount=0)
+        self.assertEqual(self.cli("status", meta["id"])[1].splitlines()[-1], f'next: boss send {meta["id"]} "<message>"')
+        thread["pendingRequestCount"] = 1
+        self.assertIn("review pending permissions", self.cli("status", meta["id"])[1])
+        self.assertEqual(self.store.load(meta["id"])["observed"]["approvals"], 1)
+        # A pending question is counted too, but it is input, not a permission prompt.
+        self.fake.pending = {"req-1": [{"id": "q", "question": "Which?"}]}
+        self.assertIn(f"next: boss answer {meta['id']}", self.cli("status", meta["id"])[1])
+        self.assertEqual(self.store.load(meta["id"])["observed"]["approvals"], 0)
+
+    def test_branch_is_a_title_slug_with_a_suffix_only_on_clash(self):
+        code, output = self.cli("spawn", "repo", "--title", "Fix: the Ledger LOCK (über) — and then keep going for a while")
+        meta = self.store.load(output.split(":", 1)[0])
+        self.assertEqual(meta["branch"], "boss/fix-the-ledger-lock-ber-and-then-keep")
+        self.assertRegex(meta["branch"], r"\Aboss/[a-z0-9-]{1,40}\Z")
+        self.gh.origin_branches = {"boss/fix-thing", "boss/fix-thing-2", "boss/fix-thing-two"}
+        self.assertEqual(self.spawn()["branch"], "boss/fix-thing-3")
+        self.assertEqual(self.spawn()["branch"], "boss/fix-thing-4")  # boss/fix-thing-3 is in the ledger
+        code, output = self.cli("spawn", "repo", "--title", "!!!")
+        task_id = output.split(":", 1)[0]
+        self.assertEqual(self.store.load(task_id)["branch"], "boss/" + task_id)
+        launch = [a for n, a in self.fake.calls if n == "t3_thread_launch"]
+        self.assertEqual([a["workspaceStrategy"]["branch"] for a in launch],
+                         ["boss/fix-the-ledger-lock-ber-and-then-keep", "boss/fix-thing-3", "boss/fix-thing-4", "boss/" + task_id])
+        self.assertTrue(all(a["title"].startswith("[boss:") for a in launch))  # the ledger keeps the task id
+
+    def test_land_and_settle_match_the_saved_slug_branch(self):
+        meta = self.spawn()
+        self.assertEqual(meta["branch"], "boss/fix-thing")
+        self.completed(meta)
+        self.fake.prs = [URL]
+        self.gh.pr["headRefName"] = "boss/" + meta["id"]
+        self.assertIn("branches differ", self.cli("land", meta["id"], "--approved", "ship it")[1])
+        self.gh.pr["headRefName"] = "boss/fix-thing"
+        self.assertEqual(self.cli("land", meta["id"], "--approved", "ship it")[0], 0)
+        self.evidence.update(in_default=False, pushed=False)
+        self.assertEqual(self.cli("settle", meta["id"])[0], 0)
+
+    def test_settle_removes_the_worktree_of_a_merged_pr(self):
+        meta = self.spawn()
+        self.completed(meta)
+        self.fake.prs = [URL]
+        self.gh.pr.update(state="MERGED", headRefName="boss/fix-thing")
+        self.evidence.update(in_default=False, pushed=False)
+        self.removal = {"state": "removed", "branch": "boss/fix-thing"}
+
+        code, output = self.cli("settle", meta["id"])
+
+        self.assertEqual(code, 0, output)
+        self.assertIn("worktree removed on test: /fake/worktree, branch boss/fix-thing deleted", output)
+        host, path, base, branches, heads = self.removals[0]
+        self.assertEqual((host["url"], path, base, branches, heads),
+                         (self.fake.url, "/fake/worktree", "trunk", {"boss/fix-thing"}, {"a" * 40}))
+        saved = self.store.load(meta["id"])
+        self.assertEqual(saved["worktree"], {"path": "/fake/worktree", "state": "removed", "branch": "boss/fix-thing"})
+        # Settling again is a no-op; prune has nothing left to do.
+        self.assertEqual(self.cli("settle", meta["id"])[0], 0)
+        self.assertEqual(self.cli("settle", "--prune-landed")[1].splitlines()[0], "0 leftover worktrees")
+        self.assertEqual(len(self.removals), 1)
+
+    def test_settle_removes_a_finished_scout_worktree(self):
+        meta = self.spawn("--kind", "scout")
+        self.completed(meta, "BOSS_REPORT: findings")
+        self.assertIn("worktree removed on test", self.cli("settle", meta["id"])[1])
+        self.assertEqual(self.removals[0][3:], ({"boss/fix-thing"}, set()))
+
+    def test_settle_keeps_a_worktree_the_host_refuses_to_remove(self):
+        meta = self.spawn()
+        self.completed(meta)
+        self.fake.prs = [URL]
+        self.gh.pr["state"] = "CLOSED"
+        self.removal = {"state": "kept", "reason": "uncommitted work"}
+        code, output = self.cli("settle", meta["id"], "--discard-approved", "drop it, keep nothing")
+        self.assertEqual(code, 0, output)
+        self.assertIn("worktree kept on test: uncommitted work (/fake/worktree)", output)
+        self.assertEqual(self.store.load(meta["id"])["worktree"]["state"], "kept")
+
+    def test_settle_keeps_an_unlanded_discarded_worktree_without_touching_it(self):
+        meta = self.spawn()
+        self.completed(meta)
+        output = self.cli("settle", meta["id"], "--discard-approved", "abandon it")[1]
+        self.assertIn("worktree kept on test: no merged or closed PR", output)
+        self.assertEqual(self.removals, [])
+
+    def test_prune_landed_cleans_every_settled_landed_task_on_all_hosts(self):
+        config = self.home / "config.toml"
+        config.write_text(config.read_text().replace("[projects.repo]", f'''[hosts.far]
+url = "{self.fake.url}"
+token_env = "T3_TEST_MCP_TOKEN"
+ssh = "far.example"
+[projects.repo]'''))
+        landed, scout, unlanded, active = self.spawn(), self.spawn("--kind", "scout"), self.spawn(), self.spawn()
+        for meta in (landed, scout, unlanded):
+            self.completed(meta)
+            self.cli("settle", meta["id"], "--discard-approved", "older boss kept worktrees")
+        self.assertEqual(len(self.removals), 1)  # the scout; nothing PR-backed was landed yet
+        self.removals.clear()
+        # Tasks settled before this change have no worktree record; prune reads the path from T3.
+        for meta in (landed, scout):
+            saved = self.store.load(meta["id"])
+            saved.pop("worktree", None)
+            saved["host"] = "far" if meta is landed else "test"
+            saved["pr_urls"] = [URL] if meta is landed else []
+            self.store.save(saved, "test_setup")
+        self.gh.pr.update(state="MERGED", headRefName=landed["branch"])
+
+        code, output = self.cli("settle", "--prune-landed")
+
+        self.assertEqual(code, 0, output)
+        self.assertIn(f"{landed['id']}: worktree removed on far: /fake/worktree", output)
+        self.assertIn(f"{scout['id']}: worktree removed on test", output)
+        self.assertIn(f"{unlanded['id']}: worktree kept on test: no merged or closed PR", output)
+        self.assertNotIn(active["id"], output)
+        hosts = sorted(host.get("ssh") for host, *_ in self.removals)
+        self.assertEqual(hosts, ["", "far.example"])
+        self.assertTrue(all(path == "/fake/worktree" for _, path, *_ in self.removals))
+        before = len(self.removals)
+        self.cli("settle", "--prune-landed")
+        self.assertEqual(len(self.removals), before)  # removed worktrees are not touched again
+
+    def test_settle_needs_an_id_or_prune_alone(self):
+        self.assertEqual(self.cli("settle")[0], 1)
+        meta = self.spawn()
+        self.assertEqual(self.cli("settle", meta["id"], "--prune-landed")[0], 1)
+        self.assertEqual(self.cli("settle", "--prune-landed", "--discard-approved", "x")[0], 1)
+
     def test_git_inspection_failure_refuses_safely(self):
         meta = self.spawn()
         self.completed(meta)
@@ -661,6 +798,77 @@ class GitEvidenceTest(HermeticTestCase):
             self.assertTrue(inspect_worktree({}, str(checkout), "boss/test", "main")["dirty"])
             git("-C", checkout, "push", "origin", "HEAD:main")
             self.assertTrue(inspect_worktree({}, str(checkout), "boss/test", "main")["in_default"])
+
+    def test_real_git_worktree_removal_never_loses_work(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            remote, checkout = root / "remote.git", root / "checkout"
+
+            def git(*args, input=None):
+                p = subprocess.run(["git", *map(str, args)], input=input, capture_output=True, text=True)
+                self.assertEqual(p.returncode, 0, p.stderr)
+                return p.stdout
+
+            git("init", "--bare", remote)
+            git("init", "-b", "main", checkout)
+            source = Path(__file__).resolve().parent.parent
+            headers = git("-C", source, "cat-file", "commit", "HEAD").split("\n\n", 1)[0]
+            identity = "\n".join(line for line in headers.splitlines() if line.startswith(("author ", "committer ")))
+            tree = git("-C", checkout, "mktree", input="").strip()
+
+            def commit_object(message, parent):
+                body = f"tree {tree}\nparent {parent}\n" + identity + f"\n\n{message}\n"
+                return git("-C", checkout, "hash-object", "-t", "commit", "-w", "--stdin", input=body).strip()
+
+            base = git("-C", checkout, "hash-object", "-t", "commit", "-w", "--stdin",
+                       input=f"tree {tree}\n{identity}\n\nbase\n").strip()
+            git("-C", checkout, "update-ref", "refs/heads/main", base)
+            git("-C", checkout, "remote", "add", "origin", remote)
+            git("-C", checkout, "push", "origin", "main")
+            (checkout / ".git/info/exclude").write_text("__pycache__/\n")
+
+            def worker(name):
+                path = root / name
+                git("-C", checkout, "worktree", "add", "-b", "boss/" + name, path, "main")
+                git("-C", path, "update-ref", "refs/heads/boss/" + name, commit_object(name, base))
+                git("-C", path, "reset", "--hard", "-q")
+                return path, "boss/" + name, git("-C", path, "rev-parse", "HEAD").strip()
+
+            def remove(path, branch, heads=()):
+                return remove_worktree({}, str(path), "main", {branch}, set(heads))
+
+            def branches():
+                return git("-C", checkout, "branch", "--list", "boss/*").split()
+
+            path, branch, head = worker("unpushed")
+            self.assertEqual(remove(path, branch), {"state": "kept", "reason": "unpushed commits"})
+            git("-C", checkout, "push", "origin", branch)
+            (path / "notes.txt").write_text("not committed")
+            self.assertEqual(remove(path, branch), {"state": "kept", "reason": "uncommitted work"})
+            self.assertTrue(path.is_dir())
+            (path / "notes.txt").unlink()
+            (path / "__pycache__").mkdir()
+            (path / "__pycache__/x.pyc").write_text("ignored build output")
+            self.assertEqual(remove(path, "boss/other"), {"state": "kept", "reason": "worktree is on another branch: " + branch})
+            self.assertEqual(remove(path, branch), {"state": "removed", "branch": branch})
+            self.assertFalse(path.exists())
+            self.assertNotIn(branch, branches())
+            self.assertEqual(remove(path, branch), {"state": "gone"})
+
+            # A squash-merged PR's head is safe on GitHub even after its branch is deleted.
+            path, branch, head = worker("squashed")
+            self.assertEqual(remove(path, branch, [head])["state"], "removed")
+            self.assertNotIn(branch, branches())
+
+            # A scout leaves its branch at the default branch: nothing to lose.
+            git("-C", checkout, "worktree", "add", "-b", "boss/scout", root / "scout", "main")
+            self.assertEqual(remove(root / "scout", "boss/scout")["state"], "removed")
+
+            git("-C", checkout, "checkout", "-q", "-b", "boss/primary")
+            self.assertEqual(remove(checkout, "boss/primary"), {"state": "kept", "reason": "path is the primary checkout"})
+            with self.assertRaises(BossError):  # not a work tree at all: nothing is removed
+                remove(checkout / ".git", "boss/primary")
+            self.assertTrue((checkout / ".git").is_dir())
 
     def test_ci_aggregate_handles_legacy_and_check_runs(self):
         ci = ci_summary([{"state": "SUCCESS"}, {"conclusion": "SKIPPED"}, {"status": "IN_PROGRESS"}])

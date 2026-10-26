@@ -56,6 +56,7 @@ boss log "<what the captain said or decided in a check-in>"
 boss back
 boss land <id> --approved "<captain's exact words>"
 boss settle <id>
+boss settle --prune-landed
 boss own
 boss own --take
 boss own status
@@ -129,6 +130,10 @@ numbered round when he is around.
   `merge = "never"` refuses landing and every other policy still requires the quote.
 - `settle` refuses unlanded work or missing reports. Use `--discard-approved`
   only with the captain's explicit words authorizing that discard.
+- `settle` removes the worktree and local branch once the PR is merged or
+  closed or the scout/report is done. It never removes uncommitted or unpushed
+  work; it prints "worktree kept" with the reason. `settle --prune-landed`
+  cleans leftovers from every settled task on every host.
 - `status <id>` acknowledges a completed run's review reminder. It does not
   approve merging or discard, and unanswered input requests remain open.
 - After an uncertain transport failure, inspect status and the ledger before

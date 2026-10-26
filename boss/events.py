@@ -1,7 +1,7 @@
 """What a worker thread needs from the captain right now, from one snapshot view.
 
 classify() is pure: it reads the dict Boss.snapshot() returns ("thread", "status",
-"requests", "prs", "assistant") and makes no calls. A turn that ends without a
+"requests", "approvals", "prs", "assistant") and makes no calls. A turn that ends without a
 question, a report or a PR it names is ended_unclear, never swallowed: workers
 are told to ask through the harness question tool, so plain text at the end of
 a turn is probably a question nobody would otherwise see.
@@ -38,12 +38,13 @@ def classify(view):
     if requests:
         # A new or answered request changes the set, which is a new thing to surface.
         return event("input", f"{len(requests)} pending input requests", ",".join(requests), request_ids=requests)
-    if status == "waiting":
-        # T3 lists only questions as pending requests; waiting without one is a permission prompt.
-        return event("approval", "waiting for a permission decision in T3")
+    if view.get("approvals"):
+        # Only a pending non-question runtime request is a permission prompt. T3 also
+        # reports a bare "waiting" for a moment as a turn finishes; that is not one.
+        return event("approval", f"{view['approvals']} pending permission requests in T3")
     if status in ERROR_STATUSES:
         return event("error", f"thread {status}")
-    if status not in ENDED_STATUSES or turn_id is None:
+    if status not in ENDED_STATUSES or turn_id is None:  # includes a bare "waiting"
         return Event("working", thread_id, turn_id, None)
     if text.lstrip().startswith("BOSS_REPORT:") and text.partition("BOSS_REPORT:")[2].strip():
         return event("finished_report", "BOSS_REPORT")
