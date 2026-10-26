@@ -358,6 +358,9 @@ boss steer drop my-project <steer-id>
 boss steer list my-project --all
 boss spawn my-project --title 'Task' --brief-file brief.md --fits 'How this fits the goal and active steers'
 boss panel my-project --brief-file brief.md --workers opus,sol --judge scout --rounds 4 --target 9.5
+boss adopt my-project --pr https://github.com/owner/repo/pull/12 --title 'Old login fix'
+boss park <id> 'wait until after the demo'   # the captain's words; land refuses until unpark
+boss unpark <id>
 boss status <id> --full
 boss send <id> 'Additional instruction'
 boss answer <id> <request-id/0> 'Answer text'
@@ -373,7 +376,7 @@ boss decide detail 2 'Plain explanation shown when it is asked again'
 boss away 'going to bed'        # also /away or /afk in the Hermes chat
 boss log 'What he said or decided in a check-in'
 boss log 'yes merge the login fix' --task <id> --approves merge
-boss back                       # also /back: one-line ack; the supervisor catches him up
+boss back                       # also /back or /ahoy: one-line ack; the supervisor catches him up
 boss back --full                # read-only: the latest away window's timeline
 boss steer <project> "don't merge this until I say" --task <id> --fence
 boss land <id> --approved 'The captain exact words'
@@ -429,9 +432,28 @@ B is revising. Scores: A (sol) 7, B (opus) 8.2.` Questions, blocks and
 failures from panel workers still wake as usual; a writer that fails is left
 out of that round. The panel record is `$BOSS_HOME/panels/<id>/panel.json`.
 
+### Adopted and parked tasks
+
+`boss adopt <project> --pr <url>` tracks an open PR that was opened outside
+boss (for example by Firstmate) as a task with no worker. The PR must be in the
+project's repository and not already tracked; `--title` defaults to the PR
+title. It shows in the status table as "PR opened outside boss" with the usual
+next step, wakes the owner once when it merges or closes on GitHub, and
+`land`, fences and `settle` work as for any task. It has no thread, so `send`,
+`answer` and `stop` refuse, and it never counts against `workers.max_active`.
+Settling it only closes the ledger entry: boss never touches a worktree or
+thread it did not create.
+
+`boss park <id> '<captain words>'` holds a task for the captain. The status
+table shows `parked: <his words>` with next "waiting on captain", the owner's
+inbox drops the task's "finished, PR ..." line instead of asking to land it,
+and `land` refuses, even with `--approved` and even for a docs-only PR under
+`fast_land_docs`. Merged and closed PR wakes still arrive. `boss unpark <id>`
+lifts it, only when he says so. Both show in the `/back` timeline.
+
 ### Away, back and numbered decisions
 
-Only `/away` (alias `/afk`, optional note) and `/back` change whether the
+Only `/away` (alias `/afk`, optional note) and `/back` (alias `/ahoy`) change whether the
 captain is around. The Hermes plugin registers them and runs the same
 `boss away` and `boss back` commands. Any other message in between is a
 check-in and never changes that state. While he is away, the context hook adds

@@ -247,7 +247,7 @@ class Boss:
         images = attachments.load_images(images)
         if override is not None:
             require_text(override, "--allow-model", 2000)
-        active = len(self.store.tasks(active=True))
+        active = len([t for t in self.store.tasks(active=True) if not t.get("adopted")])
         if active >= self.config.max_active:
             refuse(f"{active} workers are active and the cap is workers.max_active = {self.config.max_active}",
                    "settle finished workers first, or raise the cap: boss config set workers.max_active <n>")
@@ -324,6 +324,51 @@ class Boss:
                                 f"boss status {task_id}")
         return meta
 
+    def adopt(self, project_name, url, title=None):
+        """A worker-less task for a PR opened outside boss, so status, wakes, fences, land and settle cover it."""
+        match = PR_PATTERN.fullmatch(url or "")
+        if not match:
+            raise BossError("usage", "--pr must be a GitHub pull request URL",
+                            "boss adopt <project> --pr https://github.com/<owner>/<repo>/pull/<n>", 1)
+        if title is not None:
+            require_text(title, "title", 300)
+        tracked = next((m for m in self.store.tasks(active=True) if url in m.get("pr_urls", [])), None)
+        if tracked:
+            refuse(f"task {tracked['id']} already tracks that PR", f"boss status {tracked['id']}")
+        project, _, source = self.resolve_project(project_name)
+        if match[1].lower() != project["repository"].lower():
+            refuse(f"the PR is in {match[1]}, not {project_name}'s repository {project['repository']}",
+                   "adopt it under the project for that repository")
+        pr = self.github.view(url)
+        if pr["state"] != "OPEN":
+            refuse(f"only an open PR can be adopted; this one is {pr['state'].lower()}", "nothing to track")
+        task_id = self.store.new_id()
+        meta = {"id": task_id, "project": project_name, "project_id": project["project_id"],
+                "host": project["host"], "repository": project["repository"],
+                "title": (title or pr.get("title") or url).strip(), "kind": "ship", "delivery": "direct-PR",
+                "branch": pr["headRefName"], "base": pr["baseRefName"], "model_selection": None,
+                "thread_id": None, "adopted": True, "pr_urls": [url], "settled": False, "status": "adopted",
+                "merge": project["merge"], "auto_merge": project["auto_merge"], "no_mistakes": project["no_mistakes"],
+                "test_host": project.get("test_host"), "worker": None, "project_source": source, "fits": None}
+        self.store.save(meta, "adopted", url=url)
+        self.snapshot(meta)  # records the PR as open, so a poke's GitHub recheck wakes on its merge
+        return meta
+
+    def park(self, task_id, words):
+        """The captain holds this task: land refuses and no inbox line asks to land it until unpark."""
+        require_text(words, "captain's words", 2000)
+        meta = self.active_task(task_id)
+        meta["parked"] = {"words": words.strip(), "at": now()}
+        self.store.save(meta, "parked")
+
+    def unpark(self, task_id):
+        """True when the task was parked."""
+        meta = self.active_task(task_id)
+        if not meta.pop("parked", None):
+            return False
+        self.store.save(meta, "unparked")
+        return True
+
     def free_branch(self, repository, name):
         """boss/<name>, or boss/<name>-2, -3... when origin or the ledger already has it."""
         taken = {m.get("branch") for m in self.store.tasks()} | self.github.branches(repository, "boss/" + name)
@@ -335,6 +380,8 @@ class Boss:
     def recover(self, meta):
         if meta.get("thread_id"):
             return
+        if meta.get("adopted"):
+            refuse("this task has no worker; its PR was opened outside boss", f"boss status {meta['id']}")
         page = self.client(meta["host"]).call("t3_thread_list", projectId=meta["project_id"],
                                              titleContains=f"[boss:{meta['id']}]", limit=100)
         matches = [t for t in page["threads"] if f"[boss:{meta['id']}]" in t["title"]]
@@ -359,7 +406,22 @@ class Boss:
             cursor = next_cursor
         return page, items
 
+    def adopted_view(self, meta):
+        """An adopted task has no worker thread: its PR on GitHub is the whole picture."""
+        prs = [self.github.view(url) for url in meta["pr_urls"]]
+        observed = {"status": "idle", "run_id": None, "requests": [], "approvals": 0,
+                    "prs": [{"url": p["url"], "state": p["state"], "head": p["headRefOid"], "ci": p["ci"]} for p in prs],
+                    "alerts": []}
+        if observed != meta.get("observed"):
+            meta.update(observed=observed, status="idle")
+            self.store.save(meta, "observed")
+        thread = {"threadId": "adopted:" + meta["id"], "projectId": meta["project_id"], "status": "idle", "latestRunId": None}
+        return {"thread": thread, "status": "idle", "requests": [], "approvals": 0, "prs": prs,
+                "assistant": "", "assistant_run": None, "alerts": []}
+
     def snapshot(self, meta):
+        if meta.get("adopted"):
+            return self.adopted_view(meta)
         self.recover(meta)
         client = self.client(meta["host"])
         page, items = self.read_messages(client, meta["thread_id"])
@@ -520,7 +582,7 @@ class Boss:
     def docs_only_pr(self, meta, prs):
         """The task's one open PR when the rule applies, the captain holds nothing back (a fence,
         or his no to merging it) and it touches only *.md files, else None."""
-        if not self.fast_land_docs(meta) or len(prs) != 1 or prs[0]["state"] != "OPEN":
+        if meta.get("parked") or not self.fast_land_docs(meta) or len(prs) != 1 or prs[0]["state"] != "OPEN":
             return None
         answer = captain.approval(self.store, meta["id"], "merge")
         if (answer is not None and answer.get("verdict") != "yes" or
@@ -540,6 +602,9 @@ class Boss:
                 refuse(f"landing requires the captain's words; he answered: {captain.plain(stored['resolution'], 200)}",
                        f'boss land {task_id} --approved "<quote>"')
         meta = self.active_task(task_id)
+        if meta.get("parked"):
+            refuse("the captain parked this: " + captain.plain(meta["parked"]["words"], 200),
+                   f"boss unpark {task_id} only when he says so")
         if not quoted and not self.fast_land_docs(meta):
             refuse("landing requires the captain's words", f'boss land {task_id} --approved "<quote>"')
         if meta.get("merge", "auto" if meta.get("auto_merge") else "approved") == "never":
@@ -582,6 +647,7 @@ class Boss:
         problems = pr_body_problems(pr.get("body") or "", project["pr_body_forbidden"])
         if problems:
             raise BossError("refused", "PR body does not follow the pr-description format",
+                            f"fix the PR body with gh pr edit {pr['url']} --body-file, then land again" if meta.get("adopted") else
                             f"boss send {task_id} asking the worker to fix the PR body with gh pr edit --body-file, then land again",
                             2, context=problems)
         approved = approved if quoted else FAST_LAND_DOCS
@@ -619,7 +685,7 @@ class Boss:
                              meta.get("report_run_id") != snapshot["thread"].get("latestRunId")):
             blockers.append("no report for latest run")
         if not discard or not discard.strip():
-            if not meta.get("scratch"):
+            if not meta.get("scratch") and not meta.get("adopted"):  # boss made no worktree for an adopted PR
                 path = snapshot["thread"].get("worktreePath")
                 if not path:
                     blockers.append("no verified worktree")
@@ -637,15 +703,16 @@ class Boss:
                 refuse("unlanded work: " + ", ".join(blockers),
                        f'boss settle {task_id} --discard-approved "<quote>" only with explicit discard authority')
         self.store.save(meta, "settle_intent", discard_approved=discard, blockers=blockers)
-        client = self.client(meta["host"])
-        for pr in snapshot["prs"]:
-            client.call("unwatch_pull_request", threadId=meta["thread_id"], url=pr["url"])
-        result = client.call("t3_thread_organize", threadId=meta["thread_id"], action="settle")
-        if result.get("settlesWhenTurnEnds"):
-            raise BossError("t3", "T3 deferred settlement until turn end", f"boss status {task_id}")
-        verify = client.call("t3_thread_read", threadId=meta["thread_id"], limit=1, runLimit=1)
-        if not verify["thread"].get("settled"):
-            raise BossError("t3", "T3 did not confirm settlement", f"boss status {task_id}")
+        if not meta.get("adopted"):  # no thread to settle, and never a worktree boss didn't create
+            client = self.client(meta["host"])
+            for pr in snapshot["prs"]:
+                client.call("unwatch_pull_request", threadId=meta["thread_id"], url=pr["url"])
+            result = client.call("t3_thread_organize", threadId=meta["thread_id"], action="settle")
+            if result.get("settlesWhenTurnEnds"):
+                raise BossError("t3", "T3 deferred settlement until turn end", f"boss status {task_id}")
+            verify = client.call("t3_thread_read", threadId=meta["thread_id"], limit=1, runLimit=1)
+            if not verify["thread"].get("settled"):
+                raise BossError("t3", "T3 did not confirm settlement", f"boss status {task_id}")
         meta.update(settled=True, discard_approved=discard)
         self.store.save(meta, "settled")
         return self.clean_worktree(meta, snapshot["thread"].get("worktreePath"), snapshot["prs"])
@@ -690,7 +757,7 @@ class Boss:
 
     def clean_worktree(self, meta, path, prs):
         """Remove a settled task's worktree and local branch on its host, never unsaved work."""
-        if meta.get("scratch") or not path:
+        if meta.get("scratch") or meta.get("adopted") or not path:
             return None
         finished = [p for p in prs if p["state"] in ("MERGED", "CLOSED") and
                     PR_PATTERN.fullmatch(p["url"])[1].lower() == meta["repository"].lower()]
@@ -713,7 +780,7 @@ class Boss:
         """Clean every settled task's leftover worktree, on every host, in one pass."""
         results = []
         for meta in self.store.tasks():
-            if not meta.get("settled") or meta.get("scratch") or \
+            if not meta.get("settled") or meta.get("scratch") or meta.get("adopted") or \
                     (meta.get("worktree") or {}).get("state") in ("removed", "gone"):
                 continue
             try:

@@ -1,0 +1,67 @@
+# Live smoke on oracle: real GitHub via gh, fake T3 for the project list only, throwaway BOSS_HOME. Never merges.
+# Adopts open PR #34 (opened by another worker, outside this task). Task ids shown as <task>.
+
+$ boss adopt hermes-boss --pr https://github.com/zzzubair/hermes-boss/pull/34   # exit 0
+<task>: adopted https://github.com/zzzubair/hermes-boss/pull/34
+next: boss status <task>
+
+$ boss    # exit 0
+bin: /tmp/adopt-smoke/run.py
+description: Supervise T3 coding workers.
+captain: here
+1 active tasks
+| task | project | host | model | state | PR | quiet | next |
+|---|---|---|---|---|---|---|---|
+| Only the owner session's status marks a finished run reviewed | hermes-boss | oracle | - | PR opened outside boss | https://github.com/zzzubair/hermes-boss/pull/34 CI green | - | review, then land |
+states: idle=1
+0 open decisions
+next: boss status <id> for one task (boss status --ids shows them)
+
+$ boss status <task>   # exit 0
+<task>: hermes-boss idle
+worker: none; PR opened outside boss
+host: oracle
+auto_merge: false
+no_mistakes: false
+0 pending input requests
+1 linked PRs
+https://github.com/zzzubair/hermes-boss/pull/34: open ci=green 2 passed,0 failed,0 pending,0 skipped
+last: 0 assistant messages
+next: boss land <task> --approved "<captain quote>"
+
+$ boss send <task> hello   # exit 2
+error: refused
+message: this task has no worker; its PR was opened outside boss
+next: boss status <task>
+
+$ boss park <task> wait until I try it on my phone   # exit 0
+<task>: parked; land refuses until boss unpark <task>
+next: boss
+
+$ boss    # exit 0
+bin: /tmp/adopt-smoke/run.py
+description: Supervise T3 coding workers.
+captain: here
+1 active tasks
+| task | project | host | model | state | PR | quiet | next |
+|---|---|---|---|---|---|---|---|
+| Only the owner session's status marks a finished run reviewed | hermes-boss | oracle | - | parked: wait until I try it on my phone | https://github.com/zzzubair/hermes-boss/pull/34 CI green | - | waiting on captain |
+states: idle=1
+0 open decisions
+next: boss status <id> for one task (boss status --ids shows them)
+
+$ boss land <task> --approved merge it   # exit 2
+error: refused
+message: the captain parked this: wait until I try it on my phone
+next: boss unpark <task> only when he says so
+
+$ boss unpark <task>   # exit 0
+<task>: unparked
+next: boss status <task>
+
+$ boss settle <task>   # exit 2
+error: refused
+message: unlanded work: open PR
+next: boss settle <task> --discard-approved "<quote>" only with explicit discard authority
+
+T3 calls: ['t3_project_list']

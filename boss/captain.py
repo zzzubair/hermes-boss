@@ -366,6 +366,12 @@ def task_events(store):
             words = []
             if event == "launched":
                 words.append(("started", "started worker: " + title(current)))
+            elif event == "adopted":
+                words.append(("started", "adopted a PR opened outside boss: " + title(current)))
+            elif event == "parked":
+                words.append(("parked", f"parked: {title(current)}; his words: {plain(current['parked']['words'], 200)}"))
+            elif event == "unparked":
+                words.append(("unparked", "unparked: " + title(current)))
             elif event == "launch_unknown":
                 words.append(("failed", "worker launch unclear: " + title(current)))
             elif event == "sent":
@@ -387,7 +393,7 @@ def task_events(store):
                 word = STATUS_WORDS[new_status]
                 words.append((word, f"{word}: {title(current)}"))
             for pr in (current.get("observed") or {}).get("prs") or []:
-                if pr.get("state") == "OPEN" and pr.get("url") not in prs:
+                if pr.get("state") == "OPEN" and pr.get("url") not in prs and not current.get("adopted"):
                     number = pr["url"].rstrip("/").rsplit("/", 1)[-1]
                     words.append(("pr", f"opened PR #{number}: {title(current)}"))
                 prs.add(pr.get("url"))
