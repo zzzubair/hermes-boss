@@ -246,6 +246,8 @@ the plan first.
   Settle finished workers; only the captain raises the cap.
 - `land` refuses a PR body that breaks the pr-description shape or uses the
   configured `pr_body_forbidden` words; send the worker the listed problems.
+  On a no-mistakes project it also refuses a body without the pipeline's
+  evidence appendix; send the worker back to /no-mistakes, never land around it.
 - When the captain wants several models on one brief, or a judge score loop, use
   `boss panel`; never judge entries yourself or tell a judge which model wrote what.
   Boss starts the judge and the revisions; you get one inbox line per judged round.
@@ -324,12 +326,15 @@ explicit model, effort, host and kind flags win. Read `project show` or
 the effective worker rules, and `boss brief` prints them on stderr. Unknown roles and
 unsupported live model options fail loudly. The resolved role is saved on the task.
 
-Keep policy in project settings: `merge`, `delivery`, `test_host`, and
-`no_mistakes`. Boss tells workers to run heavy tests on `test_host` when set;
-put any other relevant instructions in the task's brief. Record standing rules
+Keep policy in project settings: `merge`, `delivery`, and `test_host`.
+Boss tells workers to run heavy tests on `test_host` when set;
+put any other relevant instructions in the task's brief. `delivery = "no-mistakes"`
+(old spelling `no_mistakes = true`) puts the /no-mistakes review in every ship
+contract; `spawn` refuses a host without the `no-mistakes` command, so pick a
+host that has it (doctor lists them) rather than editing the brief. Record standing rules
 (mobile-first, test on WSL, no secrets in logs, PR body shape) as steers that
 start with `rule:` (or `rule ship:`, `rule scout:`, `rule direct-PR:`,
-`rule local-only:`); boss adds them to every matching brief, so never repeat
+`rule no-mistakes:`, `rule local-only:`); boss adds them to every matching brief, so never repeat
 them from memory. Workers always obey the worktree contract
 and never merge or deploy. `answer` accepts the exact request/question ID
 printed by status. Multi-question requests still need a complete answer object.

@@ -14,6 +14,7 @@ class SteeringTest(unittest.TestCase):
     tearDown = harness.CLITest.tearDown
     cli = harness.CLITest.cli
     spawn = harness.CLITest.spawn
+    fake_command = harness.HermeticTestCase.fake_command
 
     def steer(self, text, *options, project="repo"):
         code, output = self.cli("steer", project, text, *options)
@@ -344,6 +345,7 @@ class SteeringTest(unittest.TestCase):
         (self.home / "projects/repo.md").write_text("NOTES_ONLY")
         with (self.home / "config.toml").open("a") as stream:
             stream.write('test_host = "wsl"\nno_mistakes = true\n')
+        self.fake_command("no-mistakes")
         fits = "Improve mobile navigation without analytics"
         task = self.spawn("--fits", fits)
         self.assertEqual(self.store.load(task["id"])["fits"], fits)

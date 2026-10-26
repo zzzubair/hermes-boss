@@ -28,6 +28,7 @@ class BriefTest(HermeticTestCase):
         path = self.home / "config.toml"
         path.write_text(path.read_text() + 'test_host="workstation"\nno_mistakes=true\n'
                         '[workers.scout]\nkind="scout"\n')
+        self.fake_command("no-mistakes")
         for flags in ((), ("--worker", "scout")):
             with self.subTest(flags=flags):
                 before_calls = list(self.fake.calls)

@@ -139,6 +139,22 @@ def on_host(host, script, *args):
     return run(argv, timeout=100)
 
 
+def command_path(host, name):
+    """Where `name` resolves on the host, plain or in a login shell (~/.local/bin often lives only there); None when missing."""
+    script = f"command -v {shlex.quote(name)} || exec \"${{SHELL:-sh}}\" -lc {shlex.quote('command -v ' + shlex.quote(name))}"
+    argv = ["sh", "-c", script]
+    if host.get("ssh"):
+        argv = ["ssh", "-oBatchMode=yes", "-oConnectTimeout=10", host["ssh"], shlex.join(argv)]
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=45, check=False, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise BossError("external", f"{argv[0]} failed: {exc}") from None
+    if host.get("ssh") and result.returncode == 255:
+        raise BossError("external", f"ssh {host['ssh']} failed", f"check ssh {host['ssh']} works without a password prompt")
+    lines = result.stdout.strip().splitlines()
+    return lines[-1] if result.returncode == 0 and lines else None
+
+
 def inspect_worktree(host, path, branch, base):
     try:
         data = json.loads(on_host(host, GIT_PROBE, path, branch, base))

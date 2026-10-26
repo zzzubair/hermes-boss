@@ -9,7 +9,7 @@ from . import attachments
 from . import captain
 from .common import BossError, refuse, require_text
 from .events import status_line
-from .integrations import GitHub, PR_PATTERN, github_repository, inspect_worktree, remove_worktree, resolve_repository
+from .integrations import GitHub, PR_PATTERN, command_path, github_repository, inspect_worktree, remove_worktree, resolve_repository
 from .mcp import MCP
 from .preferences import compose_brief, notes_path, project_name, source_note, steering_sections, steers_path
 from .state import FINISHED as TERMINAL, now
@@ -22,7 +22,10 @@ FAST_LAND_DOCS = "docs-only PR, landed under the project's fast_land_docs rule"
 MARK = "[boss] "  # Firstmate's from-firstmate marker: the supervisor speaking, never the captain
 # A steer written "rule: ..." is a standing rule for every brief; "rule scout: ..." or
 # "rule direct-PR: ..." only for briefs of that kind or delivery.
-STANDING = re.compile(r"rule(?:\s+(ship|scout|direct-PR|local-only))?:\s*(\S.*)", re.I | re.S)
+STANDING = re.compile(r"rule(?:\s+(ship|scout|direct-PR|no-mistakes|local-only))?:\s*(\S.*)", re.I | re.S)
+PR_DELIVERIES = ("direct-PR", "no-mistakes")
+# The review and test evidence the no-mistakes pipeline writes into the PR body it opens.
+NO_MISTAKES_EVIDENCE = re.compile(r"<!-- no-mistakes-pr-appendix:v1\b.*?-->.*<!-- /no-mistakes-pr-appendix:v1 -->", re.S)
 # The pr-description shape, in order. A no-mistakes appendix supplies the last two.
 PR_SECTIONS = ("Intent", "What changed", "Risk Assessment", "Testing")
 ATTRIBUTION = re.compile(r"Written by \S.* in \S.* on behalf of @\S+")
@@ -75,6 +78,17 @@ def footer(kind, delivery, *, origin=False, test_host=None, standing=(), standin
                      "Stop with a clean branch; your final message describes the changes and verification "
                      "and ends with BOSS: done: <one-line report>. "
                      "The captain must arrange landing separately; boss never merges local branches.")
+    elif delivery == "no-mistakes":
+        rules.append("Ship, no-mistakes: implement, verify and commit on this branch, then validate it through /no-mistakes "
+                     "(the no-mistakes skill: `no-mistakes axi run --intent \"<the task's goal and your decisions>\"`) before any PR exists. "
+                     "Never push or open a PR another way: the pipeline reviews, tests, pushes and opens exactly ONE PR "
+                     "against the origin default branch. A review finding you cannot settle from the brief is a question: "
+                     "ask it through the question tool and end the turn; never dismiss it on your own. "
+                     "The PR body must keep the pipeline's evidence appendix, which links its review and test evidence: "
+                     "above it write only Intent and What changed, and never change or remove it when you edit the body; "
+                     "boss refuses to land a PR without it. "
+                     "Link the PR to this thread with link_pull_request, then stop. Put the verification in your final message "
+                     "and end it with BOSS: done: <PR url>.")
     else:
         rules.append("Ship, direct-PR: implement, verify, commit and push this branch. Open exactly ONE PR against the origin default branch, "
                      "link it to this thread with link_pull_request, then stop. Put the verification in your final message "
@@ -269,6 +283,9 @@ class Boss:
         client = self.client(host_name)
         repo = project["repository"]
         delivery = project["delivery"]
+        if kind == "ship" and delivery == "no-mistakes" and not command_path(self.config.hosts[host_name], "no-mistakes"):
+            refuse(f"{project_name} ships through no-mistakes, but host {host_name} has no no-mistakes command",
+                   f"install no-mistakes on {host_name}, or retry with --host <a host that has it>")
         message = self.worker_brief(project_name, brief, settings=project, goal=goal, steers=steers)
         base = self.github.default_branch(repo)
         selection = self.model_selection(client, info, project.get("model_selection"), model or project.get("model"), effort or project.get("effort"))
@@ -575,14 +592,15 @@ class Boss:
 
     def fast_land_docs(self, meta):
         """The project's fast_land_docs rule applies: on, landable by boss, and no merge fence."""
-        return (meta["kind"] == "ship" and meta["delivery"] == "direct-PR" and
+        return (meta["kind"] == "ship" and meta["delivery"] in PR_DELIVERIES and
                 meta.get("merge", "auto" if meta.get("auto_merge") else "approved") != "never" and
                 self.config.effective(meta["project"])[0].get("fast_land_docs", False))
 
     def docs_only_pr(self, meta, prs):
         """The task's one open PR when the rule applies, the captain holds nothing back (a fence,
         or his no to merging it) and it touches only *.md files, else None."""
-        if meta.get("parked") or not self.fast_land_docs(meta) or len(prs) != 1 or prs[0]["state"] != "OPEN":
+        if (meta.get("parked") or not self.fast_land_docs(meta) or len(prs) != 1 or prs[0]["state"] != "OPEN" or
+                missing_evidence(meta, prs[0])):
             return None
         answer = captain.approval(self.store, meta["id"], "merge")
         if (answer is not None and answer.get("verdict") != "yes" or
@@ -610,8 +628,8 @@ class Boss:
         if meta.get("merge", "auto" if meta.get("auto_merge") else "approved") == "never":
             refuse("project merge policy is never", "arrange landing outside boss")
         snapshot = self.snapshot(meta)
-        if meta["kind"] != "ship" or meta["delivery"] != "direct-PR":
-            refuse("only direct-PR ship tasks can land with boss", "arrange an explicitly approved local landing separately")
+        if meta["kind"] != "ship" or meta["delivery"] not in PR_DELIVERIES:
+            refuse("only direct-PR and no-mistakes ship tasks can land with boss", "arrange an explicitly approved local landing separately")
         if snapshot["status"] not in TERMINAL or snapshot["requests"]:
             refuse("worker must stop before landing", f"boss stop {task_id}")
         if len(snapshot["prs"]) != 1:
@@ -650,6 +668,10 @@ class Boss:
                             f"fix the PR body with gh pr edit {pr['url']} --body-file, then land again" if meta.get("adopted") else
                             f"boss send {task_id} asking the worker to fix the PR body with gh pr edit --body-file, then land again",
                             2, context=problems)
+        if missing_evidence(meta, pr):
+            refuse("this project ships through no-mistakes, but the PR body has no no-mistakes evidence",
+                   f"boss send {task_id} asking the worker to validate through /no-mistakes so its evidence appendix is in the PR body, "
+                   "then land again")
         approved = approved if quoted else FAST_LAND_DOCS
         meta["land_intent"] = {"url": pr["url"], "head": pr["headRefOid"], "approved": approved}
         self.store.save(meta, "land_intent")
@@ -825,6 +847,11 @@ def pr_body_problems(body, forbidden):
         if re.search(r"\b" + r"\s+".join(map(re.escape, word.split())) + r"\b", prose, re.I):
             problems.append(f"mentions '{word}'; write about the change, not the conversation behind it")
     return problems
+
+
+def missing_evidence(meta, pr):
+    """A no-mistakes task's PR whose body lacks the pipeline's evidence appendix."""
+    return meta["delivery"] == "no-mistakes" and not NO_MISTAKES_EVIDENCE.search(pr.get("body") or "")
 
 
 def ci_text(ci):

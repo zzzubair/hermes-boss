@@ -63,7 +63,8 @@ export the corresponding variables when installing **and when running boss**:
 `boss doctor` prints one line per check with a fix hint on failures. Required
 checks cover Python, GitHub authentication, configured hosts and credentials,
 MCP project access, SSH destination resolution, plugin installation/enabling,
-and the Hermes skill. It also reports who owns boss and whether the last wake
+and the Hermes skill, plus the `no-mistakes` command on every host a
+`delivery = "no-mistakes"` project uses. It also reports who owns boss and whether the last wake
 reached them. Once a session owns boss, gateway consent, each host's push stream
 token and a live listener are required too. SSH resolution does not prove remote
 Git access. Keep custom paths discoverable by Hermes as well as by boss.
@@ -108,7 +109,7 @@ existing locations and formats.
 Effective settings come from built-in defaults, the user file, a project's
 settings, the selected role, and explicit CLI flags. Defaults are
 `delivery = "direct-PR"`, `merge = "approved"`, `kind = "ship"`,
-`no_mistakes = false`, with no default host, role or worker rules.
+with no default host, role or worker rules.
 Unknown keys and invalid types fail with the full key path, including settings
 for projects that are not currently being spawned.
 
@@ -141,9 +142,8 @@ worker = "builder"
 # project_id = "<T3 project ID>"
 # repository = "owner/repo"
 merge = "never"
-delivery = "direct-PR"
+delivery = "no-mistakes"
 test_host = "workstation"
-no_mistakes = true
 
 [projects.my-project.workers.ui]
 effort = "xhigh"
@@ -278,15 +278,25 @@ address or a bare host with a port (`http://devbox:3000`), the wake ends with
 "(link only works on that machine: ...)". Tailnet (`*.ts.net`) and preview
 URLs pass. The contract asks ship workers for links the captain can open on his phone.
 
-`delivery` is `direct-PR` or `local-only`. Direct-PR ship workers commit, push
-and open exactly one PR against the origin default branch. Local-only workers
+`delivery` is `direct-PR`, `no-mistakes` or `local-only`. Direct-PR ship workers commit, push
+and open exactly one PR against the origin default branch. No-mistakes ship
+workers commit, then validate through `/no-mistakes` before any PR exists: the
+pipeline reviews, tests, pushes and opens the one PR. The contract tells them
+to ask any review finding they can't settle through the question tool, and to
+keep the pipeline's evidence appendix in the PR body, unedited, below their Intent and
+What changed. `boss spawn` refuses a ship task when the host has no
+`no-mistakes` command (checked locally, or over SSH in a login shell so
+`~/.local/bin` counts) and names the host. `boss land` refuses a no-mistakes
+task's PR whose body lacks that appendix, docs-only PRs included. The old
+`no_mistakes = true` still works as the same thing as `delivery = "no-mistakes"`,
+and `no_mistakes = false` in a project undoes an inherited one; in one table it
+may not contradict `delivery`. Local-only workers
 commit locally and report in their final message. Scouts investigate and
 return a report with a clean worktree; the final message above its
 `BOSS: done:` line is saved as `report.md` (`BOSS_REPORT:` from workers
 briefed earlier is still read). When `test_host` is set, the contract tells
 workers to run heavy tests there. Ship workers are told to put before and after
-screenshots in the PR when a change touches UI. `no_mistakes` is a supervisor
-preference; include any relevant instructions in the task's brief.
+screenshots in the PR when a change touches UI.
 
 Workers report the way Firstmate's crew does: every turn ends with exactly
 one status line, the last line of the final message:
@@ -402,7 +412,7 @@ record a project steer. `--replaces` supersedes an earlier steer without
 rewriting its history. A steer that starts with `rule:` is a standing rule:
 boss moves it out of the steers section into the worker contract of every
 brief, read fresh from the steer log at each spawn. `rule ship:`, `rule scout:`,
-`rule direct-PR:` or `rule local-only:` limits it to briefs of that kind or
+`rule direct-PR:`, `rule no-mistakes:` or `rule local-only:` limits it to briefs of that kind or
 delivery, for example `boss steer my-project 'rule direct-PR: PR body follows
 the pr-description shape'`. Drop it like any steer. `spawn` requires a nonblank, single-line `--fits` when
 a project has a goal or active steers. It saves the explanation with the task.
