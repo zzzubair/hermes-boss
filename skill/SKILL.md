@@ -37,6 +37,7 @@ boss spawn <project> --title "<task>" --brief-file <file>
 boss spawn <project> --title "<task>" --brief-file <file> --fits "<how this fits the goal and active steers>"
 boss spawn <project> --title "<investigation>" --kind scout --brief-file <file>
 boss spawn <project> --worker <role> --title "<task>" --brief-file <file>
+boss spawn <project> --worker <role> --title "<task>" --brief-file <file> --override "<captain's exact words>"
 boss status <id>
 boss status <id> --full
 boss send <id> "<instruction>"
@@ -111,6 +112,12 @@ numbered round when he is around.
 - `spawn` refuses with exit 2 when a project has a goal or active steers and
   lacks a nonblank `--fits` line. Read the full context printed by the refusal.
   The line must be at most 2000 characters and contain no line breaks.
+- `spawn` refuses with exit 2 when a role's `kinds` excludes the task kind or
+  the resolved model is not in the effective `rules.ship_models` /
+  `rules.scout_models`. Follow the hint (another `--kind`, `--worker` or
+  `--model`). Use `--override` only with the captain's exact words allowing that
+  spawn; boss saves them on the task. Never add model rules to briefs or notes:
+  ask the captain to set them in config so boss enforces them.
 - `land` requires the captain's exact words and a green, eligible PR. Never
   invent approval or turn `merge = "auto"` into permission. Merge policy is for the supervisor;
   `merge = "never"` refuses landing and every other policy still requires the quote.
@@ -168,7 +175,8 @@ Role choice is `--worker`, project `worker`, global `default_worker`, then
 current T3 behavior. `--kind scout` with no `--worker` selects the scout role
 when present. Each project role merges over the global role field by field;
 explicit model, effort, host and kind flags win. Read `project show` or
-`config show --origin --project <name>` before dispatching. Unknown roles and
+`config show --origin --project <name>` before dispatching; both show
+the effective worker rules, and `boss brief` prints them on stderr. Unknown roles and
 unsupported live model options fail loudly. The resolved role is saved on the task.
 
 Keep policy in project settings: `merge`, `delivery`, `test_host`, and

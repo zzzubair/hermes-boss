@@ -177,9 +177,11 @@ class Boss:
                              steers=self.store.steers(name) if steers is None else steers,
                              origin=origin)
 
-    def spawn(self, project_name, title, brief, kind=None, host=None, model=None, effort=None, fits=None, worker=None):
+    def spawn(self, project_name, title, brief, kind=None, host=None, model=None, effort=None, fits=None, worker=None, override=None):
         require_text(title, "title", 300)
         require_text(brief, "task brief", 115000)
+        if override is not None:
+            require_text(override, "--override", 2000)
         goal = self.store.goal(project_name)
         steers = self.store.steers(project_name)
         context = steering_sections(goal, steers, self.redact)
@@ -201,6 +203,20 @@ class Boss:
         message = self.worker_brief(project_name, brief, settings=project, goal=goal, steers=steers)
         base = self.github.default_branch(repo)
         selection = self.model_selection(client, info, project.get("model_selection"), model or project.get("model"), effort or project.get("effort"))
+        _, origins = self.config.effective(project_name, {**overrides, **({"host": host} if host else {})})
+        violations = self.config.violations(project, origins, f"{selection['instanceId']}:{selection['model']}" if selection else None)
+        if violations and override is None:
+            allowed, kinds = project.get("rules", {}).get(kind + "_models"), project.get("kinds")
+            fixes = []
+            if kinds is not None and kind not in kinds:
+                fixes.append(f"--kind {kinds[0]} or another --worker" if kinds else "another --worker")
+            if allowed and len(violations) > len(fixes):
+                fixes.append(f"--model {allowed[0]}")
+            raise BossError("refused", "spawn breaks the captain's worker rules",
+                            "retry with " + " / ".join(fixes + ['--override "<captain\'s exact words>"']), 2, context=violations)
+        if override is not None and not violations:
+            raise BossError("usage", "--override applies only when a worker rule refuses the spawn",
+                            "retry boss spawn without --override", 1)
         task_id = self.store.new_id()
         meta = {"id": task_id, "project": project_name, "project_id": project["project_id"],
                 "host": host_name, "repository": repo, "title": title, "kind": kind,
@@ -209,6 +225,8 @@ class Boss:
                 "status": "launching", "merge": project["merge"], "auto_merge": project["auto_merge"],
                 "no_mistakes": project["no_mistakes"], "test_host": project.get("test_host"),
                 "worker": project.get("worker"), "project_source": source, "fits": fits.strip() if fits is not None else None}
+        if violations:
+            meta["override"] = {"approved": override, "violations": violations}
         self.store.text(task_id, "brief.md", message)
         self.store.save(meta, "launch_intent")
         try:

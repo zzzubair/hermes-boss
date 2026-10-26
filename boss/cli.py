@@ -73,6 +73,7 @@ def parser():
     spawn.add_argument("--model", help="model id or providerInstanceId:model")
     spawn.add_argument("--effort", help="exact effort value supported by that model")
     spawn.add_argument("--fits", metavar="TEXT", help="one line reconciling this task with the project goal and active steers")
+    spawn.add_argument("--override", metavar="QUOTE", help="captain's exact words letting a rule-refused spawn through; saved on the task")
     brief = commands.add_parser("brief", help="preview worker context and contract with a <task> placeholder; read-only")
     brief.add_argument("project")
     brief.add_argument("--worker", help="named worker preset")
@@ -145,6 +146,13 @@ def parser():
     unclear.add_argument("text", help="what was unclear about his answer")
     unclear.add_argument("--round", type=int, help="ask round the captain answered; older rounds are refused")
     return root
+
+
+def rule_lines(values, origins):
+    """Effective deterministic rules, for the supervisor only."""
+    lines = [f"kinds: {literal(values['kinds'])} origin={origins[('kinds',)]}"] if "kinds" in values else []
+    return lines + [f"rules.{key}: {literal(allowed)} origin={origins[('rules', key)]}"
+                    for key, allowed in sorted(values.get("rules", {}).items())]
 
 
 def decision_lines(store, full=False):
@@ -319,6 +327,7 @@ def dispatch(args, boss):
         for key in ("worker", "model", "effort", "host", "kind"):
             if key in effective:
                 lines.append(f"{key}: {literal(effective[key])} origin={origins[(key,)]}")
+        lines.extend(rule_lines(effective, origins))
         lines.append(f"registry: {boss.config.path}" if args.name in boss.config.projects else "registry: absent")
         lines.append(f"notes: {notes}" if notes.is_file() else "notes: absent")
         goal = boss.store.goal(args.name)
@@ -335,7 +344,8 @@ def dispatch(args, boss):
             brief = sys.stdin.read(115001)
         else:
             raise BossError("usage", "supply --brief-file or pipe a brief on stdin", "boss spawn --help", 1)
-        meta = boss.spawn(args.project, args.title, brief, args.kind, args.host, args.model, args.effort, args.fits, args.worker)
+        meta = boss.spawn(args.project, args.title, brief, args.kind, args.host, args.model, args.effort, args.fits, args.worker,
+                          args.override)
         return [f"{meta['id']}: spawned {meta['host']} {meta['status']}",
                 f"thread: {meta['thread_id']}", f"next: boss status {meta['id']}"], 0
     if command == "status":
@@ -347,6 +357,8 @@ def dispatch(args, boss):
                  f"no_mistakes: {str(meta.get('no_mistakes', False)).lower()}"]
         if meta.get("test_host"):
             lines.append(f"test_host: {compact(meta['test_host'])}")
+        if meta.get("override"):
+            lines.append(f"override: {compact(meta['override']['approved'])}")
         lines.append(f"{len(view['requests'])} pending input requests")
         client = boss.client(meta["host"])
         for request_id in view["requests"]:
@@ -469,6 +481,10 @@ def main(argv=None):
         boss = Boss(config, store, redact)
         if args.command == "brief":
             print(boss.worker_brief(args.project, worker=args.worker, origin=args.origin), end="")
+            rules = rule_lines(*config.effective(args.project, {"worker": args.worker}))
+            if rules:
+                # stdout stays byte-identical to the spawned brief; workers never see rules.
+                print(redact("\n".join(["supervisor rules (enforced at spawn; not sent to workers):", *rules])), file=sys.stderr)
             return 0
         with store.locked():
             try:
