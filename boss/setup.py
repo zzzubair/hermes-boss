@@ -13,6 +13,7 @@ import urllib.request
 
 from .common import BossError
 from .config import allows, hermes_home, literal, model_rules, rule_entry
+from .integrations import command_path
 from . import owner
 from .wake import CONSENT_KEY, CONSENT_LINE, HEARTBEAT, LAST, LOCK, endpoints, legacy_target
 
@@ -101,6 +102,22 @@ def doctor(boss):
                 socket.getaddrinfo(hostname, None)
                 return hostname
             check(f"host {name} SSH", resolve_ssh, f"configure {host['ssh']} in ~/.ssh/config and check DNS")
+    # Every host a no-mistakes project spawns on needs the no-mistakes command; boss spawn refuses without it.
+    pipeline = {}
+    for name in boss.config.projects:
+        settings = boss.config.effective(name)[0]
+        if settings["delivery"] == "no-mistakes" and settings["host"]:
+            pipeline.setdefault(settings["host"], []).append(name)
+    for name, projects in pipeline.items():
+        def installed(n=name):
+            if n not in boss.config.hosts:
+                raise ValueError("host is not configured")
+            path = command_path(boss.config.hosts[n], "no-mistakes")
+            if not path:
+                raise ValueError("no no-mistakes command")
+            return path
+        check(f"host {name} no-mistakes (for {', '.join(projects)})", installed,
+              f"install no-mistakes on {name}, or set another host for {', '.join(projects)}")
     for level, text, fix in rule_findings(boss):
         failures += level == "fail"
         lines.append(f"{level}: {text}" + (f"; fix: {fix}" if fix else ""))

@@ -15,7 +15,7 @@ from . import captain
 from . import owner
 from . import panel
 from .common import BossError, Redactor, compact, refuse, require_text
-from .config import Config, boss_home, flatten, display_key, key_parts, literal
+from .config import DELIVERIES, Config, boss_home, flatten, display_key, key_parts, literal
 from .preferences import goal_path, notes_path
 from .events import classify
 from .service import Boss, ci_text, selection_effort
@@ -59,7 +59,7 @@ def parser():
     show.add_argument("--origin", action="store_true")
     show.add_argument("--project", help="apply this project's layer")
     for flag in ("host", "worker", "model", "effort", "kind", "merge", "delivery"):
-        choices = {"kind": ("ship", "scout"), "merge": ("never", "approved", "auto"), "delivery": ("direct-PR", "local-only")}
+        choices = {"kind": ("ship", "scout"), "merge": ("never", "approved", "auto"), "delivery": DELIVERIES}
         show.add_argument("--" + flag, choices=choices.get(flag))
     for action in ("get", "set", "unset"):
         item = configs.add_parser(action)
@@ -134,12 +134,12 @@ def parser():
     project_add = projects.add_parser("add", help="append a discovered project to config.toml")
     project_add.add_argument("name")
     project_add.add_argument("--host", help="override default_host")
-    project_add.add_argument("--delivery", choices=("direct-PR", "local-only"))
+    project_add.add_argument("--delivery", choices=DELIVERIES)
     project_add.add_argument("--merge", choices=("never", "approved", "auto"))
     project_add.add_argument("--worker")
     project_add.add_argument("--auto-merge", action="store_true", default=None, help="supervisor preference only; workers never merge")
     project_add.add_argument("--test-host", help="preferred host for tests; supervisor reference")
-    project_add.add_argument("--no-mistakes", action="store_true", default=None, help="save no_mistakes: true for the supervisor")
+    project_add.add_argument("--no-mistakes", action="store_true", default=None, help="old spelling of --delivery no-mistakes")
     project_show = projects.add_parser("show", help="show effective settings and preference sources")
     project_show.add_argument("name")
     goal = commands.add_parser("goal", help="show or set a project's goal")

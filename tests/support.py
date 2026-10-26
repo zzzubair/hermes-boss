@@ -21,3 +21,13 @@ class HermeticTestCase(unittest.TestCase):
         }, clear=True)
         self.env.start()
         self.addCleanup(self.env.stop)
+
+    def fake_command(self, name, script="exit 0"):
+        """Put an executable `name` first on PATH, as if installed on the local host."""
+        directory = self.home / "bin"
+        directory.mkdir(exist_ok=True)
+        path = directory / name
+        path.write_text("#!/bin/sh\n" + script + "\n")
+        path.chmod(0o755)
+        os.environ["PATH"] = f"{directory}{os.pathsep}{os.environ['PATH']}"
+        return path

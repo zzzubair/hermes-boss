@@ -16,6 +16,8 @@ from .state import atomic_write
 
 # Words a PR body may not use outside code: the PR speaks as the owner, about the change.
 PR_BODY_FORBIDDEN = ["captain", "firstmate", "first mate", "chat"]
+# no-mistakes is direct-PR validated through the no-mistakes pipeline first; no_mistakes = true is its old spelling.
+DELIVERIES = ("direct-PR", "no-mistakes", "local-only")
 DEFAULTS = {"default_host": "", "delivery": "direct-PR", "merge": "approved",
             "no_mistakes": False, "fast_land_docs": False, "kind": "ship", "pr_body_forbidden": PR_BODY_FORBIDDEN}
 SETTINGS = {"host": str, "worker": str, "model": str, "effort": str, "kind": str,
@@ -166,7 +168,7 @@ class Config:
                     self.fail(path, f"must be {expected.__name__}")
                 if expected is str and not value.strip() and key not in ("default_host", "ssh"):
                     self.fail(path, "must be a nonempty string")
-                choices = {"delivery": ("direct-PR", "local-only"), "merge": ("never", "approved", "auto"),
+                choices = {"delivery": DELIVERIES, "merge": ("never", "approved", "auto"),
                            "kind": ("ship", "scout")}
                 if key in choices and value not in choices[key]:
                     self.fail(path, "must be one of " + ", ".join(choices[key]))
@@ -188,6 +190,9 @@ class Config:
                             self.fail(path + ".options.'" + option + "'", "must be str or bool")
             if "merge" in table and "auto_merge" in table:
                 self.fail(prefix or "config", "use merge or deprecated auto_merge, not both")
+            if (table.get("no_mistakes"), table.get("delivery")) in ((True, "local-only"), (False, "no-mistakes")):
+                self.fail(prefix or "config", f"no_mistakes = {str(table['no_mistakes']).lower()} contradicts "
+                          f"delivery = \"{table['delivery']}\"; keep only delivery")
 
         # Register explicit token names even when unrelated validation fails.
         for host in data.get("hosts", {}).values() if isinstance(data.get("hosts", {}), dict) else ():
@@ -334,6 +339,11 @@ class Config:
         values, origins = {}, {}
 
         def apply(layer, origin):
+            # The no_mistakes alias: true means delivery "no-mistakes"; false undoes an inherited one.
+            if layer.get("no_mistakes") and layer.get("delivery", "direct-PR") == "direct-PR":
+                layer = {**layer, "delivery": "no-mistakes"}
+            elif layer.get("no_mistakes") is False and "delivery" not in layer and values.get("delivery") == "no-mistakes":
+                layer = {**layer, "delivery": "direct-PR"}
             for key in layer:
                 for old in list(origins):
                     if old[0] == key:
@@ -371,6 +381,8 @@ class Config:
                 origins[("rules", "models", key)] = origin
         if rules:
             values["rules"] = {"models": rules}
+        values["no_mistakes"] = values["delivery"] == "no-mistakes"
+        origins[("no_mistakes",)] = origins[("delivery",)]
         if not values.get("host"):
             values["host"] = values["default_host"]
             origins[("host",)] = origins[("default_host",)]

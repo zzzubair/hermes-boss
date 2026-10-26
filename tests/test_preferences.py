@@ -25,6 +25,7 @@ class PreferenceTest(unittest.TestCase):
     cli = harness.CLITest.cli
     spawn = harness.CLITest.spawn
     completed = harness.CLITest.completed
+    fake_command = HermeticTestCase.fake_command
 
     def unlisted(self):
         config = self.home / "config.toml"
@@ -116,6 +117,7 @@ class PreferenceTest(unittest.TestCase):
         self.fake.projects[0]["repositoryIdentity"] = None
         config = self.home / "config.toml"
         config.write_text(config.read_text() + 'auto_merge = true\nno_mistakes = true\ntest_host = "wsl"\n')
+        self.fake_command("no-mistakes")
         with patch("boss.service.resolve_repository", side_effect=AssertionError("registry repository must win")):
             meta = self.spawn()
             code, shown = self.cli("project", "show", "repo")
@@ -150,6 +152,7 @@ class PreferenceTest(unittest.TestCase):
         (self.home / "projects/repo.md").write_text("NOTES_ONLY")
         with (self.home / "config.toml").open("a") as f:
             f.write('test_host = "wsl"\nno_mistakes = true\n')
+        self.fake_command("no-mistakes")
         meta = self.spawn()
         message = (self.store.directory(meta["id"]) / "brief.md").read_text()
         sent = next(a["message"] for n, a in self.fake.calls if n == "t3_thread_launch")
@@ -228,14 +231,14 @@ class PreferenceTest(unittest.TestCase):
         original = config.read_bytes() + b"\r\n# Preserve this comment and CRLF.\r\n"
         config.write_bytes(original)
         with patch("boss.service.resolve_repository", return_value="example/repo") as resolve:
-            code, output = self.cli("project", "add", "repo", "--delivery", "local-only", "--auto-merge",
+            code, output = self.cli("project", "add", "repo", "--delivery", "direct-PR", "--auto-merge",
                                     "--test-host", "wsl", "--no-mistakes")
             self.assertEqual(code, 0, output)
             appended = config.read_bytes()
             self.assertTrue(appended.startswith(original))
             entry = tomllib.loads(appended.decode())["projects"]["repo"]
             self.assertEqual(entry, {"host": "test", "project_id": "p1", "repository": "example/repo",
-                                     "delivery": "local-only", "auto_merge": True, "test_host": "wsl", "no_mistakes": True})
+                                     "delivery": "direct-PR", "auto_merge": True, "test_host": "wsl", "no_mistakes": True})
             code, output = self.cli("project", "add", "repo")
             self.assertEqual(code, 2, output)
             self.assertIn("already has a registry entry", output)
