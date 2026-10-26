@@ -186,8 +186,12 @@ the effective worker rules, and `boss brief` prints them on stderr. Unknown role
 unsupported live model options fail loudly. The resolved role is saved on the task.
 
 Keep policy in project settings: `merge`, `delivery`, `test_host`, and
-`no_mistakes`. These are supervisor preferences; put any relevant instructions
-in the task's brief. Workers always obey the worktree contract
+`no_mistakes`. Boss tells workers to run heavy tests on `test_host` when set;
+put any other relevant instructions in the task's brief. Record standing rules
+(mobile-first, test on WSL, no secrets in logs, PR body shape) as steers that
+start with `rule:` (or `rule ship:`, `rule scout:`, `rule direct-PR:`,
+`rule local-only:`); boss adds them to every matching brief, so never repeat
+them from memory. Workers always obey the worktree contract
 and never merge or deploy. `answer` accepts the exact request/question ID
 printed by status. Multi-question requests still need a complete answer object.
 

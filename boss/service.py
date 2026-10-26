@@ -9,15 +9,18 @@ from .common import BossError, refuse, require_text
 from .events import status_line
 from .integrations import GitHub, PR_PATTERN, github_repository, inspect_worktree, remove_worktree, resolve_repository
 from .mcp import MCP
-from .preferences import compose_brief, notes_path, project_name, source_note, steering_sections
+from .preferences import compose_brief, notes_path, project_name, source_note, steering_sections, steers_path
 from .state import now
 
 
 TERMINAL = {"completed", "failed", "interrupted", "cancelled", "rolled_back", "idle"}
 SLUG_CHARS = 40
 STATUS_FORMS = ("BOSS: done: <PR url or one-line report> / BOSS: needs-decision: <question> / "
-                "BOSS: blocked: <why> / BOSS: paused: <what you wait on>")
+                "BOSS: blocked: <why> / BOSS: paused: <what you wait on> until <UTC time>")
 MARK = "[boss] "  # Firstmate's from-firstmate marker: the supervisor speaking, never the captain
+# A steer written "rule: ..." is a standing rule for every brief; "rule scout: ..." or
+# "rule direct-PR: ..." only for briefs of that kind or delivery.
+STANDING = re.compile(r"rule(?:\s+(ship|scout|direct-PR|local-only))?:\s*(\S.*)", re.I | re.S)
 
 
 def slug(title):
@@ -29,7 +32,13 @@ def slug(title):
     return cut or text[:SLUG_CHARS]
 
 
-def footer(kind, delivery, *, origin=False):
+def standing_rule(steer):
+    """'rule scout: Cite files' -> ('scout', 'Cite files'); 'rule: X' -> (None, 'X'); any other steer -> None."""
+    match = STANDING.match(steer["text"])
+    return match and (match[1] and match[1].lower(), match[2].strip())
+
+
+def footer(kind, delivery, *, origin=False, test_host=None, standing=(), standing_source=None):
     rules = [
         "### boss worker contract",
         "Work only in this assigned worktree. Never change the primary checkout or another task's worktree.",
@@ -38,8 +47,13 @@ def footer(kind, delivery, *, origin=False):
         "Never merge. Never deploy. Report through this thread to boss.",
         "Any question, decision or blocker MUST go through your harness's interactive question tool, which raises a T3 input request "
         "(AskUserQuestion in Claude Code, request_user_input in Codex). Never ask in plain text. "
-        "After asking, stop: take no further action until the answer arrives, and end the turn if the tool returns without one. "
-        "Never poll, sleep or wait in a loop spending turns.",
+        "After asking, stop: take no further action until the answer arrives, and end the turn if the tool returns without one.",
+        "Never end your turn to wait for something your shell can watch (tests, CI, a stack booting). "
+        "Wait inside ONE blocking command, such as `until <condition>; do sleep 30; done` or `gh pr checks <pr> --watch`, "
+        "with your shell tool's largest timeout, and reissue the same command if it times out. "
+        "Never sleep and then check in a separate step, and never background a job to poll it. "
+        "Use paused only for a wait you cannot watch yourself, and name until <UTC time>. "
+        "Hitting the same obstacle twice is a blocker: ask through the question tool and end with blocked.",
         "End EVERY turn with exactly one status line as the last line of your final message, with nothing after it: "
         f"{STATUS_FORMS}. boss reads only that line to learn how the turn ended; a turn without one is reported as unclear.",
         "Ask a question through the question tool first; the needs-decision line repeats it. "
@@ -60,6 +74,16 @@ def footer(kind, delivery, *, origin=False):
         rules.append("Ship, direct-PR: implement, verify, commit and push this branch. Open exactly ONE PR against the origin default branch, "
                      "link it to this thread with link_pull_request, then stop. Put the verification in your final message "
                      "and end it with BOSS: done: <PR url>.")
+    if test_host:
+        rules.append(f"Run heavy tests (full suites, browsers, app stacks) on {test_host}, not on this host.")
+    if kind != "scout":
+        rules.append("If the change touches UI, put before and after screenshots of the real page in the PR or final report.")
+    matching = [text for scope, text in standing if scope in (None, kind, delivery.lower())]
+    if matching:
+        rules.append("Standing rules from the captain. Follow every one:")
+        if origin:
+            rules.append(source_note(standing_source, True).rstrip())
+        rules.extend(f"- {text}" for text in matching)
     if origin:
         rules.insert(1, source_note(Path(__file__), True).rstrip())
     return "\n\n" + "\n".join(rules) + "\n"
@@ -199,11 +223,14 @@ class Boss:
     def worker_brief(self, name, brief="<task>", *, worker=None, settings=None, goal=None, steers=None, origin=False):
         if settings is None:
             settings, _ = self.config.effective(name, {"worker": worker})
-        return compose_brief(brief, self.store.home, name,
-                             footer(settings["kind"], settings["delivery"], origin=origin), self.redact,
+        steers = self.store.steers(name) if steers is None else steers
+        # Standing rules come from the steer store on every brief and move into the contract.
+        standing = [rule for rule in map(standing_rule, steers) if rule]
+        contract = footer(settings["kind"], settings["delivery"], origin=origin, test_host=settings.get("test_host"),
+                          standing=standing, standing_source=steers_path(self.store.home, name))
+        return compose_brief(brief, self.store.home, name, contract, self.redact,
                              goal=self.store.goal(name) if goal is None else goal,
-                             steers=self.store.steers(name) if steers is None else steers,
-                             origin=origin)
+                             steers=[s for s in steers if not standing_rule(s)], origin=origin)
 
     def spawn(self, project_name, title, brief, kind=None, host=None, model=None, effort=None, fits=None, worker=None, override=None):
         require_text(title, "title", 300)
