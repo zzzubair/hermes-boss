@@ -80,9 +80,10 @@ class CaptainTest(unittest.TestCase):
 
         context = Context()
         register(context)
-        self.assertEqual(sorted(context.commands), ["afk", "away", "back", "boss"])
+        self.assertEqual(sorted(context.commands), ["afk", "ahoy", "away", "back", "boss"])
         self.assertEqual(context.commands["boss"][1], "[take|release|status]")
         self.assertIs(context.commands["afk"][0], context.commands["away"][0])
+        self.assertIs(context.commands["ahoy"][0], context.commands["back"][0])
         self.assertEqual(context.commands["away"][1], "[note]")
 
     def test_ask_round_numbers_in_order_and_close_by_number(self):
@@ -255,6 +256,14 @@ class CaptainTest(unittest.TestCase):
         # However much happened, his /back reply is the ack and nothing else: no event list, no decisions.
         self.assertEqual(plugin.on_back(""), "Welcome back. Catching you up.")
         self.assertEqual([e["event"] for e in self.events() if e["event"] in ("away", "back", "ask")], ["away", "back"])
+
+    def test_slash_ahoy_is_back(self):
+        context = type("Context", (), {"register_hook": lambda *a: None, "commands": {},
+                                       "register_command": lambda self, name, handler, **k: self.commands.update({name: handler})})()
+        register(context)
+        self.assertEqual(plugin.on_away("lunch"), f"Got it. Away mode on {captain.since_text(self.away())}.")
+        self.assertEqual(context.commands["ahoy"](""), "Welcome back. Catching you up.")
+        self.assertEqual([e["event"] for e in self.events() if e["event"] in ("away", "back")], ["away", "back"])
 
     def test_back_hands_the_catch_up_to_the_supervisor_through_the_inbox(self):
         self.ok("away", "going to bed")

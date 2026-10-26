@@ -286,7 +286,7 @@ class Store:
                 active += 1
                 if meta.get("pending_inputs") or (meta.get("observed") or {}).get("requests"):
                     items.append({"id": meta["id"], "kind": "input"})
-                elif unreviewed(meta):
+                elif unreviewed(meta) and not meta.get("parked"):
                     items.append({"id": meta["id"], "kind": "finished"})
             except (OSError, ValueError, KeyError, TypeError, AttributeError, BossError):
                 continue

@@ -129,6 +129,8 @@ def stale(meta, item):
         return "task settled"
     if meta.get("landed"):
         return "PR landed"
+    if meta.get("parked") and item.get("kind") == "done":
+        return "parked by the captain; never asked to land until unparked"
     observed = meta.get("observed") or {}
     states = {p["url"]: p.get("state") for p in observed.get("prs", [])}
     finished = [states.get(url) for url in item.get("pr_urls", [])]

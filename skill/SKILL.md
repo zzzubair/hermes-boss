@@ -78,6 +78,9 @@ boss send <id> "<instruction>"
 boss send <id> "<instruction>" --image <path> [--image <path> ...]
 boss answer <id> <request/question-id> "<answer>"
 boss stop <id>
+boss adopt <project> --pr <url> [--title "<task>"]
+boss park <id> "<captain's words>"
+boss unpark <id>
 boss decide list
 boss decide add "<captain decision needed>" --task <id>
 boss decide add "<merge/deploy/demo question>" --task <id> --action merge|deploy|demo
@@ -145,7 +148,7 @@ and use `alias` for all boss commands, including goals and steers.
 
 ## Captain away and back
 
-Only the captain's `/away` (or `/afk`) and `/back` change his presence. Never
+Only the captain's `/away` (or `/afk`) and `/back` (or `/ahoy`) change his presence. Never
 infer it from chat and never run `boss away` or `boss back` yourself unless he
 used those words as a command (`boss back --full` is read-only and always
 fine). His `/away` and `/back` replies are one-line
@@ -199,6 +202,17 @@ it with `boss log "<his words>" --task <id> --approves <what>`. After a yes,
 When he says "don't merge or deploy X until I say", or freezes merging, record
 it with `boss steer <project> "<his words>" --fence` (add `--task <id>` for one
 task). `land` refuses until he lifts it and you run `boss steer drop`.
+
+When he says to hold one task ("park that, I want to try it first"), run
+`boss park <id> "<his words>"`. Its row shows `parked` and "waiting on
+captain", its "finished, PR ..." wake is dropped, and `land` refuses even with
+his words, until he says go and you run `boss unpark <id>`. Never ask him to
+land a parked task.
+
+When he points you at a PR opened outside boss (an older Firstmate PR), run
+`boss adopt <project> --pr <url>`. It has no worker: status, merge wakes,
+fences, `land` and `settle` work, `send` refuses, and settle never touches
+any worktree. Fix its CI or PR body on GitHub, not through boss.
 
 ## Guards
 

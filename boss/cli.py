@@ -80,6 +80,14 @@ def parser():
                        help="captain's exact words letting a rule-refused spawn through once; saved in the task journal")
     spawn.add_argument("--image", action="append", default=[], metavar="PATH",
                        help="png/jpeg/gif/webp up to 10 MB attached to the brief; repeat up to 8 times")
+    adopt = commands.add_parser("adopt", help="track a PR opened outside boss as a worker-less task: status, wakes, fences, land, settle")
+    adopt.add_argument("project")
+    adopt.add_argument("--pr", required=True, metavar="URL", help="open GitHub PR in the project's repository")
+    adopt.add_argument("--title", help="task name; default the PR title")
+    park = commands.add_parser("park", help="hold a task for the captain: land refuses and no wake asks to land it")
+    park.add_argument("id")
+    park.add_argument("words", help="the captain's words, e.g. 'wait until after the demo'")
+    commands.add_parser("unpark", help="lift a park; only when the captain says so").add_argument("id")
     panel_command = commands.add_parser("panel", help="N workers on one brief, then a blind judge; optional revise loop")
     panel_command.add_argument("project")
     panel_command.add_argument("--brief-file", metavar="FILE", help="UTF-8 brief; omitted or '-' reads piped stdin")
@@ -212,11 +220,12 @@ def decision_lines(store, full=False):
     return lines
 
 
-STATE_WORDS = {"done": "done", "needs-decision": "needs a decision", "approval": "needs a permission ok",
+STATE_WORDS = {"parked": "parked", "adopted": "PR opened outside boss", "done": "done",
+               "needs-decision": "needs a decision", "approval": "needs a permission ok",
                "blocked": "blocked", "paused": "paused", "error": "stopped", "ended_unclear": "unclear",
                "working": "working"}
-NEXT_WORDS = {"needs-decision": "answer its question", "approval": "approve its prompt in T3",
-              "blocked": "unblock it", "paused": "wait; it resumes itself", "error": "read why, then resend or settle",
+NEXT_WORDS = {"parked": "waiting on captain", "needs-decision": "answer its question",
+              "approval": "approve its prompt in T3", "blocked": "unblock it", "paused": "wait; it resumes itself", "error": "read why, then resend or settle",
               "ended_unclear": "ask it what happened", "working": "wait"}
 
 
@@ -241,7 +250,7 @@ def model_text(meta, thread):
 
 
 def next_step(kind, prs):
-    if kind != "done":
+    if kind not in ("done", "adopted"):
         return NEXT_WORDS[kind]
     open_prs = [p for p in prs if p["state"] == "OPEN"]
     if not prs:
@@ -249,8 +258,8 @@ def next_step(kind, prs):
     if not open_prs:
         return "settle it"
     ci = {p["ci"]["state"] for p in open_prs}
-    return ("send it the CI failure" if "failed" in ci else "wait for CI" if "pending" in ci else
-            "review, then land")
+    failed = "fix its CI outside boss" if kind == "adopted" else "send it the CI failure"
+    return failed if "failed" in ci else "wait for CI" if "pending" in ci else "review, then land"
 
 
 def fleet_row(boss, meta, full):
@@ -262,12 +271,15 @@ def fleet_row(boss, meta, full):
                                "-", "-", "check the host"], exc
     thread = view["thread"]
     event = classify(view)
-    state = STATE_WORDS[event.kind] + (f": {event.detail}" if event.detail and event.kind != "approval" else "")
+    kind = "parked" if meta.get("parked") else "adopted" if meta.get("adopted") else event.kind
+    detail = meta["parked"]["words"] if kind == "parked" else event.detail if kind == event.kind else ""
+    state = STATE_WORDS[kind] + (f": {detail}" if detail and kind != "approval" else "")
     prs = ", ".join(p["url"] + (f" CI {p['ci']['state']}" if p["state"] == "OPEN" else f" {p['state'].lower()}")
                     for p in view["prs"]) or "-"
-    return view["status"], [compact(meta["title"], None if full else 80), meta["project"], meta["host"], model_text(meta, thread),
+    return view["status"], [compact(meta["title"], None if full else 80), meta["project"], meta["host"],
+                            "-" if meta.get("adopted") else model_text(meta, thread),
                             compact(state, None if full else 90), prs, quiet(thread.get("updatedAt")),
-                            next_step(event.kind, view["prs"])], None
+                            next_step(kind, view["prs"])], None
 
 
 def table(header, rows):
@@ -339,7 +351,7 @@ def worktree_text(meta, result):
 def mutating(args):
     """Commands that change the ledger or config; read-only ones always work."""
     command = args.command
-    return (command in ("init", "spawn", "panel", "send", "answer", "stop", "land", "settle", "away", "log", "release") or
+    return (command in ("init", "spawn", "adopt", "park", "unpark", "panel", "send", "answer", "stop", "land", "settle", "away", "log", "release") or
             (command == "back" and not args.full) or
             (command == "steer" and args.project != "list") or (command == "goal" and args.text is not None) or
             (command == "decide" and args.decision_command != "list") or
@@ -494,15 +506,28 @@ def dispatch(args, boss):
                           args.override, args.image)
         return [f"{meta['id']}: spawned {meta['host']} {meta['status']}",
                 f"thread: {meta['thread_id']}", f"next: boss status {meta['id']}"], 0
+    if command == "adopt":
+        meta = boss.adopt(args.project, args.pr, args.title)
+        return [f"{meta['id']}: adopted {args.pr}", f"next: boss status {meta['id']}"], 0
+    if command == "park":
+        boss.park(args.id, args.words)
+        return [f"{args.id}: parked; land refuses until boss unpark {args.id}", "next: boss"], 0
+    if command == "unpark":
+        return [f"{args.id}: " + ("unparked" if boss.unpark(args.id) else "was not parked; nothing changed"),
+                f"next: boss status {args.id}"], 0
     if command == "status":
         meta = boss.store.load(args.id)
         view = boss.snapshot(meta)
+        adopted, ended = meta.get("adopted"), view["status"] == "completed" or meta.get("adopted")
         lines = [f"{meta['id']}: {meta['project']} {view['status']}" + (" settled" if meta.get("settled") else ""),
-                 f"thread: {meta['thread_id']}", f"host: {meta['host']}", f"model: {model_text(meta, view['thread'])}",
+                 "worker: none; PR opened outside boss" if adopted else f"thread: {meta['thread_id']}",
+                 f"host: {meta['host']}", *([] if adopted else [f"model: {model_text(meta, view['thread'])}"]),
                  f"auto_merge: {str(meta.get('auto_merge', False)).lower()}",
                  f"no_mistakes: {str(meta.get('no_mistakes', False)).lower()}"]
         if meta.get("test_host"):
             lines.append(f"test_host: {compact(meta['test_host'])}")
+        if meta.get("parked"):
+            lines.append(f"parked by captain: {compact(meta['parked']['words'])}")
         if meta.get("override"):
             lines.append(f"allowed by captain: {compact(meta['override']['approved'])}")
             lines.extend(f"  despite: {' '.join(text.split())}" for text in meta["override"]["violations"])
@@ -518,12 +543,14 @@ def dispatch(args, boss):
         for pr in view["prs"]:
             lines.append(f"{pr['url']}: {pr['state'].lower()} ci={ci_text(pr['ci'])}")
         lines.append("last: " + (json.dumps(view["assistant"], ensure_ascii=False) if full else compact(view["assistant"] or "0 assistant messages", 360)))
-        lines.append(f"next: boss answer {args.id} <request> \"<answer>\"" if view["requests"] else
+        lines.append(f"next: waiting on captain; boss unpark {args.id} only when he says so" if meta.get("parked") else
+                     f"next: boss answer {args.id} <request> \"<answer>\"" if view["requests"] else
                      f"next: open T3 thread {meta['thread_id']} to review pending permissions" if view["approvals"] else
                      f"next: boss land {args.id} (docs-only PR under fast_land_docs; no need to ask the captain)"
-                     if view["status"] == "completed" and boss.docs_only_pr(meta, view["prs"]) else
-                     f'next: boss land {args.id} --approved "<captain quote>"' if view["status"] == "completed" and any(p["state"] == "OPEN" and p["ci"]["state"] == "green" for p in view["prs"]) else
-                     f"next: boss settle {args.id}" if view["status"] == "completed" and not any(p["state"] == "OPEN" for p in view["prs"]) else
+                     if ended and boss.docs_only_pr(meta, view["prs"]) else
+                     f'next: boss land {args.id} --approved "<captain quote>"' if ended and any(p["state"] == "OPEN" and p["ci"]["state"] == "green" for p in view["prs"]) else
+                     f"next: boss settle {args.id}" if ended and not any(p["state"] == "OPEN" for p in view["prs"]) else
+                     "next: wait for its checks, or fix the PR outside boss" if adopted else
                      f"next: boss send {args.id} \"<message>\"")
         boss.reviewed(meta, view)
         return lines, 0
