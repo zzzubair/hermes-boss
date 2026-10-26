@@ -384,6 +384,7 @@ boss own                        # also /boss: open boss in this Hermes session
 boss own --take                 # also /boss take: move it here from another session
 boss own status
 boss release                    # also /boss release: nobody owns boss; wakes are held
+boss note 'Leaderboard is cut off on phones' --project clashlens --image shot.png  # any session
 ```
 
 Projects can be discovered by exact T3 title without registration. Zero or
@@ -548,6 +549,20 @@ that does not own boss, naming the owner and how to take over. Read-only
 commands (status, show, list, brief, doctor) always work. A human shell
 without `HERMES_SESSION_KEY` may change boss but gets a one-line warning when
 a session owns it.
+
+`boss note "<text>" [--project P] [--image PATH] [--from LABEL]` is the one
+write any session may make, like Firstmate's `fm-inbox.sh note`: a Discord
+chat, a phone session or a shell hands the owner something without taking
+boss. The note goes into the captain journal with the sender's label (from
+`HERMES_SESSION_PLATFORM`, `HERMES_SESSION_CHAT_TYPE` and
+`HERMES_SESSION_CHAT_NAME`, or `--from`; "a shell" outside Hermes) and into the
+owner's inbox, so it arrives through `boss watch` or the next tool result as
+`Note from Discord DM (clashlens): <text>`. It also shows in the `/back`
+timeline. With no owner it waits on disk for the next `/boss`. Images (up to
+8, png/jpeg/gif/webp, 10 MB each) and the full text of a note too long for one
+inbox line are kept in `$BOSS_HOME/notes/<time>/`, and the line names that
+folder. Text, project or label that looks like a token is refused, the same
+way steers are. A busy ledger makes a note wait its turn, never fail.
 
 ### How a wake reaches the owner
 

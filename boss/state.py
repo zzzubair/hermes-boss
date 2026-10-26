@@ -237,7 +237,7 @@ class Store:
         return self.home / "captain.jsonl"
 
     def captain_events(self):
-        """Append-only captain journal: away, back, check-in logs, ask rounds, unclear marks, ownership."""
+        """Append-only captain journal: away, back, check-in logs, ask rounds, unclear marks, ownership, notes."""
         path = self.captain_path()
         if not path.exists():
             return []
@@ -248,7 +248,7 @@ class Store:
                     if not line.endswith("\n"):
                         raise ValueError("incomplete append")
                     record = json.loads(line)
-                    if record["event"] not in ("away", "back", "log", "ask", "unclear", "own"):
+                    if record["event"] not in ("away", "back", "log", "ask", "unclear", "own", "note"):
                         raise ValueError("unknown event " + str(record["event"]))
                     if not datetime.fromisoformat(record["at"]).tzinfo:
                         raise ValueError("timestamp has no timezone")

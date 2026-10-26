@@ -7,6 +7,7 @@ Captain-facing text carries no task ids or commit SHAs.
 from datetime import datetime, timezone
 import re
 
+from .attachments import load_images
 from .common import BossError, refuse
 
 
@@ -84,6 +85,32 @@ def away(store, note):
          ". Don't ask him anything until /back: act on your own judgement and queue decisions for /back."
          " Anything he says or decides in a check-in counts in full; record it with boss log.")
     return [f"Got it. Away mode on {since_text(record)}.", "next: boss back"]
+
+
+def note(store, text, sender, project=None, paths=()):
+    """Any session hands the owner a note: journaled with the sender, delivered through the inbox like /away."""
+    if any(store.redact(value) != value for value in (text, sender, project or "")):
+        refuse("note contains a token or secret", "remove credentials from the note")
+    images = load_images(paths)
+    head = f"Note from {plain(sender, 80)}" + (f" ({plain(project, 60)})" if project else "") + ": "
+    body, saved = plain(text, None), None
+    from .inbox import LINE_CHARS
+    if images or len(head) + len(body) > LINE_CHARS:
+        # The inbox line stays short; the full text and images wait on disk for the owner to open.
+        saved = store.home / "notes" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        saved.mkdir(parents=True, mode=0o700)
+        (saved / "note.txt").write_text(text.strip() + "\n", encoding="utf-8")
+        for number, image in enumerate(images, 1):
+            (saved / f"image-{number}.{image['mimeType'].split('/')[1]}").write_bytes(image["data"])
+        where = (f" ({plural(len(images), 'image')} and the full note in {saved}/)" if images else
+                 f" (full note in {saved}/note.txt)")
+        if len(head) + len(body) + len(where) > LINE_CHARS:
+            body = plain(body, max(LINE_CHARS - len(head) - len(where), 40))
+        body += where
+    record = store.captain("note", text=text.strip(), sender=sender, project=project,
+                          images=len(images), saved=str(saved) if saved else None)
+    tell(store, record, head + body)
+    return record
 
 
 def tell(store, record, line):
@@ -406,6 +433,10 @@ def captain_rows(store, events):
     for record in events:
         if record["event"] == "log":
             rows.append((record["at"], "log", "check-in: " + plain(record["text"], 400)))
+        elif record["event"] == "note":
+            rows.append((record["at"], "note", f"note from {plain(record['sender'], 80)}" +
+                         (f" ({plain(record['project'], 60)})" if record.get("project") else "") +
+                         ": " + plain(record["text"], 300)))
         elif record["event"] == "unclear":
             text = (decisions.get(record["decision"]) or {}).get("text") or "a decision"
             rows.append((record["at"], "unclear", f"marked unclear: {plain(text, 160)} ({plain(record['note'], 160)})"))
