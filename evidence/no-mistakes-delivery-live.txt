@@ -1,0 +1,34 @@
+# Real bin/boss on oracle, scratch BOSS_HOME. oracle checked locally, ser5ver over real ssh (no-mistakes lives in ~/.local/bin there, on PATH only in a login shell).
+# T3 URLs are dummies, so MCP lines fail; only the no-mistakes lines matter here.
+
+$ cat config.toml
+default_host = "oracle"
+[hosts.oracle]
+url = "http://127.0.0.1:1/mcp"
+ssh = ""
+[hosts.ser5ver]
+url = "http://127.0.0.1:1/mcp"
+ssh = "ser5ver"
+[projects.clashlens]
+delivery = "no-mistakes"
+[projects.clashlens-ser5ver]
+host = "ser5ver"
+no_mistakes = true
+[projects.blog]
+host = "ser5ver"
+
+$ boss doctor | grep no-mistakes
+fail: host oracle no-mistakes (for clashlens): no no-mistakes command; fix: install no-mistakes on oracle, or set another host for clashlens
+ok: host ser5ver no-mistakes (for clashlens-ser5ver) /home/zubair/.local/bin/no-mistakes
+
+$ boss config show --origin --project clashlens-ser5ver | grep -e delivery -e no_mistakes
+/tmp/tmp.ugERngf8FZ/config.toml [projects.clashlens-ser5ver]	delivery = "no-mistakes"
+/tmp/tmp.ugERngf8FZ/config.toml [projects.clashlens-ser5ver]	no_mistakes = true
+/tmp/tmp.ugERngf8FZ/config.toml	projects.clashlens.delivery = "no-mistakes"
+/tmp/tmp.ugERngf8FZ/config.toml	projects.clashlens-ser5ver.no_mistakes = true
+
+$ boss brief clashlens | grep "Ship, no-mistakes"
+Ship, no-mistakes: implement, verify and commit on this branch, then validate it through /no-mistakes (the no-mistakes skill: `no-mistakes axi run --intent "<the task's goal and your decisions>"`) before any PR exists. Never push or open a PR another way: the pipeline reviews, tests, pushes and opens exactly ONE PR against the origin default branch. A review finding you cannot settle from the brief is a question: ask it through the question tool and end the turn; never dismiss it on your own. The PR body must keep the pipeline's evidence appendix, which links its review and test evidence: above it write only Intent and What changed, and never remove it when you edit the body; boss refuses to land a PR without it. Link the PR to this thread with link_pull_request, then stop. Put the verification in your final message and end it with BOSS: done: <PR url>.
+
+$ ssh ser5ver no-mistakes --version (login shell)
+no-mistakes version v1.84.0 (4822244) 2026-09-26T08:30:42Z
