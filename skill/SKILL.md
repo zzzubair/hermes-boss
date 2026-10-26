@@ -172,6 +172,12 @@ task). `land` refuses until he lifts it and you run `boss steer drop`.
 - `land` requires the captain's exact words (or his saved yes) and a green, eligible PR. Never
   invent approval or turn `merge = "auto"` into permission. Merge policy is for the supervisor;
   `merge = "never"` refuses landing and every other policy still requires the quote.
+- With `fast_land_docs = true`, a PR touching only `*.md` files lands with
+  `boss land <id>` and no quote, without waiting on running checks. Never ask
+  the captain about it; `decide add --task` refuses it. Fences still win.
+- A wake ending "link only works on that machine" means the worker gave a
+  localhost or bare host:port link. Ask it for a tailnet or preview link before
+  passing the demo on.
 - `settle` refuses unlanded work or missing reports. Use `--discard-approved`
   only with the captain's explicit words authorizing that discard. When the
   worktree is already gone, it settles only if a linked PR merged; otherwise it

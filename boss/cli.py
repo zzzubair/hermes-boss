@@ -99,9 +99,9 @@ def parser():
     answer.add_argument("text", help="answer text; multi-question requests take a JSON object keyed by question id")
     stop = commands.add_parser("stop", help="interrupt a worker without removing work")
     stop.add_argument("id")
-    land = commands.add_parser("land", help="merge one green PR with explicit captain approval")
+    land = commands.add_parser("land", help="merge one green PR with explicit captain approval, or a docs-only PR under fast_land_docs")
     land.add_argument("id")
-    land.add_argument("--approved", metavar="QUOTE", help="captain's exact words; required by guard")
+    land.add_argument("--approved", metavar="QUOTE", help="captain's exact words; required unless fast_land_docs covers a docs-only PR")
     settle = commands.add_parser("settle", help="unwatch PRs, settle a terminal thread, remove its worktree once landed")
     settle.add_argument("id", nargs="?")
     settle.add_argument("--prune-landed", action="store_true",
@@ -441,6 +441,7 @@ def dispatch(args, boss):
                  f"auto_merge: {str(settings['auto_merge']).lower()}",
                  f"test_host: {compact(settings.get('test_host', 'unset'))}",
                  f"no_mistakes: {str(settings['no_mistakes']).lower()}",
+                 f"fast_land_docs: {str(settings['fast_land_docs']).lower()}",
                  "model_selection: " + json.dumps(settings['model_selection'], sort_keys=True, separators=(',', ':'))]
         effective, origins = boss.config.effective(args.name)
         for key in ("worker", "model", "effort", "host", "kind"):
@@ -492,6 +493,8 @@ def dispatch(args, boss):
         lines.append("last: " + (json.dumps(view["assistant"], ensure_ascii=False) if full else compact(view["assistant"] or "0 assistant messages", 360)))
         lines.append(f"next: boss answer {args.id} <request> \"<answer>\"" if view["requests"] else
                      f"next: open T3 thread {meta['thread_id']} to review pending permissions" if view["approvals"] else
+                     f"next: boss land {args.id} (docs-only PR under fast_land_docs; no need to ask the captain)"
+                     if view["status"] == "completed" and boss.docs_only_pr(meta, view["prs"]) else
                      f'next: boss land {args.id} --approved "<captain quote>"' if view["status"] == "completed" and any(p["state"] == "OPEN" and p["ci"]["state"] == "green" for p in view["prs"]) else
                      f"next: boss settle {args.id}" if view["status"] == "completed" and not any(p["state"] == "OPEN" for p in view["prs"]) else
                      f"next: boss send {args.id} \"<message>\"")
@@ -554,6 +557,11 @@ def dispatch(args, boss):
             return lines + (['next: boss decide close <n> "<captain words>"'] if record else ["next: boss"]), 0
         require_text(args.text, "decision", 20000)
         if subcommand == "add":
+            if args.task:
+                meta = boss.store.load(args.task)
+                if not meta.get("settled") and boss.fast_land_docs(meta) and boss.docs_only_pr(meta, boss.snapshot(meta)["prs"]):
+                    refuse("a docs-only PR lands under fast_land_docs; it is never a captain decision",
+                           f"boss land {args.task}; add the decision without --task if it is about something else")
             record, added = captain.add_decision(boss.store, args.text, args.task, args.action)
             return [f"{record['id']}: decision {'open' if added else 'already open; not added twice'}", "next: boss decide ask"], 0
         if subcommand == "answer":

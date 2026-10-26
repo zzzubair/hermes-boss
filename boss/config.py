@@ -16,10 +16,10 @@ from .state import atomic_write
 # Words a PR body may not use outside code: the PR speaks as the owner, about the change.
 PR_BODY_FORBIDDEN = ["captain", "firstmate", "first mate", "chat"]
 DEFAULTS = {"default_host": "", "delivery": "direct-PR", "merge": "approved",
-            "no_mistakes": False, "kind": "ship", "pr_body_forbidden": PR_BODY_FORBIDDEN}
+            "no_mistakes": False, "fast_land_docs": False, "kind": "ship", "pr_body_forbidden": PR_BODY_FORBIDDEN}
 SETTINGS = {"host": str, "worker": str, "model": str, "effort": str, "kind": str,
             "delivery": str, "merge": str, "auto_merge": bool, "test_host": str,
-            "no_mistakes": bool, "model_selection": dict, "pr_body_forbidden": list}
+            "no_mistakes": bool, "fast_land_docs": bool, "model_selection": dict, "pr_body_forbidden": list}
 # [workers] holds role tables plus this one fleet-wide number.
 MAX_ACTIVE = 15
 # Allow-lists of instance:model per task kind. Unset means no restriction.

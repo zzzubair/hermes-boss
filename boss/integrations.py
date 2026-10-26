@@ -87,6 +87,15 @@ class GitHub:
         except (KeyError, TypeError, ValueError) as exc:
             raise BossError("github", f"invalid branch ref: {exc}") from None
 
+    def files(self, pr):
+        """Every path a PR touches, both sides of a rename included; REST pages through them all."""
+        match = PR_PATTERN.fullmatch(pr["url"])
+        if not match:
+            raise BossError("protocol", "expected a github.com pull request URL")
+        output = run(["gh", "api", "--paginate", f"repos/{match[1]}/pulls/{match[2]}/files",
+                      "--jq", ".[] | .filename, (.previous_filename // empty)"])
+        return [line for line in output.splitlines() if line.strip()]
+
     def merge(self, pr):
         run(["gh", "pr", "merge", pr["url"], "--squash", "--match-head-commit", pr["headRefOid"]])
 

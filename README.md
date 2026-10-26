@@ -254,6 +254,21 @@ Workers never merge or deploy, regardless of policy. The deprecated
 `auto_merge = true` maps to `merge = "auto"`, and false maps to `"approved"`,
 with a warning. Supplying both keys in the same block is an error.
 
+`fast_land_docs = true` (default `false`, global or per project) lets a PR that
+touches only `*.md` files land without the captain: `boss land <id>` needs no
+`--approved`, and checks still running don't hold it up. Renames count both
+paths, so a `.py` file renamed to `.md` is not docs-only. A failed check, a
+conflict, a draft, requested changes or a merge GitHub blocks still refuse.
+Captain fences win: `merge = "never"`, a `--fence` steer, or his "no" to
+merging that task holds it like any other PR. Otherwise it is never a captain decision:
+`boss decide add --task <id>` refuses it, `boss status <id>` suggests
+`boss land <id>`, and the wake says boss can land it.
+
+When a worker's final message or its PR body links to `localhost`, a loopback
+address or a bare host with a port (`http://devbox:3000`), the wake ends with
+"(link only works on that machine: ...)". Tailnet (`*.ts.net`) and preview
+URLs pass. The contract asks ship workers for links the captain can open on his phone.
+
 `delivery` is `direct-PR` or `local-only`. Direct-PR ship workers commit, push
 and open exactly one PR against the origin default branch. Local-only workers
 commit locally and report in their final message. Scouts investigate and

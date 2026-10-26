@@ -183,6 +183,7 @@ class FakeT3:
 class FakeGitHub:
     def __init__(self):
         self.branch, self.merges, self.origin_branches, self.origin_heads = "trunk", [], set(), {}
+        self.paths = ["boss/cli.py"]
         self.pr = {"url": URL, "state": "OPEN", "isDraft": False, "headRefOid": "a" * 40,
                    "headRefName": "", "baseRefName": "trunk", "mergeStateStatus": "CLEAN", "reviewDecision": "APPROVED",
                    "statusCheckRollup": [{"conclusion": "SUCCESS"}], "mergeCommit": None, "body": BODY}
@@ -200,6 +201,11 @@ class FakeGitHub:
         result = copy.deepcopy(self.pr)
         result["ci"] = ci_summary(result["statusCheckRollup"])
         return result
+
+    def files(self, pr):
+        if isinstance(self.paths, Exception):
+            raise self.paths
+        return list(self.paths)
 
     def merge(self, pr):
         self.merges.append(copy.deepcopy(pr))
