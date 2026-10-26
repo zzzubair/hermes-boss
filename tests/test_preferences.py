@@ -129,7 +129,6 @@ class PreferenceTest(unittest.TestCase):
         self.assertEqual(meta["test_host"], "wsl")
         status = self.cli("status", meta["id"])[1]
         self.assertIn("auto_merge: true", status)
-        self.assertIn("auto_merge=true", self.cli()[1])
         message = (self.store.directory(meta["id"]) / "brief.md").read_text()
         self.assertNotIn("auto_merge", message)
         self.assertIn("Never merge. Never deploy.", message)

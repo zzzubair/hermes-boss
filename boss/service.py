@@ -10,10 +10,9 @@ from .events import status_line
 from .integrations import GitHub, PR_PATTERN, github_repository, inspect_worktree, remove_worktree, resolve_repository
 from .mcp import MCP
 from .preferences import compose_brief, notes_path, project_name, source_note, steering_sections, steers_path
-from .state import now
+from .state import FINISHED as TERMINAL, now
 
 
-TERMINAL = {"completed", "failed", "interrupted", "cancelled", "rolled_back", "idle"}
 SLUG_CHARS = 40
 STATUS_FORMS = ("BOSS: done: <PR url or one-line report> / BOSS: needs-decision: <question> / "
                 "BOSS: blocked: <why> / BOSS: paused: <what you wait on> until <UTC time>")
@@ -416,10 +415,10 @@ class Boss:
                                             requestId=request_id)["questions"]]
 
     def reviewed(self, meta, view):
-        """Reading one task acknowledges its completed run, never merge authority."""
+        """Reading one task acknowledges its finished or failed run, never merge authority."""
         before = (meta.get("reviewed_run_id"), meta.get("pending_inputs"))
         meta["pending_inputs"] = view["requests"]
-        if view["status"] == "completed":
+        if view["status"] in TERMINAL:
             meta["reviewed_run_id"] = view["thread"].get("latestRunId")
         if before != (meta.get("reviewed_run_id"), meta.get("pending_inputs")):
             meta["handled_at"] = now()  # inbox items about what was just reviewed are stale
@@ -443,7 +442,7 @@ class Boss:
                              clientRequestId=request_id)
         meta.pop("report_run_id", None)
         meta["handled_at"] = now()
-        if meta.get("status") == "completed":
+        if meta.get("status") in TERMINAL:
             meta["reviewed_run_id"] = (meta.get("observed") or {}).get("run_id")
         self.store.save(meta, "sent", client_request_id=request_id, result=result)
 

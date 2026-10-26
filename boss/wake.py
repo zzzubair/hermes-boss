@@ -280,6 +280,8 @@ class Listener:
                     record = self.inbox.hold(event.dedupe_key, task, event.kind,
                                              describe(meta.get("title"), event, view["prs"], questions),
                                              run=event.turn_id, request_ids=event.request_ids, pr_urls=event.pr_urls)
+                # A finished run stays in the owner's attention line until someone reviews it.
+                self.store.refresh_attention()
                 self.seen[thread["id"]] = signature
         except BossError as exc:
             # Not marked seen: the next push for this thread reads again.

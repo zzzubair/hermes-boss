@@ -335,13 +335,16 @@ class WakeTest(HermeticTestCase):
         hook = plugin.turn_hook(Context(self.home / "profile"))
         with patch("boss.wake.start_wake", return_value=listener):
             result = hook(session_id="agent:captain", user_message="hi")
+            # The finished run stays on the attention line until reviewed; the listener holds wake.lock.
+            finished = f"boss: 1 need you ({self.task['id']} finished) - run boss status"
             self.assertEqual(result["context"],
-                             f"[boss inbox]\nFix thing: ended its turn without a status line or any message\n{NOTE}")
-            self.assertIsNone(hook(session_id="agent:captain", user_message="again"))
-            # A subagent inherits the owner's session key but is never the owner's turn.
+                             f"{finished}\n\n[boss inbox]\nFix thing: ended its turn without a status line or any message\n{NOTE}")
+            self.assertEqual(hook(session_id="agent:captain", user_message="again"), {"context": finished})
+            # A subagent inherits the owner's session key but is never the owner's turn: no inbox for it.
             self.send(updated(self.state("failed", run="run-2"), 2))
             with patch.dict(os.environ, {"HERMES_SESSION_KEY": "agent:captain"}):
-                self.assertIsNone(hook(session_id="child", parent_session_id="agent:captain", user_message="sub"))
+                self.assertEqual(hook(session_id="child", parent_session_id="agent:captain", user_message="sub"),
+                                 {"context": finished})
         self.assertEqual(len(ctx.messages), 1)  # the owner's turn is running: the listener never injects into it
         self.assertEqual([r["via"] for r in self.inbox_log("acked")], ["turn"])
         self.assertEqual(len(self.held()), 1)

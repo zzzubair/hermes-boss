@@ -59,6 +59,17 @@ def identifier(value):
     return value
 
 
+# T3 run states after which a worker waits on someone to look at what it did (the run ended).
+FINISHED = frozenset({"completed", "failed", "interrupted", "cancelled", "rolled_back", "idle"})
+
+
+def unreviewed(meta):
+    """A run that finished or errored and nobody has reviewed (boss status/send) since."""
+    observed = meta.get("observed") or {}
+    return (observed.get("status") in FINISHED and observed.get("run_id") is not None and
+            meta.get("reviewed_run_id") != observed["run_id"])
+
+
 class Store:
     def __init__(self, home, redact):
         self.home, self.redact = Path(home), redact
@@ -256,7 +267,7 @@ class Store:
         The journal remains authoritative. No text, question bodies or secrets
         enter this view: only validated IDs, kinds and a precomputed total.
         """
-        items = []
+        items, active = [], 0
         for path in sorted((self.home / "decisions").glob("*.json")):
             try:
                 record = json.loads(path.read_text())
@@ -272,11 +283,15 @@ class Store:
                 meta = self.load(directory.name)
                 if meta.get("settled"):
                     continue
-                if meta.get("pending_inputs"):
+                active += 1
+                if meta.get("pending_inputs") or (meta.get("observed") or {}).get("requests"):
                     items.append({"id": meta["id"], "kind": "input"})
+                elif unreviewed(meta):
+                    items.append({"id": meta["id"], "kind": "finished"})
             except (OSError, ValueError, KeyError, TypeError, AttributeError, BossError):
                 continue
-        attention = {"version": 1, "count": len(items), "items": items[:6]}
+        # active lets the owner's turn check the wake listener without reading the ledger.
+        attention = {"version": 1, "count": len(items), "items": items[:6], "active": active}
         try:
             away = presence(self.captain_events())
             if away:

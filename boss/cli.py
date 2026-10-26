@@ -1,6 +1,7 @@
 """Content-first command line with stable, terse records."""
 import argparse
 import copy
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -15,7 +16,8 @@ from . import owner
 from .common import BossError, Redactor, compact, refuse, require_text
 from .config import Config, boss_home, flatten, display_key, key_parts, literal
 from .preferences import goal_path, notes_path
-from .service import Boss, ci_text
+from .events import classify
+from .service import Boss, ci_text, normalize_options
 from .state import Store, now
 
 
@@ -81,6 +83,9 @@ def parser():
     status = commands.add_parser("status", help="live fleet or one task, pending questions and PR checks")
     status.add_argument("id", nargs="?")
     status.add_argument("--full", action="store_true", default=argparse.SUPPRESS, help="show complete text")
+    status.add_argument("--project", action="append", help="fleet: only this project (repeatable)")
+    status.add_argument("--skip", action="append", metavar="PROJECT", help="fleet: leave out this project (repeatable)")
+    status.add_argument("--ids", action="store_true", help="fleet: add a task id column")
     send = commands.add_parser("send", help="send a durable message to a worker")
     send.add_argument("id")
     send.add_argument("text")
@@ -171,28 +176,96 @@ def decision_lines(store, full=False):
     return lines
 
 
-def fleet(boss, full=False):
-    tasks = boss.store.tasks(active=True)
+STATE_WORDS = {"done": "done", "needs-decision": "needs a decision", "approval": "needs a permission ok",
+               "blocked": "blocked", "paused": "paused", "error": "stopped", "ended_unclear": "unclear",
+               "working": "working"}
+NEXT_WORDS = {"needs-decision": "answer its question", "approval": "approve its prompt in T3",
+              "blocked": "unblock it", "paused": "wait; it resumes itself", "error": "read why, then resend or settle",
+              "ended_unclear": "ask it what happened", "working": "wait"}
+
+
+def quiet(stamp):
+    """How long ago an ISO stamp was, as 5m / 3h / 2d; '-' when unknown."""
+    try:
+        then = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        seconds = (datetime.now(timezone.utc) - then).total_seconds()
+    except (AttributeError, TypeError, ValueError):
+        return "-"
+    for unit, size in (("d", 86400), ("h", 3600), ("m", 60)):
+        if seconds >= size:
+            return f"{int(seconds // size)}{unit}"
+    return "now"
+
+
+def model_text(meta, thread):
+    selection = meta.get("model_selection") or {}
+    options = normalize_options(selection.get("options"))
+    effort = options.get("reasoningEffort") or options.get("effort")
+    model = selection.get("model") or thread.get("model") or "default"
+    return f"{model} {effort}" if effort else model
+
+
+def next_step(kind, prs):
+    if kind != "done":
+        return NEXT_WORDS[kind]
+    open_prs = [p for p in prs if p["state"] == "OPEN"]
+    if not prs:
+        return "read its report, then settle"
+    if not open_prs:
+        return "settle it"
+    ci = {p["ci"]["state"] for p in open_prs}
+    return ("send it the CI failure" if "failed" in ci else "wait for CI" if "pending" in ci else
+            "review, then land")
+
+
+def fleet_row(boss, meta, full):
+    """One table row: what, where, which model, how it ended, its PR, how long it has been quiet, what next."""
+    try:
+        view = boss.snapshot(meta)
+    except BossError as exc:
+        return "unavailable", [meta["title"], meta["project"], meta["host"], model_text(meta, {}), "unavailable",
+                               "-", "-", "check the host"], exc
+    thread = view["thread"]
+    event = classify(view)
+    state = STATE_WORDS[event.kind] + (f": {event.detail}" if event.detail and event.kind != "approval" else "")
+    prs = ", ".join(p["url"] + (f" CI {p['ci']['state']}" if p["state"] == "OPEN" else f" {p['state'].lower()}")
+                    for p in view["prs"]) or "-"
+    return view["status"], [compact(meta["title"], None if full else 80), meta["project"], meta["host"], model_text(meta, thread),
+                            compact(state, None if full else 90), prs, quiet(thread.get("updatedAt")),
+                            next_step(event.kind, view["prs"])], None
+
+
+def table(header, rows):
+    """A pipe table; a stray | in a cell would split it, so it becomes /."""
+    cell = lambda value: " ".join(str(value).split()).replace("|", "/") or "-"
+    return ["| " + " | ".join(header) + " |", "|" + "---|" * len(header),
+            *("| " + " | ".join(cell(v) for v in row) + " |" for row in rows)]
+
+
+def fleet(boss, full=False, projects=(), skip=(), ids=False):
+    """One status table, scoped by project. Ids only with --ids: the captain never needs them."""
+    tasks = [t for t in boss.store.tasks(active=True)
+             if (not projects or t["project"] in projects) and t["project"] not in skip]
     executable = str(Path(sys.argv[0]).absolute())
     home = str(Path.home())
     if executable.startswith(home + "/"):
         executable = "~" + executable[len(home):]
     events = boss.store.captain_events()
     away = captain.presence(events)
+    scope = (" in " + ", ".join(projects) if projects else "") + (" (skipping " + ", ".join(skip) + ")" if skip else "")
     lines = [f"bin: {compact(executable)}", "description: Supervise T3 coding workers.",
              "captain: " + (f"away {captain.since_text(away)}; don't ask him, anything he decides counts" if away else "here"),
-             f"{len(tasks)} active tasks"]
-    errors = []
-    counts = {}
+             f"{len(tasks)} active tasks{scope}"]
+    errors, counts, rows = [], {}, []
     for meta in tasks:
-        try:
-            view = boss.snapshot(meta)
-            state = view["status"]
-            counts[state] = counts.get(state, 0) + 1
-        except BossError as exc:
-            state = "unavailable"
-            errors.append(exc)
-        lines.append(f"{meta['id']}: {meta['project']} {state} {compact(meta['title'], None if full else 80)} auto_merge={str(meta.get('auto_merge', False)).lower()}")
+        state, row, error = fleet_row(boss, meta, full)
+        counts[state] = counts.get(state, 0) + 1
+        if error is not None:
+            errors.append(error)
+        rows.append([meta["id"], *row] if ids else row)
+    if rows:
+        header = ["task", "project", "host", "model", "state", "PR", "quiet", "next"]
+        lines.extend(table(["id", *header] if ids else header, rows))
     if counts:
         lines.append("states: " + " ".join(f"{k}={v}" for k, v in sorted(counts.items())))
     view = captain.numbered_view(boss.store, events, full)
@@ -200,9 +273,9 @@ def fleet(boss, full=False):
     if errors:
         for exc in errors:
             lines.append(f"error: {exc.code} {compact(boss.redact(exc.message))}")
-        lines.append("next: check host credentials/connectivity; boss status <id>")
+        lines.append("next: check host credentials/connectivity; boss status --ids, then boss status <id>")
     elif tasks:
-        lines.append("next: boss status <id>")
+        lines.append("next: boss status <id> for one task (boss status --ids shows them)")
     elif len(view) > 1:
         lines.append("next: queue decisions for /back; record his check-in words with boss log" if away else
                      "next: boss decide ask" if any(line.endswith("(not asked yet)") for line in view) else
@@ -296,7 +369,8 @@ def dispatch(args, boss):
         config.change(args.key, value, unset=args.config_command == "unset")
         return [f"{args.key}: {'unset' if args.config_command == 'unset' else 'set'}"], 0
     if command is None or (command == "status" and not args.id):
-        return fleet(boss, full)
+        return fleet(boss, full, getattr(args, "project", None) or (), getattr(args, "skip", None) or (),
+                     getattr(args, "ids", False))
     if command == "goal":
         if args.text is not None:
             boss.store.set_goal(args.project, args.text)
