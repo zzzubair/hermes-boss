@@ -1,0 +1,77 @@
+# What T3's pushed thread shell carries for PRs (live, read-only)
+
+Probe: on ser5ver, subscribe to orchestration.subscribeShell exactly as boss/wake.py's open_stream does
+(events token from ~/.hermes/.env, never printed), print each shell's PR fields, then a few live thread.updated pushes.
+Script: /tmp/probe_evidence.py on ser5ver. Hosts: oracle T3 (127.0.0.1:13773 via tunnel) and ser5ver T3 (127.0.0.1:3773).
+
+```text
+2026-10-26T16:48:31Z
+oracle snapshot pr=zzzubair/hermes-boss/pull/5 state=merged syncedAt=2026-10-24T13:45:42.711Z mergedAt=2026-10-24T13:45:08Z
+oracle snapshot pr=zzzubair/hermes-boss/pull/6 state=open syncedAt=2026-10-24T13:57:36.285Z mergedAt=None
+oracle snapshot pr=zzzubair/hermes-boss/pull/7 state=open syncedAt=2026-10-24T18:59:02.956Z mergedAt=None
+oracle snapshot pr=zzzubair/hermes-boss/pull/8 state=open syncedAt=2026-10-24T23:39:06.365Z mergedAt=None
+oracle snapshot pr=zzzubair/hermes-boss/pull/9 state=open syncedAt=2026-10-24T23:54:07.956Z mergedAt=None
+oracle snapshot pr=zzzubair/hermes-boss/pull/10 state=merged syncedAt=2026-10-25T00:03:11.283Z mergedAt=2026-10-25T00:03:02Z
+oracle snapshot pr=zzzubair/hermes-boss/pull/11 state=open syncedAt=2026-10-25T14:06:25.195Z mergedAt=None
+oracle snapshot pr=zzzubair/hermes-boss/pull/12 state=open syncedAt=2026-10-25T00:28:14.899Z mergedAt=None
+oracle snapshot pr=zzzubair/hermes-boss/pull/15 state=open syncedAt=2026-10-25T23:22:26.639Z mergedAt=None
+oracle snapshot pr=zzzubair/hermes-boss/pull/14 state=open syncedAt=2026-10-25T23:21:26.185Z mergedAt=None
+oracle snapshot pr=zzzubair/hermes-boss/pull/16 state=open syncedAt=2026-10-26T13:12:10.023Z mergedAt=None
+oracle snapshot pr=zzzubair/hermes-boss/pull/17 state=merged syncedAt=2026-10-26T13:52:27.955Z mergedAt=2026-10-26T13:52:16Z
+oracle snapshot pr=zzzubair/hermes-boss/pull/18 state=open syncedAt=2026-10-26T14:57:29.702Z mergedAt=None
+oracle snapshot pr=zzzubair/hermes-boss/pull/19 state=merged syncedAt=2026-10-26T15:45:32.206Z mergedAt=2026-10-26T15:45:28Z
+oracle snapshot pr=zzzubair/hermes-boss/pull/20 state=merged syncedAt=2026-10-26T15:55:32.842Z mergedAt=2026-10-26T15:55:32Z
+oracle snapshot pr=zzzubair/hermes-boss/pull/21 state=open syncedAt=2026-10-26T16:16:33.516Z mergedAt=None
+oracle snapshot pr=zzzubair/hermes-boss/pull/22 state=open syncedAt=2026-10-26T16:35:41.584Z mergedAt=None
+oracle snapshot pr=zzzubair/hermes-boss/pull/24 state=merged syncedAt=2026-10-26T16:42:47.778Z mergedAt=2026-10-26T16:42:42Z
+oracle snapshot pr=zzzubair/hermes-boss/pull/23 state=merged syncedAt=2026-10-26T16:42:47.778Z mergedAt=2026-10-26T16:42:47Z
+oracle snapshot pr=zzzubair/hermes-boss/pull/25 state=merged syncedAt=2026-10-26T16:47:51.363Z mergedAt=2026-10-26T16:47:49Z
+oracle snapshot running updatedAt=2026-10-26T16:47:58.101Z itemCount=81 linkedPullRequest=None
+oracle snapshot running updatedAt=2026-10-26T16:47:59.065Z itemCount=59 linkedPullRequest=None
+oracle snapshot running updatedAt=2026-10-26T16:48:01.780Z itemCount=32 linkedPullRequest=None
+oracle snapshot running updatedAt=2026-10-26T16:48:26.301Z itemCount=32 linkedPullRequest=None
+oracle snapshot running updatedAt=2026-10-26T16:48:30.893Z itemCount=96 linkedPullRequest=None
+oracle snapshot PR keys on every shell: ['branchPullRequest', 'linkedPullRequest', 'pullRequests']
+oracle thread.updated running updatedAt=2026-10-26T16:48:34.481Z itemCount=33 prs=[]
+oracle thread.updated running updatedAt=2026-10-26T16:48:39.365Z itemCount=35 prs=[]
+ser5ver snapshot PR keys on every shell: ['branchPullRequest', 'linkedPullRequest', 'pullRequests']
+```
+
+GitHub's truth for the same PRs (gh pr list -R zzzubair/hermes-boss --state all):
+
+```text
+#5 MERGED mergedAt=2026-10-24T13:45:08Z
+#6 MERGED mergedAt=2026-10-24T14:08:56Z
+#7 MERGED mergedAt=2026-10-24T19:02:05Z
+#8 MERGED mergedAt=2026-10-24T23:41:27Z
+#9 MERGED mergedAt=2026-10-24T23:56:48Z
+#10 MERGED mergedAt=2026-10-25T00:03:02Z
+#11 MERGED mergedAt=2026-10-25T18:18:45Z
+#12 MERGED mergedAt=2026-10-25T18:18:42Z
+#13 MERGED mergedAt=2026-10-25T14:00:28Z
+#14 MERGED mergedAt=2026-10-26T01:43:24Z
+#15 MERGED mergedAt=2026-10-26T01:43:20Z
+#16 MERGED mergedAt=2026-10-26T13:20:31Z
+#17 MERGED mergedAt=2026-10-26T13:52:16Z
+#18 MERGED mergedAt=2026-10-26T14:59:00Z
+#19 MERGED mergedAt=2026-10-26T15:45:28Z
+#20 MERGED mergedAt=2026-10-26T15:55:32Z
+#21 MERGED mergedAt=2026-10-26T16:17:14Z
+#22 MERGED mergedAt=2026-10-26T16:36:02Z
+#23 MERGED mergedAt=2026-10-26T16:42:47Z
+#24 MERGED mergedAt=2026-10-26T16:42:42Z
+#25 MERGED mergedAt=2026-10-26T16:47:49Z
+```
+
+Findings:
+- Every shell carries `pullRequests` (each with `url` and `snapshot.state`, lowercase `open`/`merged`/`closed`),
+  `linkedPullRequest` (null on every thread seen) and `branchPullRequest` (no state). boss reads `pullRequests`
+  and, if present, `linkedPullRequest` into the wake signature.
+- T3's copy goes stale: #6-#9, #11, #12, #14-#16, #18, #21 and #22 are MERGED on GitHub but still `open` in the
+  shell, each `syncedAt` just before the merge and never again. The merges T3 did catch (#17, #19, #20, #23-#25)
+  were synced within seconds of the merge.
+- So the shell alone misses a PR merged later on GitHub. boss therefore also asks GitHub on every poke (a claim,
+  the owner's turn starting or ending) about tasks whose ledger shows an open PR, at most every 5 minutes per task.
+- Running threads push `thread.updated` every few seconds with a fresh `updatedAt` (even when `itemCount` holds
+  still while text streams), so `updatedAt` is the stall sweep's progress mark. `latestVisibleMessage` was null on
+  every thread, so the stall line's "last:" tail comes from one T3 read when the stall is detected.

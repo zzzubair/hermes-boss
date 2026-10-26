@@ -179,7 +179,9 @@ class Config:
         fields(data.get("rules", {}), RULES, "rules")
         wake = data.get("wake", {})
         # interval_seconds is a leftover from timed polling; tolerated so old configs load, never read.
-        fields(wake, {"enabled": bool, "interval_seconds": int, "origin": dict, "session_key": str}, "wake")
+        fields(wake, {"enabled": bool, "interval_seconds": int, "origin": dict, "session_key": str, "stall_minutes": int}, "wake")
+        if wake.get("stall_minutes", 0) < 0:
+            self.fail("wake.stall_minutes", "must be 0 (off) or more")
         if "origin" in wake and "session_key" in wake:
             self.fail("wake", "use origin or session_key, not both")
         if "origin" in wake:

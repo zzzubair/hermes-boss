@@ -135,8 +135,12 @@ def turn_start_inbox(kwargs):
     boss_package()
     from boss import inbox
     from boss.state import Store
+    from boss.wake import poke
     inbox.turn_started(home, key, str(kwargs.get("session_id") or ""))
-    return inbox.Inbox(home).take(Store(home, None).load, "turn", owner.get("label", ""))
+    block = inbox.Inbox(home).take(Store(home, None).load, "turn", owner.get("label", ""))
+    # The owner's turn is busy now, so this sweep (stalls, merged PRs) reaches it mid-turn, never by injection.
+    poke(home)
+    return block
 
 
 def on_tool_result(**kwargs):

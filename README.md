@@ -549,7 +549,19 @@ Add the panel: needs a decision: "Which API?" (options: REST / GraphQL)
 ```
 
 PR check results arrive the same way: T3's `watch_pull_request` wakes the
-worker, and its new turn is pushed like any other. With no owner, or an owner
+worker, and its new turn is pushed like any other. A PR that merges or closes
+outside boss (say, the captain merges it on GitHub) holds one line,
+`Fix the ledger lock: PR merged <url>`, so the supervisor settles the task at
+once. The push carries T3's copy of the PR state, which can stay `open` after a
+merge on GitHub, so every poke (a claim, the owner's turn starting or ending)
+also asks GitHub about tasks with an open PR, each at most every 5 minutes.
+
+A worker that stays running with no progress for `wake.stall_minutes` (default
+15; 0 turns it off) holds one line per stall:
+`Fix the ledger lock: no progress for 25 min (last: <its last words>)`. So does
+a worker paused `until <UTC time>` once that time has passed. There is no timer:
+the check runs on every push and every poke, so it needs some other worker, or
+the owner, to be active. With no owner, or an owner
 that refuses the injection (offline, app closed), items stay in the inbox until
 the next pushed event, the moment a session claims or takes boss, or the
 owner's next turn. An older `wakes.jsonl` is moved to `inbox.jsonl` on first
