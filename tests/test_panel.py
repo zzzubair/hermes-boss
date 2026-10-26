@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from boss import panel
 from boss.events import Event
-from boss.inbox import NOTE, Inbox
+from boss.inbox import Inbox
 from boss.service import Boss
 from tests import test_boss as harness
 from tests import test_wake as wake
@@ -89,7 +89,8 @@ class PanelTest(HermeticTestCase):
         return self.store.load(next(j["task"] for j in record["judges"] if j["round"] == round_number))
 
     def wakes(self):
-        return [content.split("\n")[1] for content, _ in self.ctx.messages]
+        """Every line held for the owner, in order; delivery (boss watch, tool results) is tested elsewhere."""
+        return [r["line"] for r in Inbox(self.home).records() if r["event"] == "held"]
 
     def test_writers_then_blind_judge_then_revise_until_target(self):
         record = self.start("--rounds", "3", "--target", "9", "--title", "Matchmaking post")
@@ -107,10 +108,10 @@ class PanelTest(HermeticTestCase):
 
         # The first writer to finish wakes no one and starts nothing.
         self.finish(a, "Matchmaking works like this, as a codex agent running GPT-test sees it.\nBOSS: done: draft ready")
-        self.assertEqual((len(self.launches()), self.ctx.messages), (2, []))
+        self.assertEqual((len(self.launches()), self.wakes()), (2, []))
         # The last one starts a judge that sees labels only, with model names scrubbed.
         self.finish(b, "Written by Claude (claude-opus-5-5). Opus thinks matchmaking is fair.\nBOSS: done: draft ready")
-        self.assertEqual(self.ctx.messages, [])
+        self.assertEqual(self.wakes(), [])
         judge = self.launches()[2]
         self.assertEqual(judge["title"].split("] ", 1)[1], "Matchmaking post: judge round 1")
         self.assertEqual(judge["modelSelection"]["model"], "claude-opus-5-5")  # the scout role
@@ -127,7 +128,6 @@ class PanelTest(HermeticTestCase):
         self.finish(self.judge(record, 1), verdict({"A": 7.5, "B": 8}, "Strong opening, thin on numbers."))
         self.assertEqual(self.wakes(), ['Matchmaking post: panel round 1 of 3: B (opus) best at 8/10, below the 9 target; '
                                         'B is revising. Scores: A (sol) 7.5, B (opus) 8. Judge: "Strong opening, thin on numbers."'])
-        self.assertTrue(self.ctx.messages[0][0].endswith(NOTE))
         sends = [args for name, args in self.fake.calls if name == "t3_thread_send"]
         self.assertEqual([s["threadId"] for s in sends], [b["thread_id"]])
         self.assertTrue(sends[0]["message"].startswith("[boss] A blind judge scored your entry 8/10."))
@@ -144,7 +144,7 @@ class PanelTest(HermeticTestCase):
         for frozen in ("You are not a writer: do not rewrite the entries.", "Every entry label must appear"):
             self.assertIn(frozen, judge["message"])
             self.assertIn(frozen, second["message"])
-        self.assertEqual(len(self.ctx.messages), 1)
+        self.assertEqual(len(self.wakes()), 1)
         self.finish(self.judge(record, 2), verdict({"B": 9.2}, "Ready to publish."))
         self.assertEqual(self.wakes()[1], 'Matchmaking post: panel round 2 of 3: done: B (opus) scored 9.2/10, '
                                           'reaching the 9 target. Judge: "Ready to publish."')
@@ -164,7 +164,7 @@ class PanelTest(HermeticTestCase):
         names = [n for n, _ in self.fake.calls[calls:]]
         self.assertNotIn("t3_thread_launch", names)
         self.assertNotIn("t3_thread_send", names)
-        self.assertEqual(len(self.ctx.messages), 2)
+        self.assertEqual(len(self.wakes()), 2)
 
     def test_round_cap_stops_short_of_the_target(self):
         record = self.start("--rounds", "2", "--target", "9.5", "--title", "Post")

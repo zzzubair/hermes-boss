@@ -1,13 +1,12 @@
-test_answers_and_closed_decisions_clear_the_context (tests.test_ambient.AmbientTest.test_answers_and_closed_decisions_clear_the_context) ... ok
+test_answers_and_closed_decisions_clear_the_open_line (tests.test_ambient.AmbientTest.test_answers_and_closed_decisions_clear_the_open_line) ... ok
 test_clean_ledger_injects_nothing_and_prints_nothing (tests.test_ambient.AmbientTest.test_clean_ledger_injects_nothing_and_prints_nothing) ... ok
-test_context_is_bounded_with_precomputed_total (tests.test_ambient.AmbientTest.test_context_is_bounded_with_precomputed_total) ... ok
 test_corrupt_record_does_not_hide_valid_decision (tests.test_ambient.AmbientTest.test_corrupt_record_does_not_hide_valid_decision) ... ok
 test_hooks_are_registered_with_actual_keyword_contract (tests.test_ambient.AmbientTest.test_hooks_are_registered_with_actual_keyword_contract) ... ok
 test_installer_is_repeatable_and_preserves_config (tests.test_ambient.AmbientTest.test_installer_is_repeatable_and_preserves_config) ... ok
 test_installer_refuses_existing_skill_without_partial_install (tests.test_ambient.AmbientTest.test_installer_refuses_existing_skill_without_partial_install) ... ok
 test_missing_and_corrupt_ledgers_never_raise (tests.test_ambient.AmbientTest.test_missing_and_corrupt_ledgers_never_raise) ... ok
-test_one_line_for_decision_and_input_without_network (tests.test_ambient.AmbientTest.test_one_line_for_decision_and_input_without_network) ... ok
-test_status_records_a_pending_input (tests.test_ambient.AmbientTest.test_status_records_a_pending_input) ... ok
+test_open_items_never_reach_turn_context_and_watch_counts_them_without_ids (tests.test_ambient.AmbientTest.test_open_items_never_reach_turn_context_and_watch_counts_them_without_ids) ... ok
+test_open_line_is_bounded_with_precomputed_total (tests.test_ambient.AmbientTest.test_open_line_is_bounded_with_precomputed_total) ... ok
 test_bad_images_are_refused_before_anything_uploads (tests.test_attachments.AttachmentTest.test_bad_images_are_refused_before_anything_uploads) ... ok
 test_exactly_eight_images_and_ten_megabytes_are_allowed (tests.test_attachments.AttachmentTest.test_exactly_eight_images_and_ten_megabytes_are_allowed) ... ok
 test_failed_upload_discards_pending_uploads_and_sends_nothing (tests.test_attachments.AttachmentTest.test_failed_upload_discards_pending_uploads_and_sends_nothing) ... ok
@@ -83,10 +82,10 @@ test_preview_matches_saved_and_transmitted_spawn_for_default_and_role (tests.tes
 test_preview_uses_project_default_role_and_local_only_contract (tests.test_brief.BriefTest.test_preview_uses_project_default_role_and_local_only_contract) ... ok
 test_removed_config_fails_load_doctor_and_spawn_without_silent_drop (tests.test_brief.BriefTest.test_removed_config_fails_load_doctor_and_spawn_without_silent_drop) ... ok
 test_ask_round_numbers_in_order_and_close_by_number (tests.test_captain.CaptainTest.test_ask_round_numbers_in_order_and_close_by_number) ... ok
+test_away_and_back_reach_the_supervisor_through_the_inbox_not_his_message (tests.test_captain.CaptainTest.test_away_and_back_reach_the_supervisor_through_the_inbox_not_his_message) ... ok
 test_away_is_idempotent_and_keeps_first_since_and_note (tests.test_captain.CaptainTest.test_away_is_idempotent_and_keeps_first_since_and_note) ... ok
 test_back_timeline_is_chronological_with_checkins_and_no_ids (tests.test_captain.CaptainTest.test_back_timeline_is_chronological_with_checkins_and_no_ids) ... ok
 test_decisions_made_while_away_count_in_full_and_are_not_reasked (tests.test_captain.CaptainTest.test_decisions_made_while_away_count_in_full_and_are_not_reasked) ... ok
-test_hook_line_while_away_says_do_not_ask_and_decisions_count (tests.test_captain.CaptainTest.test_hook_line_while_away_says_do_not_ask_and_decisions_count) ... ok
 test_long_timelines_group_by_hour_without_dropping_events (tests.test_captain.CaptainTest.test_long_timelines_group_by_hour_without_dropping_events) ... ok
 test_numbers_from_old_rounds_or_without_a_round_are_refused (tests.test_captain.CaptainTest.test_numbers_from_old_rounds_or_without_a_round_are_refused) ... ok
 test_only_away_and_back_change_presence (tests.test_captain.CaptainTest.test_only_away_and_back_change_presence) ... ok
@@ -190,16 +189,16 @@ test_rules_layer_per_kind_with_provenance_everywhere (tests.test_model_rules.Mod
 test_unset_rules_keep_todays_behaviour (tests.test_model_rules.ModelRulesTest.test_unset_rules_keep_todays_behaviour) ... ok
 test_a_new_finished_run_comes_back_after_review (tests.test_nothing_slips.NothingSlipsTest.test_a_new_finished_run_comes_back_after_review) ... ok
 test_a_pending_question_is_one_input_item_not_also_finished (tests.test_nothing_slips.NothingSlipsTest.test_a_pending_question_is_one_input_item_not_also_finished) ... ok
-test_away_line_and_listener_line_share_one_context (tests.test_nothing_slips.NothingSlipsTest.test_away_line_and_listener_line_share_one_context) ... warning: boss is owned by Hermes app since 17:08; this shell is not a Hermes session
+test_away_never_rides_on_the_captains_message (tests.test_nothing_slips.NothingSlipsTest.test_away_never_rides_on_the_captains_message) ... warning: boss is owned by Hermes app since 17:12; this shell is not a Hermes session
 ok
 test_errored_run_is_listed_and_send_clears_it (tests.test_nothing_slips.NothingSlipsTest.test_errored_run_is_listed_and_send_clears_it) ... ok
 test_errored_run_reviewed_by_status_is_cleared (tests.test_nothing_slips.NothingSlipsTest.test_errored_run_reviewed_by_status_is_cleared) ... ok
 test_finished_run_stays_on_the_attention_line_until_status_reviews_it (tests.test_nothing_slips.NothingSlipsTest.test_finished_run_stays_on_the_attention_line_until_status_reviews_it) ... ok
 test_ids_column_only_with_ids (tests.test_nothing_slips.NothingSlipsTest.test_ids_column_only_with_ids) ... ok
 test_next_step_follows_how_the_turn_ended (tests.test_nothing_slips.NothingSlipsTest.test_next_step_follows_how_the_turn_ended) ... ok
-test_no_line_while_a_listener_holds_the_lock_or_nothing_is_active (tests.test_nothing_slips.NothingSlipsTest.test_no_line_while_a_listener_holds_the_lock_or_nothing_is_active) ... warning: boss is owned by Hermes app since 17:08; this shell is not a Hermes session
+test_no_line_while_a_listener_holds_the_lock_or_nothing_is_active (tests.test_nothing_slips.NothingSlipsTest.test_no_line_while_a_listener_holds_the_lock_or_nothing_is_active) ... warning: boss is owned by Hermes app since 17:12; this shell is not a Hermes session
 ok
-test_owner_turn_says_updates_are_not_arriving_when_nobody_listens (tests.test_nothing_slips.NothingSlipsTest.test_owner_turn_says_updates_are_not_arriving_when_nobody_listens) ... warning: boss is owned by Hermes app since 17:08; this shell is not a Hermes session
+test_owner_turn_says_updates_are_not_arriving_when_nobody_listens (tests.test_nothing_slips.NothingSlipsTest.test_owner_turn_says_updates_are_not_arriving_when_nobody_listens) ... warning: boss is owned by Hermes app since 17:12; this shell is not a Hermes session
 ok
 test_pipes_in_text_never_break_the_table (tests.test_nothing_slips.NothingSlipsTest.test_pipes_in_text_never_break_the_table) ... ok
 test_quiet_age (tests.test_nothing_slips.NothingSlipsTest.test_quiet_age) ... ok
@@ -329,13 +328,14 @@ test_disabled_wake_starts_nothing (tests.test_wake.WakeTest.test_disabled_wake_s
 test_dropped_stream_reconnects_and_snapshot_covers_the_gap (tests.test_wake.WakeTest.test_dropped_stream_reconnects_and_snapshot_covers_the_gap) ... ok
 test_endpoints_follow_the_mcp_origin (tests.test_wake.WakeTest.test_endpoints_follow_the_mcp_origin) ... ok
 test_failed_read_is_logged_and_the_next_push_reads_again (tests.test_wake.WakeTest.test_failed_read_is_logged_and_the_next_push_reads_again) ... ok
+test_idle_injection_is_off_by_default (tests.test_wake.WakeTest.test_idle_injection_is_off_by_default) ... ok
 test_lock_held_by_another_process_blocks_until_it_exits (tests.test_wake.WakeTest.test_lock_held_by_another_process_blocks_until_it_exits) ... /usr/lib/python3.12/unittest/case.py:669: ResourceWarning: unclosed file <_io.TextIOWrapper name=7 encoding='UTF-8'>
   function, args, kwargs = self._cleanups.pop()
 ResourceWarning: Enable tracemalloc to get the object allocation traceback
 ok
 test_no_owner_holds_on_disk_then_claim_delivers (tests.test_wake.WakeTest.test_no_owner_holds_on_disk_then_claim_delivers) ... ok
 test_one_listener_machine_wide_and_takeover (tests.test_wake.WakeTest.test_one_listener_machine_wide_and_takeover) ... ok
-test_owner_turn_start_delivers_held_items_as_context (tests.test_wake.WakeTest.test_owner_turn_start_delivers_held_items_as_context) ... ok
+test_owner_turn_start_adds_nothing_to_the_captains_message (tests.test_wake.WakeTest.test_owner_turn_start_adds_nothing_to_the_captains_message) ... ok
 test_paused_worker_past_its_until_time_wakes_once_as_stalled (tests.test_wake.WakeTest.test_paused_worker_past_its_until_time_wakes_once_as_stalled) ... ok
 test_paused_worker_that_resumes_is_not_reported_when_its_until_passes (tests.test_wake.WakeTest.test_paused_worker_that_resumes_is_not_reported_when_its_until_passes) ... ok
 test_pr_closed_without_merging_wakes_once (tests.test_wake.WakeTest.test_pr_closed_without_merging_wakes_once) ... ok
@@ -345,16 +345,23 @@ test_pr_merged_on_github_is_found_at_the_owner_turn_start_when_t3s_copy_is_stale
 test_pushed_event_reaches_owner_session_once (tests.test_wake.WakeTest.test_pushed_event_reaches_owner_session_once) ... ok
 test_refused_injection_is_held_then_delivered_when_owner_returns_or_new_owner_claims (tests.test_wake.WakeTest.test_refused_injection_is_held_then_delivered_when_owner_returns_or_new_owner_claims) ... ok
 test_register_starts_listener_without_gateway_marker (tests.test_wake.WakeTest.test_register_starts_listener_without_gateway_marker) ... ok
-test_replied_answered_and_merged_items_are_dropped_not_delivered (tests.test_wake.WakeTest.test_replied_answered_and_merged_items_are_dropped_not_delivered) ... warning: boss is owned by Hermes app since 17:09; this shell is not a Hermes session
-warning: boss is owned by Hermes app since 17:09; this shell is not a Hermes session
+test_replied_answered_and_merged_items_are_dropped_not_delivered (tests.test_wake.WakeTest.test_replied_answered_and_merged_items_are_dropped_not_delivered) ... warning: boss is owned by Hermes app since 17:12; this shell is not a Hermes session
+warning: boss is owned by Hermes app since 17:12; this shell is not a Hermes session
 ok
 test_running_worker_quiet_too_long_wakes_once_per_stall (tests.test_wake.WakeTest.test_running_worker_quiet_too_long_wakes_once_per_stall) ... ok
 test_settled_task_is_ignored (tests.test_wake.WakeTest.test_settled_task_is_ignored) ... ok
 test_worker_finishing_after_the_last_tool_call_is_injected_once_the_turn_ends (tests.test_wake.WakeTest.test_worker_finishing_after_the_last_tool_call_is_injected_once_the_turn_ends) ... ok
 test_worker_finishing_mid_turn_is_seen_in_the_same_turn (tests.test_wake.WakeTest.test_worker_finishing_mid_turn_is_seen_in_the_same_turn) ... ok
 test_zero_stall_minutes_turns_the_check_off_and_a_waiting_worker_is_never_stalled (tests.test_wake.WakeTest.test_zero_stall_minutes_turns_the_check_off_and_a_waiting_worker_is_never_stalled) ... ok
+test_a_newer_watch_replaces_the_older_one_which_takes_nothing (tests.test_watch.WatchTest.test_a_newer_watch_replaces_the_older_one_which_takes_nothing) ... ok
+test_a_watch_from_a_session_that_lost_boss_takes_nothing (tests.test_watch.WatchTest.test_a_watch_from_a_session_that_lost_boss_takes_nothing) ... ok
+test_away_and_back_slash_commands_wake_a_background_watch (tests.test_watch.WatchTest.test_away_and_back_slash_commands_wake_a_background_watch) ... ok
+test_blocks_until_an_item_arrives_then_exits (tests.test_watch.WatchTest.test_blocks_until_an_item_arrives_then_exits) ... ok
+test_refused_for_other_sessions_and_plain_shells (tests.test_watch.WatchTest.test_refused_for_other_sessions_and_plain_shells) ... ok
+test_stale_items_are_dropped_and_it_keeps_waiting (tests.test_watch.WatchTest.test_stale_items_are_dropped_and_it_keeps_waiting) ... ok
+test_waiting_items_are_printed_and_acked_at_once (tests.test_watch.WatchTest.test_waiting_items_are_printed_and_acked_at_once) ... ok
 
 ----------------------------------------------------------------------
-Ran 339 tests in 66.742s
+Ran 346 tests in 70.143s
 
 OK
