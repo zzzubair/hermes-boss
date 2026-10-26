@@ -248,7 +248,7 @@ class Store:
                     if not line.endswith("\n"):
                         raise ValueError("incomplete append")
                     record = json.loads(line)
-                    if record["event"] not in ("away", "back", "log", "ask", "unclear", "own", "note"):
+                    if record["event"] not in ("away", "back", "log", "ask", "unclear", "own", "note", "deploy"):
                         raise ValueError("unknown event " + str(record["event"]))
                     if not datetime.fromisoformat(record["at"]).tzinfo:
                         raise ValueError("timestamp has no timezone")

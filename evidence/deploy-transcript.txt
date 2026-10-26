@@ -1,0 +1,43 @@
+# fake ssh runs the remote command locally; temp BOSS_HOME
+$ boss deploy demo --dry-run
+dry run: nothing ran on prod-alias
+deploy: echo pulling; echo DATABASE_URL=postgres://u:p@db/x; echo 'api_token: s3cr3t'; touch live; echo restarted
+check: test -f live && echo healthy now and after 1 minute
+rollback: ./rollback.sh
+next: boss deploy demo --approved "<captain words>"
+exit=0
+
+$ boss deploy demo --approved "no, not tonight"
+error: refused
+message: "his words say no: no, not tonight"
+next: deploy only when he says yes
+exit=2
+
+$ boss steer demo "no deploys this week" --fence
+$ boss deploy demo --approved "yes ship it"
+error: refused
+message: not deploying demo
+reason: the captain fenced demo: no deploys this week
+next: never work around it: wait out the window, or ask the captain (boss steer drop lifts a fence he lifts)
+exit=2
+
+$ boss deploy demo --approved "yes ship it"   # after the fence is dropped; the 1-minute wait is real
+deploying demo on prod-alias...
+  pulling
+  [environment line hidden]
+  api_token: [REDACTED]
+  restarted
+checking demo right away...
+  healthy
+check passed right away.
+waiting 1 more minute before the second check...
+checking demo after 1 minute...
+  healthy
+check passed after 1 minute.
+demo: deployed; check passed right away and after 1 minute.
+next: tell the captain it is live
+exit=0
+
+$ tail -2 $BOSS_HOME/captain.jsonl
+{"approved": "yes ship it", "at": "2026-10-26T21:18:46.623331+00:00", "event": "deploy", "host": "prod-alias", "phase": "start", "project": "demo"}
+{"at": "2026-10-26T21:19:46.635322+00:00", "event": "deploy", "ok": true, "phase": "done", "project": "demo", "result": "deployed; check passed right away and after 1 minute"}

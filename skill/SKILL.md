@@ -97,6 +97,8 @@ boss back
 boss back --full
 boss land <id> --approved "<captain's exact words>"
 boss land <id>
+boss deploy <project> --dry-run
+boss deploy <project> --approved "<captain's exact words>"
 boss settle <id>
 boss settle --prune-landed
 boss own
@@ -214,9 +216,21 @@ When he points you at a PR opened outside boss (an older Firstmate PR), run
 fences, `land` and `settle` work, `send` refuses, and settle never touches
 any worktree. Fix its CI or PR body on GitHub, not through boss.
 
+Deploy only with `boss deploy <project> --approved "<his exact words>"`, never
+by hand over ssh. It runs the project's configured `deploy` table and checks
+it, waiting `check_minutes` inside the command: run it in the foreground and
+let it finish. It refuses inside a no-touch window, under a project fence, or
+while a deploy decision for that project is open or answered no; never work
+around a refusal. When it reports a failed check, tell the captain plainly and
+ask before running the printed rollback. If the project has no `deploy` table,
+ask the captain to add one; never invent the commands. Use `--dry-run` to see
+the plan first.
+
 ## Guards
 
 - Workers work in their assigned worktree and never merge or deploy.
+- `deploy` requires the captain's words and the owner session, and refuses in a
+  no-touch window, under a project fence or a pending or refused deploy decision.
 - `spawn` refuses with exit 2 when a project has a goal or active steers and
   lacks a nonblank `--fits` line. Read the full context printed by the refusal.
   The line must be at most 2000 characters and contain no line breaks.
