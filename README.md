@@ -106,12 +106,18 @@ The ledger stays at `$BOSS_HOME` or `~/.boss`, independently of XDG config.
 Tasks, decisions, project notes, goals and append-only steers keep their
 existing locations and formats.
 
-Effective settings come from built-in defaults, the user file, a project's
+Effective settings come from built-in defaults, your config file, a project's
 settings, the selected role, and explicit CLI flags. Defaults are
 `delivery = "direct-PR"`, `merge = "approved"`, `kind = "ship"`,
 with no default host, role or worker rules.
 Unknown keys and invalid types fail with the full key path, including settings
 for projects that are not currently being spawned.
+
+`owner_name` (optional, one line, at most 60 characters) is your name. boss
+uses it where it would otherwise have to say "you" to someone else: worker
+briefs ("ask Sam through the question tool"), the supervisor's inbox lines and
+refusals, and the status header (`Sam: here`). Without it boss says "you" or
+words it plainly. Set it with `boss config set owner_name Sam`.
 
 ```toml
 default_host = "local"
@@ -210,7 +216,7 @@ selection. A mismatch requests an interruption and reports the task for review.
 
 ## Worker rules
 
-Rules the captain sets once are enforced by `boss spawn`, not left to notes.
+Rules you set once are enforced by `boss spawn`, not left to notes.
 Nothing is restricted until you add them.
 
 ```toml
@@ -242,8 +248,8 @@ it covers. The older `rules.ship_models` / `rules.scout_models` still work as
 A spawn that breaks a rule exits 2 before anything is written or launched,
 names each broken rule with its origin, suggests a spawn that passes, and
 prints the one `boss config set` command that would allow it from now on.
-When the captain explicitly allows it just this once, add
-`--allow-model "<captain's exact words>"` (`--override` is the older name); the
+When you explicitly allow it just this once, the supervisor adds
+`--allow-model "<your exact words>"` (`--override` is the older name); the
 words and the broken rules are saved in the task journal under `override` and
 shown by `boss status <id>`. `--allow-model` on a spawn that breaks no rule is a
 usage error. `boss status` shows each task's model and effort.
@@ -257,26 +263,26 @@ and warns about empty lists.
 ## Project policy and worker briefs
 
 `merge` is supervisor policy: `never` blocks `boss land`, `approved` requires
-captain approval, and `auto` records the supervisor's intended workflow.
+your approval, and `auto` records the supervisor's intended workflow.
 **Every `boss land` still requires `--approved` and all existing guards.**
 Workers never merge or deploy, regardless of policy. The deprecated
 `auto_merge = true` maps to `merge = "auto"`, and false maps to `"approved"`,
 with a warning. Supplying both keys in the same block is an error.
 
 `fast_land_docs = true` (default `false`, global or per project) lets a PR that
-touches only `*.md` files land without the captain: `boss land <id>` needs no
+touches only `*.md` files land without asking you: `boss land <id>` needs no
 `--approved`, and checks still running don't hold it up. Renames count both
 paths, so a `.py` file renamed to `.md` is not docs-only. A failed check, a
 conflict, a draft, requested changes or a merge GitHub blocks still refuse.
-Captain fences win: `merge = "never"`, a `--fence` steer, or his "no" to
-merging that task holds it like any other PR. Otherwise it is never a captain decision:
+Your fences win: `merge = "never"`, a `--fence` steer, or your "no" to
+merging that task holds it like any other PR. Otherwise it never needs a decision:
 `boss decide add --task <id>` refuses it, `boss status <id>` suggests
 `boss land <id>`, and the wake says boss can land it.
 
 When a worker's final message or its PR body links to `localhost`, a loopback
 address or a bare host with a port (`http://devbox:3000`), the wake ends with
 "(link only works on that machine: ...)". Tailnet (`*.ts.net`) and preview
-URLs pass. The contract asks ship workers for links the captain can open on his phone.
+URLs pass. The contract asks ship workers for links that open on a phone.
 
 `delivery` is `direct-PR`, `no-mistakes` or `local-only`. Direct-PR ship workers commit, push
 and open exactly one PR against the origin default branch. No-mistakes ship
@@ -298,7 +304,7 @@ briefed earlier is still read). When `test_host` is set, the contract tells
 workers to run heavy tests there. Ship workers are told to put before and after
 screenshots in the PR when a change touches UI.
 
-Workers report the way Firstmate's crew does: every turn ends with exactly
+Workers report in one fixed way: every turn ends with exactly
 one status line, the last line of the final message:
 
 ```text
@@ -316,8 +322,8 @@ timeout and reissue it on timeout, never sleep-then-check or background-and-poll
 obstacle twice is reported as `blocked`. Questions still go through the harness's question tool, which T3 turns
 into an input request (`AskUserQuestion` in Claude Code, `request_user_input`
 in Codex); the status line repeats the question. Messages from the supervisor
-(`boss send`) arrive marked `[boss] ...`, so the worker can tell boss from the
-captain typing into the thread.
+(`boss send`) arrive marked `[boss] ...`, so the worker can tell boss from
+you typing into the thread.
 
 `boss.events.classify` reads a task snapshot and says what it needs. A pending
 question is `needs-decision` (with its request IDs to answer) and a pending
@@ -369,28 +375,28 @@ boss steer list my-project --all
 boss spawn my-project --title 'Task' --brief-file brief.md --fits 'How this fits the goal and active steers'
 boss panel my-project --brief-file brief.md --workers opus,sol --judge scout --rounds 4 --target 9.5
 boss adopt my-project --pr https://github.com/owner/repo/pull/12 --title 'Old login fix'
-boss park <id> 'wait until after the demo'   # the captain's words; land refuses until unpark
+boss park <id> 'wait until after the demo'   # your words; land refuses until unpark
 boss unpark <id>
 boss status <id> --full
 boss send <id> 'Additional instruction'
 boss answer <id> <request-id/0> 'Answer text'
 boss stop <id>
-boss decide add 'Captain decision needed' --task <id>
+boss decide add 'Decision you need to make' --task <id>
 boss decide add 'Merge the login fix?' --task <id> --action merge
 boss decide list
-boss decide ask                 # number open decisions 1..N for the captain
-boss decide answer '1 yes 3 no 5 more info'   # his whole numbered reply
+boss decide ask                 # number open decisions 1..N for you
+boss decide answer '1 yes 3 no 5 more info'   # your whole numbered reply
 boss decide close 1 'yes'       # by number from the latest round, or by id
-boss decide unclear 2 'Which name did he mean?'
+boss decide unclear 2 'Which name was meant?'
 boss decide detail 2 'Plain explanation shown when it is asked again'
 boss away 'going to bed'        # also /away or /afk in the Hermes chat
-boss log 'What he said or decided in a check-in'
+boss log 'What you said or decided in a check-in'
 boss log 'yes merge the login fix' --task <id> --approves merge
-boss back                       # also /back or /ahoy: one-line ack; the supervisor catches him up
+boss back                       # also /back: one-line ack; the supervisor writes your catch-up
 boss back --full                # read-only: the latest away window's timeline
 boss steer <project> "don't merge this until I say" --task <id> --fence
-boss land <id> --approved 'The captain exact words'
-boss land <id>                  # when he already approved the merge
+boss land <id> --approved 'Your exact words'
+boss land <id>                  # when you already approved the merge
 boss deploy my-project --dry-run                     # the plan and any refusal; runs nothing
 boss deploy my-project --approved 'Your exact words'
 boss deploy my-project --ref <git sha> --approved 'Your exact words'   # fills {sha}/{sha7}
@@ -408,7 +414,7 @@ multiple matches fail with candidates. Registering saves the host, T3 ID and
 GitHub repository, plus optional policy. Git origin is resolved on the actual
 worker host. Explicit registry values take precedence over discovery.
 
-Record every captain steer before dispatching work. `send` alone does not
+Record every steer you give before dispatching work. `send` alone does not
 record a project steer. `--replaces` supersedes an earlier steer without
 rewriting its history. A steer that starts with `rule:` is a standing rule:
 boss moves it out of the steers section into the worker contract of every
@@ -417,9 +423,9 @@ brief, read fresh from the steer log at each spawn. `rule ship:`, `rule scout:`,
 delivery, for example `boss steer my-project 'rule direct-PR: PR body follows
 the pr-description shape'`. Drop it like any steer. `spawn` requires a nonblank, single-line `--fits` when
 a project has a goal or active steers. It saves the explanation with the task.
-Boss does not ask an LLM to judge it; the captain resolves unclear choices.
+Boss does not ask an LLM to judge it; you resolve unclear choices.
 Spawn also refuses tasks that break the [worker rules](#worker-rules) unless
-`--allow-model` carries the captain's exact words.
+`--allow-model` carries your exact words.
 
 ### Panel runs
 
@@ -439,7 +445,7 @@ earlier rounds scores the revision. This repeats until the best score reaches
 [worker rules](#worker-rules) before anything launches, and `--fits` is
 required as for `spawn`. Nothing runs on a timer: the wake listener moves the
 panel on when a writer or judge finishes. Their own "finished" wakes are
-consumed, and the captain gets one plain line per judged round, such as
+consumed, and the supervisor gets one plain line per judged round, such as
 `Blog post: panel round 1 of 4: B (opus) best at 8.2/10, below the 9.5 target;
 B is revising. Scores: A (sol) 7, B (opus) 8.2.` Questions, blocks and
 failures from panel workers still wake as usual; a writer that fails is left
@@ -448,7 +454,7 @@ out of that round. The panel record is `$BOSS_HOME/panels/<id>/panel.json`.
 ### Adopted and parked tasks
 
 `boss adopt <project> --pr <url>` tracks an open PR that was opened outside
-boss (for example by Firstmate) as a task with no worker. The PR must be in the
+boss (for example by hand or another tool) as a task with no worker. The PR must be in the
 project's repository and not already tracked; `--title` defaults to the PR
 title. It shows in the status table as "PR opened outside boss" with the usual
 next step, wakes the owner once when it merges or closes on GitHub, and
@@ -457,53 +463,53 @@ next step, wakes the owner once when it merges or closes on GitHub, and
 Settling it only closes the ledger entry: boss never touches a worktree or
 thread it did not create.
 
-`boss park <id> '<captain words>'` holds a task for the captain. The status
-table shows `parked: <his words>` with next "waiting on captain", the owner's
+`boss park <id> '<your words>'` holds a task until you say go. The status
+table shows `parked: <your words>` with next "waiting on you", the owner's
 inbox drops the task's "finished, PR ..." line instead of asking to land it,
-and `land` refuses, even with `--approved` and even for a docs-only PR under
+the task leaves the `Still open` count, and `land` refuses, even with `--approved` and even for a docs-only PR under
 `fast_land_docs`. Merged and closed PR wakes still arrive. `boss unpark <id>`
-lifts it, only when he says so. Both show in the `/back` timeline.
+lifts it, only when you say so. Both show in the `/back` timeline.
 
 ### Away, back and numbered decisions
 
-Only `/away` (alias `/afk`, optional note) and `/back` (alias `/ahoy`) change whether the
-captain is around. The Hermes plugin registers them and runs the same
-`boss away` and `boss back` commands. Any other message in between is a
-check-in and never changes that state. While he is away, the context hook adds
-one line telling the supervisor not to ask him anything, to act on its own
-judgement and to queue decisions for `/back`. `boss decide ask` is refused
-while he is away unless he asked for the list (`--requested`). Away never
-weakens what he says: a decision close, steer, land or settle from a check-in
-has full authority. Record the rest of what he says with `boss log`.
+Only `/away` (alias `/afk`, optional note) and `/back` turn away mode on and
+off. The Hermes plugin registers them and runs the same `boss away` and
+`boss back` commands. Any other message in between is a check-in and never
+changes that state. While you are away, the supervisor's inbox says not to ask
+you anything, to use its own judgement and to queue decisions for `/back`.
+`boss decide ask` is refused while you are away unless you asked for the list
+(`--requested`). Away never weakens what you say: a decision close, steer,
+land or settle from a check-in has full authority. The supervisor records the
+rest of what you say with `boss log`.
 
 `/away` and `/back` each reply with one line ("Got it. Away mode on since
 22:10." and "Welcome back. Catching you up."). `/back` also puts one item in
-the owner's inbox with how long he was away, the event and task counts and
+the owner's inbox with how long you were away, the event and task counts and
 how many decisions are open. The supervisor then runs `boss back --full`,
 which prints, without any model call, every ledger event of that away window
 in time order: workers started, finished, failed, stopped, landed and
 settled, PRs opened, steers, decisions opened and closed, and check-in log
 entries, grouped by hour when long, plus the open decisions. From that it
-writes him a TL;DR in 3-5 plain bullets and the open decisions one per line
-with a recommendation; the raw timeline reaches him only when he asks.
+writes you a short catch-up in 3-5 plain bullets and the open decisions one
+per line with a recommendation; you see the raw timeline only when you ask.
 `boss back --full` is read-only and carries no task IDs or SHAs. `/away`
-twice keeps the first time; `/back` when he is not away says so.
+twice keeps the first time; `/back` when you are not away says so.
 
-`boss decide ask` records each round, so the captain can reply "1 yes 3 no".
+`boss decide ask` records each round, so you can reply "1 yes 3 no".
 `decide close` and `decide unclear` take a number from the latest round or a
-decision ID. `--round <n>` names the round he answered; older rounds are
+decision ID. `--round <n>` names the round you answered; older rounds are
 refused. Unanswered decisions stay open and come back marked "asked again",
 with their whole text, any detail and the task they are about.
-`decide answer` takes his whole reply: "1 yes 3 no 5 more info" closes 1 and
+`decide answer` takes your whole reply: "1 yes 3 no 5 more info" closes 1 and
 3, marks 5 unclear and leaves skipped numbers open. An unclear decision is
 asked again only after `decide detail` explains it better. Answered decisions
 never come back: `decide add` refuses the same text or the same `--task` and
-`--action` (merge, deploy or demo) once he answered it.
+`--action` (merge, deploy or demo) once you answered it.
 
-Approval counts once. A yes to a merge decision, or `boss log '<his words>'
---task <id> --approves merge` for an approval he gave in passing (also in an
+Approval counts once. A yes to a merge decision, or `boss log '<your words>'
+--task <id> --approves merge` for an approval you gave in passing (also in an
 away check-in), is saved; `boss land <id>` then needs no `--approved`. A no
-blocks that until he approves again.
+blocks that until you approve again.
 
 A steer added with `--fence` is a hard fence: `land` refuses the whole project,
 or only `--task`, until the steer is dropped or replaced. Use it for "don't
@@ -516,7 +522,7 @@ exactly one `## Intent`, `## What changed`, `## Risk Assessment` and
 in `pr_body_forbidden` (default `captain`, `firstmate`, `first mate`, `chat`)
 outside code. Set `pr_body_forbidden` globally or per project to change them.
 
-Bare `boss` shows presence and the latest round's numbers.
+Bare `boss` shows away mode and the latest round's numbers.
 
 ### Retracting a steer
 
@@ -612,14 +618,14 @@ UI; `answer` cannot approve them.
 
 Landing checks a terminal worker, no pending inputs, exactly one linked PR,
 the recorded repository and branches, green CI, a clean merge state, no draft
-or changes-requested review, and the captain's explicit quote. It matches the
+or changes-requested review, and your explicit quote. It matches the
 approved head SHA and confirms the merged result. `settle` checks live thread,
 PR and worktree evidence before unwatching and settling. It refuses unlanded
 work and missing reports. If the worktree is already gone from its host,
 `settle` proves landing from GitHub instead: a linked PR merged into the task's
 base in the task's repository, and any branch still on origin at the merged
 head. A missing worktree alone never counts as landed. Use `--discard-approved`
-only with explicit captain authority. Settlement keeps the ledger. Once the thread is settled, boss
+only with your explicit words. Settlement keeps the ledger. Once the thread is settled, boss
 removes the worker's worktree and local branch on its host (over its `ssh`
 when remote) if the work is done: a merged or closed PR, or a finished scout
 or report. The host re-checks right before removing and refuses, keeping the
@@ -668,9 +674,9 @@ without `HERMES_SESSION_KEY` may change boss but gets a one-line warning when
 a session owns it.
 
 `boss note "<text>" [--project P] [--image PATH] [--from LABEL]` is the one
-write any session may make, like Firstmate's `fm-inbox.sh note`: a Discord
+write any session may make: a Discord
 chat, a phone session or a shell hands the owner something without taking
-boss. The note goes into the captain journal with the sender's label (from
+boss. The note goes into the journal with the sender's label (from
 `HERMES_SESSION_PLATFORM`, `HERMES_SESSION_CHAT_TYPE` and
 `HERMES_SESSION_CHAT_NAME`, or `--from`; "a shell" outside Hermes) and into the
 owner's inbox, so it arrives through `boss watch` or the next tool result as
@@ -700,9 +706,9 @@ reached the owner's model (`acked`, with the path it took) or went stale
 (`dropped`, with why). Nothing is lost because a turn was busy.
 
 The inbox reaches the owner session, and only the owner, two ways. Neither
-shows to the captain as a message he sent: Hermes renders turn-start context
-inside his own message and an injected message as one from him, so boss uses
-neither by default.
+shows up as a message you sent: Hermes renders turn-start context inside your
+own message and an injected message as one from you, so boss uses neither by
+default.
 
 - **`boss watch`.** The owner session keeps one `boss watch` running as a
   Hermes tracked background command (`background=true`,
@@ -713,7 +719,7 @@ neither by default.
   re-arms it. A last `Still open: ...` line counts open decisions,
   unanswered worker questions and finished runs nobody reviewed yet
   (the owner's `boss status <id>`, `boss send` or `boss settle` clears
-  one), with no ids. Only the owner session may run it. One runs at a time
+  one), with no ids. Parked tasks are never counted. Only the owner session may run it. One runs at a time
   (`watch.lock`): a newer one replaces the older, which exits without taking
   anything, and a watch whose session lost boss exits the same way.
 - **Mid-turn.** When the owner's running turn calls any tool, the plugin's
@@ -735,13 +741,13 @@ turn-start context.
 The owner's `pre_llm_call` only records the busy mark
 (`$BOSS_HOME/owner-turn.json`) and, when tasks are active and no process holds
 `wake.lock`, adds the one line `boss: worker updates are not arriving; run
-boss doctor`. `/away` and `/back` put `Captain went away at 16:40 (note)` and
-`Captain is back at 17:10 after 3h 12m away (...)` in the inbox, so the
-supervisor hears of them; on the second it writes his catch-up.
+boss doctor`. `/away` and `/back` put `Away mode on at 16:40 (note)` and
+`Away mode off at 17:10 after 3h 12m away (...)` in the inbox, so the
+supervisor hears of them; on the second it writes your catch-up.
 
 Set `wake.inject_when_idle = true` to also inject the inbox with
 `ctx.inject_message(session_key=owner)` while no owner turn runs (it shows as
-a message from the captain). When an owner turn ends (`on_session_end`, or
+a message from you). When an owner turn ends (`on_session_end`, or
 `agent_loop_stopped` for a gateway `/stop`), the plugin pokes the listener to
 inject anything that arrived after the turn's last tool call; a busy mark
 whose process is gone, or that is two hours old, counts as idle.
@@ -757,12 +763,12 @@ with the payload and no IDs:
 [boss inbox]
 Fix the ledger lock: finished, PR "Fix the ledger lock" https://github.com/acme/widget/pull/7
 Add the panel: needs a decision: "Which API?" (options: REST / GraphQL)
-(boss: handle it; ask the captain only if you need a decision)
+(boss: handle it; ask only if you need a decision)
 ```
 
 PR check results arrive the same way: T3's `watch_pull_request` wakes the
 worker, and its new turn is pushed like any other. A PR that merges or closes
-outside boss (say, the captain merges it on GitHub) holds one line,
+outside boss (say, you merge it on GitHub) holds one line,
 `Fix the ledger lock: PR merged <url>`, so the supervisor settles the task at
 once. The push carries T3's copy of the PR state, which can stay `open` after a
 merge on GitHub, so every poke (a claim, the owner's turn starting or ending)
@@ -831,7 +837,9 @@ Keep the old names and endpoint values from your installation. Boss still reads
 an existing `~/.boss/config.toml` when no XDG config exists. Setting `BOSS_HOME`
 explicitly keeps config and ledger together there. No task, `.goal`, project
 note or `.steers.jsonl` migration is needed. Legacy task metadata remains
-readable. Replace `auto_merge` with `merge` when convenient.
+readable. Replace `auto_merge` with `merge` when convenient. Away, check-in,
+ownership, note and deploy history is written to `$BOSS_HOME/user.jsonl`; an
+older `$BOSS_HOME/captain.jsonl` is still read first and never rewritten.
 
 Re-run `./install.sh` to add the Hermes-home skill link. Enable the plugin if
 needed. Follow [Ownership and wakes](#ownership-and-wakes) to set up pushed

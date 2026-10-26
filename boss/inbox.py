@@ -1,8 +1,8 @@
 """The owner's inbox: every worker event lands on disk first and leaves only once the owner's model saw it.
 
-Append-only $BOSS_HOME/inbox.jsonl (Firstmate model). The wake listener appends
+Append-only $BOSS_HOME/inbox.jsonl. The wake listener appends
 'held' records for worker events, deduped by event key; /away and /back append
-captain events (task None), as does `boss note` from any session. Every append
+user events (task None), as does `boss note` from any session. Every append
 pokes a running `boss watch`.
 Delivery appends 'acked' (with the path it took) or 'dropped' (with why).
 These paths deliver, all to the owner only:
@@ -31,7 +31,7 @@ LEGACY = "wakes.jsonl"  # pre-inbox wake log: same 'held' records, 'delivered' m
 LOCK = "inbox.lock"
 SOCKET = "watch.sock"  # a waiting boss watch listens here
 TURN = "owner-turn.json"
-NOTE = "(boss: handle it; ask the captain only if you need a decision)"
+NOTE = "(boss: handle it; ask only if you need a decision)"
 LINE_CHARS = 400
 LIMIT = 1500
 TURN_STALE = timedelta(hours=2)  # a busy mark nobody refreshed this long is a crashed turn
@@ -138,7 +138,7 @@ def stale(meta, item):
     if meta.get("landed"):
         return "PR landed"
     if meta.get("parked") and item.get("kind") == "done":
-        return "parked by the captain; never asked to land until unparked"
+        return "parked; never asked to land until unparked"
     observed = meta.get("observed") or {}
     states = {p["url"]: p.get("state") for p in observed.get("prs", [])}
     finished = [states.get(url) for url in item.get("pr_urls", [])]
@@ -158,7 +158,7 @@ def triage(load, items):
     newest, drops = {}, []
     for item in items:
         if item.get("task") is None:
-            newest[item["key"]] = item  # a captain event: never stale, never merged
+            newest[item["key"]] = item  # a user event: never stale, never merged
             continue
         try:
             meta = load(item["task"])

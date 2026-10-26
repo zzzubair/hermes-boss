@@ -1,6 +1,6 @@
 """Panel runs: N workers on one brief, then a blind judge, with an optional revise loop.
 
-Firstmate's judge flow, made deterministic. Writers get the same brief and are
+A judge flow, made deterministic. Writers get the same brief and are
 labelled A, B, C... in shuffled order. When every writer has an entry, boss
 spawns a fresh scout judge that sees only the brief and the entries under their
 labels, with model names scrubbed. Its final message carries one JSON object of
@@ -10,7 +10,7 @@ rounds) scores the revision, until the target score or the round cap.
 
 Nothing here runs on a timer: the wake listener calls advance() when a panel
 task's turn ends. Writers' and judges' own "finished" events are consumed;
-the captain gets one plain line per judged round.
+the supervisor gets one plain line per judged round.
 """
 import json
 import random
@@ -93,7 +93,7 @@ def preflight(boss, project, roles, kind, judge):
                                         selection_effort(selection))
         violations = [text for text, _, _ in broken]
         if violations:
-            raise BossError("refused", f"panel seat {role or 'judge'} breaks the captain's worker rules",
+            raise BossError("refused", f"panel seat {role or 'judge'} breaks a worker rule",
                             "choose other --workers / --judge roles, or spawn that seat alone with --allow-model", 2,
                             context=violations)
 
@@ -182,7 +182,7 @@ def scores(text, labels):
 
 
 def clip(text, limit):
-    """Plain words for the captain: one line, cut at a word with '...'."""
+    """Plain words: one line, cut at a word with '...'."""
     text = " ".join(str(text).split())
     return text if len(text) <= limit else text[:limit].rpartition(" ")[0] + "..."
 
@@ -196,7 +196,7 @@ def seat(panel, label):
 
 
 def round_line(panel, result, ending):
-    """One plain line for the captain: round, best entry and its model, scores, the judge's words. No ids."""
+    """One plain line: round, best entry and its model, scores, the judge's words. No ids."""
     best = result["best"]
     top = result["scores"][best]
     name = f"{best} ({seat(panel, best)['worker']})"
@@ -244,7 +244,7 @@ def advance(boss, meta, event):
     """React to one ended turn of a panel task. Returns (consumed, line or None).
 
     consumed=True means the task's own event is not surfaced on its own; line is
-    the round line to hold for the captain. Re-running for the same event changes nothing.
+    the round line to hold for the supervisor. Re-running for the same event changes nothing.
     """
     panel = load(boss.store, meta["panel"])
     turn = f"{meta['id']}:{event.turn_id}"
@@ -259,7 +259,7 @@ def advance(boss, meta, event):
         if event.kind == "error":
             if member["entry_run"] is None or panel["stage"] == "revising":
                 member["out"] = True
-            consumed = False  # the captain hears that a writer stopped
+            consumed = False  # the supervisor hears that a writer stopped
         elif event.kind == "done" and event.turn_id != member["entry_run"] and panel["stage"] in ("writing", "revising"):
             member["entry_run"] = event.turn_id
             consumed = True

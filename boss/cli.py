@@ -12,7 +12,7 @@ import tomllib
 from .setup import initialize, doctor
 
 from . import __version__
-from . import captain
+from . import user
 from . import owner
 from . import panel
 from .common import BossError, Redactor, compact, refuse, require_text
@@ -78,17 +78,17 @@ def parser():
     spawn.add_argument("--effort", help="exact effort value supported by that model")
     spawn.add_argument("--fits", metavar="TEXT", help="one line reconciling this task with the project goal and active steers")
     spawn.add_argument("--allow-model", "--override", dest="override", metavar="QUOTE",
-                       help="captain's exact words letting a rule-refused spawn through once; saved in the task journal")
+                       help="exact words letting a rule-refused spawn through once; saved in the task journal")
     spawn.add_argument("--image", action="append", default=[], metavar="PATH",
                        help="png/jpeg/gif/webp up to 10 MB attached to the brief; repeat up to 8 times")
     adopt = commands.add_parser("adopt", help="track a PR opened outside boss as a worker-less task: status, wakes, fences, land, settle")
     adopt.add_argument("project")
     adopt.add_argument("--pr", required=True, metavar="URL", help="open GitHub PR in the project's repository")
     adopt.add_argument("--title", help="task name; default the PR title")
-    park = commands.add_parser("park", help="hold a task for the captain: land refuses and no wake asks to land it")
+    park = commands.add_parser("park", help="hold a task until unpark: land refuses and no wake asks to land it")
     park.add_argument("id")
-    park.add_argument("words", help="the captain's words, e.g. 'wait until after the demo'")
-    commands.add_parser("unpark", help="lift a park; only when the captain says so").add_argument("id")
+    park.add_argument("words", help="the exact words, e.g. 'wait until after the demo'")
+    commands.add_parser("unpark", help="lift a park; only when told to").add_argument("id")
     panel_command = commands.add_parser("panel", help="N workers on one brief, then a blind judge; optional revise loop")
     panel_command.add_argument("project")
     panel_command.add_argument("--brief-file", metavar="FILE", help="UTF-8 brief; omitted or '-' reads piped stdin")
@@ -118,21 +118,21 @@ def parser():
     answer.add_argument("id")
     answer.add_argument("request")
     answer.add_argument("text", help="answer text; multi-question requests take a JSON object keyed by question id")
-    deploy_command = commands.add_parser("deploy", help="owner session only: deploy a project on your words, then check it")
+    deploy_command = commands.add_parser("deploy", help="owner session only: deploy a project on explicit approval, then check it")
     deploy_command.add_argument("project")
     deploy_command.add_argument("--ref", metavar="SHA", help="git sha (7-40 hex) filled into {sha} and {sha7} in the deploy table")
-    deploy_command.add_argument("--approved", metavar="QUOTE", help="your exact words; saved in the journal")
+    deploy_command.add_argument("--approved", metavar="QUOTE", help="exact approving words; saved in the journal")
     deploy_command.add_argument("--dry-run", action="store_true", help="show what would run and any refusal; runs nothing")
     stop = commands.add_parser("stop", help="interrupt a worker without removing work")
     stop.add_argument("id")
-    land = commands.add_parser("land", help="merge one green PR with explicit captain approval, or a docs-only PR under fast_land_docs")
+    land = commands.add_parser("land", help="merge one green PR with explicit approval, or a docs-only PR under fast_land_docs")
     land.add_argument("id")
-    land.add_argument("--approved", metavar="QUOTE", help="captain's exact words; required unless fast_land_docs covers a docs-only PR")
+    land.add_argument("--approved", metavar="QUOTE", help="exact approving words; required unless fast_land_docs covers a docs-only PR")
     settle = commands.add_parser("settle", help="unwatch PRs, settle a terminal thread, remove its worktree once landed")
     settle.add_argument("id", nargs="?")
     settle.add_argument("--prune-landed", action="store_true",
                         help="remove leftover worktrees of every settled, landed task on all hosts")
-    settle.add_argument("--discard-approved", metavar="QUOTE", help="captain's explicit authority to leave work unlanded")
+    settle.add_argument("--discard-approved", metavar="QUOTE", help="exact words allowing the work to stay unlanded")
     project = commands.add_parser("project", help="discover T3 projects and inspect or save preferences")
     projects = project.add_subparsers(dest="project_command", required=True)
     project_list = projects.add_parser("list", help="list T3 projects with registry/notes markers")
@@ -151,7 +151,7 @@ def parser():
     goal = commands.add_parser("goal", help="show or set a project's goal")
     goal.add_argument("project")
     goal.add_argument("text", nargs="?", help="new goal; omit to show the current goal")
-    steer = commands.add_parser("steer", help="append, list or drop a project's captain steers")
+    steer = commands.add_parser("steer", help="append, list or drop a project's steers")
     steer.add_argument("project", help="project name, or 'list' / 'drop'")
     steer.add_argument("text", help="steer text, or the project name after 'list' / 'drop'")
     steer.add_argument("steer_id", nargs="?", help="with 'drop', the active steer to retract")
@@ -160,9 +160,9 @@ def parser():
     steer.add_argument("--fence", action="store_true",
                        help="hard fence: land refuses this project (or only --task) until the steer is dropped")
     steer.add_argument("--all", action="store_true", help="with 'list', include superseded/dropped steers and tombstones")
-    away = commands.add_parser("away", help="mark the captain away; only away/back change presence")
+    away = commands.add_parser("away", help="turn away mode on; only away and back change it")
     away.add_argument("note", nargs="*", help="optional note, e.g. going to bed")
-    back = commands.add_parser("back", help="mark the captain back; the supervisor gets the catch-up in its inbox")
+    back = commands.add_parser("back", help="turn away mode off; the supervisor gets the catch-up in its inbox")
     back.add_argument("--full", action="store_true",
                       help="read-only: the raw timeline of the latest away window and the open decisions")
     own = commands.add_parser("own", help="open boss in this Hermes session (HERMES_SESSION_KEY); it gets wakes")
@@ -177,31 +177,31 @@ def parser():
     note.add_argument("--image", action="append", default=[], metavar="PATH",
                       help="png/jpeg/gif/webp up to 10 MB kept with the note; repeat up to 8 times")
     commands.add_parser("watch", help="owner session only: wait for the inbox, print it and exit; run it in the background")
-    log = commands.add_parser("log", help="record what the captain said or decided in a check-in")
+    log = commands.add_parser("log", help="record what was said or decided in a check-in")
     log.add_argument("text")
-    log.add_argument("--approves", choices=captain.ACTIONS, help="his words approve this for --task; never asked again")
-    log.add_argument("--task", help="task his approval is about")
-    decide = commands.add_parser("decide", help="record decisions that need the captain")
+    log.add_argument("--approves", choices=user.ACTIONS, help="these words approve this for --task; never asked again")
+    log.add_argument("--task", help="task the approval is about")
+    decide = commands.add_parser("decide", help="record decisions that need an answer")
     decisions = decide.add_subparsers(dest="decision_command", required=True)
     add = decisions.add_parser("add", help="open a durable decision")
     add.add_argument("text")
     add.add_argument("--task", help="related task id")
-    add.add_argument("--action", choices=captain.ACTIONS, help="what --task needs approved; answered once, never asked again")
-    listing = decisions.add_parser("list", help="list open captain decisions with ids")
+    add.add_argument("--action", choices=user.ACTIONS, help="what --task needs approved; answered once, never asked again")
+    listing = decisions.add_parser("list", help="list open decisions with ids")
     listing.add_argument("--full", action="store_true", default=argparse.SUPPRESS, help="show complete text")
-    ask = decisions.add_parser("ask", help="number open decisions 1..N for the captain and record the round")
-    ask.add_argument("--requested", metavar="QUOTE", help="while away, only when the captain asked for the list")
-    close = decisions.add_parser("close", help="record the captain's resolution; repeat is safe")
+    ask = decisions.add_parser("ask", help="number open decisions 1..N and record the round")
+    ask.add_argument("--requested", metavar="QUOTE", help="while away, only when the list was asked for")
+    close = decisions.add_parser("close", help="record the answer; repeat is safe")
     close.add_argument("id", help="decision id, or number from the latest ask round")
     close.add_argument("text")
-    close.add_argument("--round", type=int, help="ask round the captain answered; older rounds are refused")
+    close.add_argument("--round", type=int, help="ask round the answer is for; older rounds are refused")
     unclear = decisions.add_parser("unclear", help="re-ask a decision next round with what was unclear")
     unclear.add_argument("id", help="decision id, or number from the latest ask round")
-    unclear.add_argument("text", help="what was unclear about his answer")
-    unclear.add_argument("--round", type=int, help="ask round the captain answered; older rounds are refused")
-    reply = decisions.add_parser("answer", help="apply his numbered reply, e.g. '1 yes 3 no 5 more info', to the latest round")
-    reply.add_argument("text", help="his whole reply")
-    reply.add_argument("--round", type=int, help="ask round the captain answered; older rounds are refused")
+    unclear.add_argument("text", help="what was unclear about the answer")
+    unclear.add_argument("--round", type=int, help="ask round the answer is for; older rounds are refused")
+    reply = decisions.add_parser("answer", help="apply a numbered reply, e.g. '1 yes 3 no 5 more info', to the latest round")
+    reply.add_argument("text", help="the whole reply")
+    reply.add_argument("--round", type=int, help="ask round the answer is for; older rounds are refused")
     detail = decisions.add_parser("detail", help="add plain context shown when the decision is asked again")
     detail.add_argument("id", help="decision id, or number from the latest ask round")
     detail.add_argument("text")
@@ -216,8 +216,8 @@ def rule_lines(values, origins):
 
 
 def decision_lines(store, full=False):
-    opened = captain.open_decisions(store)
-    counts = captain.asked_counts(store.captain_events())
+    opened = user.open_decisions(store)
+    counts = user.asked_counts(store.user_events())
     lines = [f"{len(opened)} open decisions"]
     for d in opened:
         lines.append(f"{d['id']}: {compact(d['text'], None if full else 180)}" +
@@ -230,9 +230,22 @@ STATE_WORDS = {"parked": "parked", "adopted": "PR opened outside boss", "done": 
                "needs-decision": "needs a decision", "approval": "needs a permission ok",
                "blocked": "blocked", "paused": "paused", "error": "stopped", "ended_unclear": "unclear",
                "working": "working"}
-NEXT_WORDS = {"parked": "waiting on captain", "needs-decision": "answer its question",
+NEXT_WORDS = {"parked": "waiting on you", "needs-decision": "answer its question",
               "approval": "approve its prompt in T3", "blocked": "unblock it", "paused": "wait; it resumes itself", "error": "read why, then resend or settle",
               "ended_unclear": "ask it what happened", "working": "wait"}
+
+
+def by(name):
+    """' by <owner_name>' when config names the person boss works for, else nothing."""
+    return f" by {name}" if name else ""
+
+
+def presence_line(name, away):
+    """The status header line on away mode; it never asks the reader anything."""
+    if away:
+        return (f"{name}: away " if name else "away mode: on ") + user.since_text(away) + \
+            "; ask nothing, anything " + user.named(name, "{name} says", "said") + " counts"
+    return f"{name}: here" if name else "away mode: off"
 
 
 def quiet(stamp):
@@ -296,18 +309,18 @@ def table(header, rows):
 
 
 def fleet(boss, full=False, projects=(), skip=(), ids=False):
-    """One status table, scoped by project. Ids only with --ids: the captain never needs them."""
+    """One status table, scoped by project. Ids only with --ids: people never need them."""
     tasks = [t for t in boss.store.tasks(active=True)
              if (not projects or t["project"] in projects) and t["project"] not in skip]
     executable = str(Path(sys.argv[0]).absolute())
     home = str(Path.home())
     if executable.startswith(home + "/"):
         executable = "~" + executable[len(home):]
-    events = boss.store.captain_events()
-    away = captain.presence(events)
+    events = boss.store.user_events()
+    away = user.presence(events)
     scope = (" in " + ", ".join(projects) if projects else "") + (" (skipping " + ", ".join(skip) + ")" if skip else "")
     lines = [f"bin: {compact(executable)}", "description: Supervise T3 coding workers.",
-             "captain: " + (f"away {captain.since_text(away)}; don't ask him, anything he decides counts" if away else "here"),
+             presence_line(boss.store.name, away),
              f"{len(tasks)} active tasks{scope}"]
     errors, counts, rows = [], {}, []
     for meta in tasks:
@@ -321,7 +334,7 @@ def fleet(boss, full=False, projects=(), skip=(), ids=False):
         lines.extend(table(["id", *header] if ids else header, rows))
     if counts:
         lines.append("states: " + " ".join(f"{k}={v}" for k, v in sorted(counts.items())))
-    view = captain.numbered_view(boss.store, events, full)
+    view = user.numbered_view(boss.store, events, full)
     lines.extend(view)
     if errors:
         for exc in errors:
@@ -330,9 +343,9 @@ def fleet(boss, full=False, projects=(), skip=(), ids=False):
     elif tasks:
         lines.append("next: boss status <id> for one task (boss status --ids shows them)")
     elif len(view) > 1:
-        lines.append("next: queue decisions for /back; record his check-in words with boss log" if away else
+        lines.append("next: queue decisions for /back; record check-in words with boss log" if away else
                      "next: boss decide ask" if any(line.endswith("(not asked yet)") for line in view) else
-                     'next: boss decide close <n> "<captain words>"')
+                     'next: boss decide close <n> "<exact words>"')
     elif not boss.config.hosts:
         lines.append("next: boss init")
     else:
@@ -533,9 +546,9 @@ def dispatch(args, boss):
         if meta.get("test_host"):
             lines.append(f"test_host: {compact(meta['test_host'])}")
         if meta.get("parked"):
-            lines.append(f"parked by captain: {compact(meta['parked']['words'])}")
+            lines.append(f"parked{by(boss.store.name)}: {compact(meta['parked']['words'])}")
         if meta.get("override"):
-            lines.append(f"allowed by captain: {compact(meta['override']['approved'])}")
+            lines.append(f"allowed{by(boss.store.name)}: {compact(meta['override']['approved'])}")
             lines.extend(f"  despite: {' '.join(text.split())}" for text in meta["override"]["violations"])
         lines.append(f"{len(view['requests'])} pending input requests")
         client = boss.client(meta["host"])
@@ -549,12 +562,12 @@ def dispatch(args, boss):
         for pr in view["prs"]:
             lines.append(f"{pr['url']}: {pr['state'].lower()} ci={ci_text(pr['ci'])}")
         lines.append("last: " + (json.dumps(view["assistant"], ensure_ascii=False) if full else compact(view["assistant"] or "0 assistant messages", 360)))
-        lines.append(f"next: waiting on captain; boss unpark {args.id} only when he says so" if meta.get("parked") else
+        lines.append(f"next: wait; boss unpark {args.id} only when " + user.named(boss.store.name, "{name} says so", "told to") if meta.get("parked") else
                      f"next: boss answer {args.id} <request> \"<answer>\"" if view["requests"] else
                      f"next: open T3 thread {meta['thread_id']} to review pending permissions" if view["approvals"] else
-                     f"next: boss land {args.id} (docs-only PR under fast_land_docs; no need to ask the captain)"
+                     f"next: boss land {args.id} (docs-only PR under fast_land_docs; no need to ask)"
                      if ended and boss.docs_only_pr(meta, view["prs"]) else
-                     f'next: boss land {args.id} --approved "<captain quote>"' if ended and any(p["state"] == "OPEN" and p["ci"]["state"] == "green" for p in view["prs"]) else
+                     f'next: boss land {args.id} --approved "<exact words>"' if ended and any(p["state"] == "OPEN" and p["ci"]["state"] == "green" for p in view["prs"]) else
                      f"next: boss settle {args.id}" if ended and not any(p["state"] == "OPEN" for p in view["prs"]) else
                      "next: wait for its checks, or fix the PR outside boss" if adopted else
                      f"next: boss send {args.id} \"<message>\"")
@@ -577,7 +590,7 @@ def dispatch(args, boss):
             require_text(args.project, "project", 80)
         sender = args.sender if args.sender is not None else owner.sender_label(os.environ)
         require_text(sender, "--from", 80)
-        captain.note(boss.store, args.text, sender, args.project, args.image)
+        user.note(boss.store, args.text, sender, args.project, args.image)
         record = owner.read(boss.store.home)
         return [f"Note left for {record['label']}; it arrives with its next boss watch or tool call." if record else
                 "Note held. Nobody has boss open; it arrives when a session runs /boss.", "next: boss own status"], 0
@@ -606,59 +619,59 @@ def dispatch(args, boss):
         note = " ".join(args.note)
         if note:
             require_text(note, "away note", 300)
-        lines = captain.away(boss.store, note)
+        lines = user.away(boss.store, note)
         from .wake import poke
         poke(boss.store.home)  # a listener set to inject when idle tells the owner now
         return lines, 0
     if command == "back":
         if full:
-            return captain.full(boss.store), 0
-        lines = captain.back(boss.store)
+            return user.full(boss.store), 0
+        lines = user.back(boss.store)
         from .wake import poke
         poke(boss.store.home)
         return lines, 0
     if command == "log":
         require_text(args.text, "check-in log", 20000)
         if bool(args.approves) != bool(args.task):
-            raise BossError("usage", "--approves and --task go together", 'boss log "<his words>" --task <id> --approves merge', 1)
-        boss.store.captain("log", text=args.text.strip())
+            raise BossError("usage", "--approves and --task go together", 'boss log "<exact words>" --task <id> --approves merge', 1)
+        boss.store.user_event("log", text=args.text.strip())
         if args.approves:
-            captain.approve(boss.store, args.task, args.approves, args.text.strip())
+            user.approve(boss.store, args.task, args.approves, args.text.strip())
             return [f"check-in logged; {args.approves} approved for {args.task}, never asked again",
                     f"next: boss land {args.task}" if args.approves == "merge" else "next: boss"], 0
         return ["check-in logged", "next: boss"], 0
     if command == "decide":
         subcommand = args.decision_command
         if subcommand == "list":
-            return decision_lines(boss.store, full) + ['next: boss decide close <id> "<captain resolution>"'], 0
+            return decision_lines(boss.store, full) + ['next: boss decide close <id> "<exact answer>"'], 0
         if subcommand == "ask":
-            lines, record = captain.ask(boss.store, args.requested)
-            return lines + (['next: boss decide close <n> "<captain words>"'] if record else ["next: boss"]), 0
+            lines, record = user.ask(boss.store, args.requested)
+            return lines + (['next: boss decide close <n> "<exact words>"'] if record else ["next: boss"]), 0
         require_text(args.text, "decision", 20000)
         if subcommand == "add":
             if args.task:
                 meta = boss.store.load(args.task)
                 if not meta.get("settled") and boss.fast_land_docs(meta) and boss.docs_only_pr(meta, boss.snapshot(meta)["prs"]):
-                    refuse("a docs-only PR lands under fast_land_docs; it is never a captain decision",
+                    refuse("a docs-only PR lands under fast_land_docs; it never needs a decision",
                            f"boss land {args.task}; add the decision without --task if it is about something else")
-            record, added = captain.add_decision(boss.store, args.text, args.task, args.action)
+            record, added = user.add_decision(boss.store, args.text, args.task, args.action)
             return [f"{record['id']}: decision {'open' if added else 'already open; not added twice'}", "next: boss decide ask"], 0
         if subcommand == "answer":
-            # Full authority whether or not the captain is away.
-            lines, unclear = captain.answer(boss.store, args.text, args.round)
+            # Full authority whether or not away mode is on.
+            lines, unclear = user.answer(boss.store, args.text, args.round)
             return lines + ['next: boss decide detail <n> "<plain explanation>" for each unclear one' if unclear else "next: boss"], 0
-        record = captain.resolve(boss.store, args.id, getattr(args, "round", None))
+        record = user.resolve(boss.store, args.id, getattr(args, "round", None))
         if subcommand == "detail":
-            captain.add_detail(boss.store, record, args.text)
+            user.add_detail(boss.store, record, args.text)
             return [f"{record['id']}: detail added; shown when asked again", "next: boss decide ask"], 0
         if subcommand == "unclear":
             if record.get("closed"):
                 refuse("that decision is already answered; it is never asked again", "boss decide ask")
-            boss.store.captain("unclear", decision=record["id"], note=args.text.strip())
+            boss.store.user_event("unclear", decision=record["id"], note=args.text.strip())
             return [f"{record['id']}: marked unclear; add detail, then it is re-asked next round",
                     f'next: boss decide detail {record["id"]} "<plain explanation>"'], 0
-        if captain.close(boss.store, record, args.text):
-            # Full authority whether or not the captain is away.
+        if user.close(boss.store, record, args.text):
+            # Full authority whether or not away mode is on.
             return [f"{record['id']}: decision closed", "next: boss"], 0
         return [f"{record['id']}: decision already closed; kept the first answer", "next: boss"], 0
     raise BossError("usage", "unknown command", exit_code=1)
@@ -673,7 +686,7 @@ def main(argv=None):
         args = parser().parse_args(argv)
         home = boss_home()
         config = Config(home, redact)
-        store = Store(home, redact)
+        store = Store(home, redact, config.owner_name)
         boss = Boss(config, store, redact)
         if args.command == "watch":
             # Blocks until the inbox has something, so it never holds the ledger lock.

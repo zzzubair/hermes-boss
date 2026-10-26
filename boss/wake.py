@@ -17,8 +17,8 @@ stayed down longer than wake.host_down_minutes, and its reconnect holds one
 "back in touch" line. There is no timer: a silent fleet and owner sweep nothing.
 The owner's `boss watch` (a tracked background command) or its running turn's
 next tool result picks the inbox up. Only with wake.inject_when_idle does the listener
-inject it, while the owner is idle; an injected message shows as if the captain
-sent it, so it is off by default. With no owner, or an owner that is offline,
+inject it, while the owner is idle; an injected message shows as if the person
+boss works for sent it, so it is off by default. With no owner, or an owner that is offline,
 items stay in the inbox until the owner's next watch or turn.
 Exactly one listener runs per machine: it holds $BOSS_HOME/wake.lock.
 """
@@ -158,7 +158,7 @@ class Listener:
     def __init__(self, ctx, config, home):
         self.ctx, self.config, self.home = ctx, config, home
         self.wake = config.data.get("wake", {})
-        self.store = Store(home, config.redact)
+        self.store = Store(home, config.redact, config.owner_name)
         self.inbox = Inbox(home, config.redact)
         self.stop_event = threading.Event()
         self.deliver_lock = threading.Lock()
@@ -360,7 +360,7 @@ class Listener:
                         questions = boss.questions(meta, event.request_ids) if event.request_ids else []
                         line = describe(meta.get("title"), event, view["prs"], questions)
                         if event.kind == "done" and event.pr_urls and self.docs_only(boss, meta, view["prs"]):
-                            line += "; docs only, so boss can land it without asking the captain"
+                            line += "; docs only, so boss can land it without asking"
                         if round_line:
                             line += " " + round_line
                         held.append(self.inbox.hold(event.dedupe_key, task, event.kind, line, run=event.turn_id,

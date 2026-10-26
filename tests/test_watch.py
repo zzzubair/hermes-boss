@@ -16,7 +16,7 @@ from tests import test_boss as harness
 from tests.support import HermeticTestCase
 from tests.test_wake import Context
 
-OWNER = "agent:captain"
+OWNER = "agent:owner"
 WAIT = 5
 BOSS = str(Path(__file__).resolve().parent.parent / "bin/boss")
 
@@ -58,16 +58,16 @@ class WatchTest(HermeticTestCase):
         self.assertTrue((self.home / SOCKET).exists())
         return thread, printed, codes
 
-    def captain_event(self, line, key="captain:test"):
-        Inbox(self.home).hold(key, None, "captain", line)
+    def user_event(self, line, key="user:test"):
+        Inbox(self.home).hold(key, None, "user", line)
 
     def test_waiting_items_are_printed_and_acked_at_once(self):
         self.own()
-        self.captain_event("Captain went away at 16:40 (bed).")
+        self.user_event("Away mode on at 16:40 (bed).")
         self.cli("decide", "add", "Pick storage")
         code, output = self.cli("watch")
         self.assertEqual(code, 0, output)
-        self.assertEqual(output, f"[boss inbox]\nCaptain went away at 16:40 (bed).\n{NOTE}\n"
+        self.assertEqual(output, f"[boss inbox]\nAway mode on at 16:40 (bed).\n{NOTE}\n"
                                  "Still open: 1 open decision. Run boss status.\n")
         self.assertEqual([(r["via"], r["owner"]) for r in self.acks()], [("watch", "Hermes app")])
         self.assertFalse((self.home / SOCKET).exists())  # cleaned up on exit
@@ -78,10 +78,10 @@ class WatchTest(HermeticTestCase):
         thread.join(0.3)
         self.assertTrue(thread.is_alive())  # nothing open: it waits
         self.assertEqual(printed, [])
-        self.captain_event("Captain is back at 17:10.")
+        self.user_event("Away mode off at 17:10.")
         thread.join(WAIT)
         self.assertFalse(thread.is_alive())
-        self.assertEqual((codes, printed), ([0], [f"[boss inbox]\nCaptain is back at 17:10.\n{NOTE}"]))
+        self.assertEqual((codes, printed), ([0], [f"[boss inbox]\nAway mode off at 17:10.\n{NOTE}"]))
         self.assertEqual([r["via"] for r in self.acks()], ["watch"])
 
     def test_stale_items_are_dropped_and_it_keeps_waiting(self):
@@ -92,13 +92,13 @@ class WatchTest(HermeticTestCase):
         self.assertTrue(thread.is_alive())
         self.assertEqual([r["reason"] for r in Inbox(self.home).records() if r["event"] == "dropped"],
                          ["task is not in the ledger"])
-        self.captain_event("Captain is back at 17:10.")
+        self.user_event("Away mode off at 17:10.")
         thread.join(WAIT)
         self.assertEqual(codes, [0])
 
     def test_refused_for_other_sessions_and_plain_shells(self):
         self.own()
-        self.captain_event("Captain is back at 17:10.")
+        self.user_event("Away mode off at 17:10.")
         code, output = self.cli("watch", key="agent:tui")
         self.assertEqual(code, 2)
         self.assertIn("boss is owned by Hermes app", output)
@@ -122,7 +122,7 @@ class WatchTest(HermeticTestCase):
         self.assertEqual((first_codes, first_printed), ([0], ["A newer boss watch took over; this one took nothing."]))
         self.assertTrue(second.is_alive())
         # Bound yet or not, the second sees this: on its first look or through its socket.
-        self.captain_event("Captain is back at 17:10.")
+        self.user_event("Away mode off at 17:10.")
         second.join(WAIT)
         self.assertEqual((second_codes, len(second_printed)), ([0], 1))
         self.assertEqual(len(self.acks()), 1)
@@ -131,7 +131,7 @@ class WatchTest(HermeticTestCase):
         self.own()
         thread, printed, codes = self.start()
         self.own("agent:phone", "Telegram DM", "--take")
-        self.captain_event("Captain is back at 17:10.")
+        self.user_event("Away mode off at 17:10.")
         thread.join(WAIT)
         self.assertEqual((codes, printed), ([0], ["boss moved to another session; this watch stopped and took nothing."]))
         self.assertEqual(self.acks(), [])
@@ -153,14 +153,14 @@ class WatchTest(HermeticTestCase):
             lines = output.splitlines()
             self.assertEqual((lines[0], lines[2]), ("[boss inbox]", NOTE))
             if command is plugin.on_away:
-                self.assertRegex(lines[1], r"^Captain went away at \d\d:\d\d \(bed\)\. Don't ask him anything until /back")
+                self.assertRegex(lines[1], r"^Away mode on at \d\d:\d\d \(bed\)\. Ask nothing until /back")
             else:
-                self.assertRegex(lines[1], r"^Captain is back at \d\d:\d\d after under a minute away \(since \d\d:\d\d \(bed\)\)")
+                self.assertRegex(lines[1], r"^Away mode off at \d\d:\d\d after under a minute away \(since \d\d:\d\d \(bed\)\)")
                 self.assertIn("boss back --full", lines[1])
         self.assertEqual([r["via"] for r in self.acks()], ["watch", "watch"])
         self.assertEqual(Inbox(self.home).open_items(), [])
-        captain = [json.loads(line)["event"] for line in (self.home / "captain.jsonl").read_text().splitlines()]
-        self.assertEqual([e for e in captain if e in ("away", "back")], ["away", "back"])
+        journal = [json.loads(line)["event"] for line in (self.home / "user.jsonl").read_text().splitlines()]
+        self.assertEqual([e for e in journal if e in ("away", "back")], ["away", "back"])
 
 
 class WatchReminderTest(HermeticTestCase):
@@ -170,7 +170,7 @@ class WatchReminderTest(HermeticTestCase):
     spawn = harness.CLITest.spawn
     own = WatchTest.own
     start = WatchTest.start
-    captain_event = WatchTest.captain_event
+    user_event = WatchTest.user_event
     RESULT = '{"output": "ok"}'
 
     def cli(self, *args, key=OWNER, stdin="investigate this"):
@@ -201,7 +201,7 @@ class WatchReminderTest(HermeticTestCase):
         thread, _, codes = self.start()
         self.turn()
         self.assertIsNone(self.tool())  # a watch is waiting: nothing to say
-        self.captain_event("Captain is back at 17:10.")
+        self.user_event("Away mode off at 17:10.")
         thread.join(WAIT)
         self.assertEqual(codes, [0])
         self.turn()
@@ -218,8 +218,8 @@ class WatchReminderTest(HermeticTestCase):
         self.own()
         self.spawn()
         self.turn()
-        self.captain_event("Captain is back at 17:10.")
-        self.assertEqual(self.tool(), f"{self.RESULT}\n\n[boss inbox]\nCaptain is back at 17:10.\n{NOTE}\n{watch.REMIND}")
+        self.user_event("Away mode off at 17:10.")
+        self.assertEqual(self.tool(), f"{self.RESULT}\n\n[boss inbox]\nAway mode off at 17:10.\n{NOTE}\n{watch.REMIND}")
         self.assertIsNone(self.tool())
 
     def test_other_sessions_never_get_the_reminder(self):
@@ -236,7 +236,7 @@ class WatchReminderTest(HermeticTestCase):
         # Boss moved mid-turn: the old owner's running turn is no longer the owner's.
         self.own("agent:phone", "Telegram DM", "--take")
         self.assertIsNone(self.tool())
-        # Never in turn-start context: the app shows that inside the captain's own message.
+        # Never in turn-start context: the app shows that inside the person's own message.
         for key in (OWNER, "agent:phone", "agent:tui"):
             with patch("plugin.current_session_key", return_value=key):
                 context = (plugin.on_pre_llm_call(session_id="sess-1", user_message="boss?") or {}).get("context", "")
@@ -255,7 +255,7 @@ class WatchReminderTest(HermeticTestCase):
         code, output = self.cli("own", "--take", "--label", "Telegram DM", key="agent:phone")
         self.assertEqual(code, 0, output)
         self.assertEqual(output.splitlines()[-2:], [watch.REMIND, "next: boss"])
-        self.captain_event("Captain is back at 17:10.")
+        self.user_event("Away mode off at 17:10.")
         thread.join(WAIT)
         self.assertEqual(codes, [0])
         # /boss and /boss take in chat end with it too (the plugin hides next: hints).

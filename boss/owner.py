@@ -1,16 +1,16 @@
-"""One Hermes session owns boss at a time (Firstmate model).
+"""One Hermes session owns boss at a time.
 
 boss is inactive until a session opens it with /boss (or `boss own`). Only the
 owner gets wakes and may mutate the ledger; other sessions are refused with the
 owner's name and how to take over. Claims, transfers and releases go to the
-captain journal and show up in the /back timeline.
+user journal and show up in the /back timeline.
 """
 from datetime import datetime
 import json
 import os
 from types import SimpleNamespace
 
-from . import captain
+from . import user
 from .common import BossError, refuse
 from .state import atomic_write, now
 
@@ -109,20 +109,20 @@ def catch_up(store, events, end):
         lines.append("First time boss is open; nothing earlier to compare.")
     else:
         # Strictly after the last look: that look (or claim) itself is not news.
-        rows = [row for row in captain.timeline(store, captain.parse(start), captain.parse(end), events)
-                if row[0] > captain.parse(start)]
+        rows = [row for row in user.timeline(store, user.parse(start), user.parse(end), events)
+                if row[0] > user.parse(start)]
         if rows:
-            lines.append(f"Since you last looked at {captain.clock(start)} ({captain.plural(len(rows), 'event')}):")
-            lines.extend(captain.timeline_lines(rows))
+            lines.append(f"Since you last looked at {user.clock(start)} ({user.plural(len(rows), 'event')}):")
+            lines.extend(user.timeline_lines(rows))
         else:
-            lines.append(f"Nothing changed since you last looked at {captain.clock(start)}.")
-    away = captain.presence(events)
+            lines.append(f"Nothing changed since you last looked at {user.clock(start)}.")
+    away = user.presence(events)
     if away:
-        # Opening boss is not /back: presence stays, and nothing is asked while he is away.
-        lines.append(f"Captain away {captain.since_text(away)}.")
-        lines.extend(captain.numbered_view(store, events))
+        # Opening boss is not /back: presence stays, and nothing is asked while away mode is on.
+        lines.append(f"You are away {user.since_text(away)}.")
+        lines.extend(user.numbered_view(store, events))
     else:
-        lines.extend(captain.ask(store, reason="catchup")[0])
+        lines.extend(user.ask(store, reason="catchup")[0])
     return lines
 
 
@@ -132,7 +132,7 @@ def own(store, key, surface, label, take=False):
         raise BossError("usage", "boss own needs HERMES_SESSION_KEY; run it from a Hermes session or use /boss",
                         "/boss in the chat that should own boss", 1)
     record = read(store.home)
-    events = store.captain_events()
+    events = store.user_events()
     end = now()
     if record is not None and record["session_key"] == key:
         label, action, previous = record["label"], "look", None
@@ -148,7 +148,7 @@ def own(store, key, surface, label, take=False):
         lines = [f"boss moved here from {record['label']}; wakes now come to {label}." if record else
                  f"boss is open in {label}; wakes come here."]
     lines.extend(catch_up(store, events, end))
-    store.captain("own", action=action, label=label, surface=surface or "",
+    store.user_event("own", action=action, label=label, surface=surface or "",
                   **({"previous": previous["label"]} if previous else {}))
     from .watch import REMIND, waiting
     # A watch already waiting can only be this session's when it re-opens; a claim or take has none yet.
@@ -162,6 +162,6 @@ def release(store):
     if record is None:
         return ["Nobody owns boss; nothing changed.", "next: run /boss in the session that should get wakes"]
     os.unlink(store.home / FILE)
-    store.captain("own", action="release", label=record["label"], surface=record["surface"])
+    store.user_event("own", action="release", label=record["label"], surface=record["surface"])
     return [f"Released boss from {record['label']}. Wakes are held until a session runs /boss.",
             "next: run /boss in the session that should get wakes"]

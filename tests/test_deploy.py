@@ -71,7 +71,7 @@ class DeployTest(HermeticTestCase):
         return [run.strip("\n").split("\n") for run in path.read_text().split("--\n") if run] if path.exists() else []
 
     def deploys(self):
-        path = self.home / "captain.jsonl"
+        path = self.home / "user.jsonl"
         return [r for r in map(json.loads, path.read_text().splitlines()) if r["event"] == "deploy"] if path.exists() else []
 
     def now_window(self, hours=0):
@@ -127,7 +127,7 @@ class DeployTest(HermeticTestCase):
         self.assertIn("  api_key: [REDACTED]", output)
         self.assertIn("  starting", output)
         self.assertIn("  done", output)
-        self.assertNotIn(SECRET, (self.home / "captain.jsonl").read_text())
+        self.assertNotIn(SECRET, (self.home / "user.jsonl").read_text())
 
     def test_scrub_keeps_only_the_tail(self):
         lines = scrub("\n".join(f"line {n}" for n in range(30)), Redactor())

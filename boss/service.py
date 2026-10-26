@@ -6,7 +6,7 @@ import re
 import uuid
 
 from . import attachments
-from . import captain
+from . import user
 from .common import BossError, refuse, require_text
 from .events import status_line
 from .integrations import GitHub, PR_PATTERN, command_path, github_repository, inspect_worktree, remove_worktree, resolve_repository
@@ -19,7 +19,7 @@ SLUG_CHARS = 40
 STATUS_FORMS = ("BOSS: done: <PR url or one-line report> / BOSS: needs-decision: <question> / "
                 "BOSS: blocked: <why> / BOSS: paused: <what you wait on> until <UTC time>")
 FAST_LAND_DOCS = "docs-only PR, landed under the project's fast_land_docs rule"
-MARK = "[boss] "  # Firstmate's from-firstmate marker: the supervisor speaking, never the captain
+MARK = "[boss] "  # the supervisor speaking, never the person boss works for
 # A steer written "rule: ..." is a standing rule for every brief; "rule scout: ..." or
 # "rule direct-PR: ..." only for briefs of that kind or delivery.
 STANDING = re.compile(r"rule(?:\s+(ship|scout|direct-PR|no-mistakes|local-only))?:\s*(\S.*)", re.I | re.S)
@@ -40,20 +40,26 @@ def slug(title):
     return cut or text[:SLUG_CHARS]
 
 
+def words(owner_name):
+    """What landing or deploying needs: '<owner_name>'s words', else 'approving words'."""
+    return f"{owner_name}'s words" if owner_name else "approving words"
+
+
 def standing_rule(steer):
     """'rule scout: Cite files' -> ('scout', 'Cite files'); 'rule: X' -> (None, 'X'); any other steer -> None."""
     match = STANDING.match(steer["text"])
     return match and (match[1] and match[1].lower(), match[2].strip())
 
 
-def footer(kind, delivery, *, origin=False, test_host=None, standing=(), standing_source=None):
+def footer(kind, delivery, *, origin=False, test_host=None, standing=(), standing_source=None, owner_name=None):
+    from_owner = f" from {owner_name}" if owner_name else ""
     rules = [
         "### boss worker contract",
         "Work only in this assigned worktree. Never change the primary checkout or another task's worktree.",
         "Stay on the assigned branch. Never rename it or switch to another branch.",
         "Commit as the repository's configured Git user. Never change Git identity or add AI co-author trailers or agent credit.",
         "Never merge. Never deploy. Report through this thread to boss.",
-        "Any question, decision or blocker MUST go through your harness's interactive question tool, which raises a T3 input request "
+        f"Any question, decision or blocker{(' for ' + owner_name) if owner_name else ''} MUST go through your harness's interactive question tool, which raises a T3 input request "
         "(AskUserQuestion in Claude Code, request_user_input in Codex). Never ask in plain text. "
         "After asking, stop: take no further action until the answer arrives, and end the turn if the tool returns without one.",
         "Never end your turn to wait for something your shell can watch (tests, CI, a stack booting). "
@@ -66,7 +72,7 @@ def footer(kind, delivery, *, origin=False, test_host=None, standing=(), standin
         f"{STATUS_FORMS}. boss reads only that line to learn how the turn ended; a turn without one is reported as unclear.",
         "Ask a question through the question tool first; the needs-decision line repeats it. "
         "After needs-decision or blocked, end the turn at once.",
-        "A message that starts with [boss] is from the boss supervisor, not the captain. "
+        f"A message that starts with [boss] is from the boss supervisor{(', not ' + owner_name) if owner_name else ''}. "
         "Act on it, then end that turn with a status line as usual.",
     ]
     if kind == "scout":
@@ -76,8 +82,8 @@ def footer(kind, delivery, *, origin=False, test_host=None, standing=(), standin
     elif delivery == "local-only":
         rules.append("Ship, local-only: implement, verify and commit on this branch. Do not push or open a PR. "
                      "Stop with a clean branch; your final message describes the changes and verification "
-                     "and ends with BOSS: done: <one-line report>. "
-                     "The captain must arrange landing separately; boss never merges local branches.")
+                     "and ends with BOSS: done: <one-line report>. " +
+                     (f"{owner_name} arranges landing" if owner_name else "Landing is arranged") + " separately; boss never merges local branches.")
     elif delivery == "no-mistakes":
         rules.append("Ship, no-mistakes: implement, verify and commit on this branch, then validate it through /no-mistakes "
                      "(the no-mistakes skill: `no-mistakes axi run --intent \"<the task's goal and your decisions>\"`) before any PR exists. "
@@ -97,11 +103,11 @@ def footer(kind, delivery, *, origin=False, test_host=None, standing=(), standin
         rules.append(f"Run heavy tests (full suites, browsers, app stacks) on {test_host}, not on this host.")
     if kind != "scout":
         rules.append("If the change touches UI, put before and after screenshots of the real page in the PR or final report.")
-        rules.append("Give every demo or preview link as a tailnet (*.ts.net) or preview URL the captain can open on his phone. "
+        rules.append("Give every demo or preview link as a tailnet (*.ts.net) or preview URL that opens on a phone. "
                      "Never link localhost, 127.0.0.1 or a bare host:port; boss flags those as working only on that machine.")
     matching = [text for scope, text in standing if scope in (None, kind, delivery.lower())]
     if matching:
-        rules.append("Standing rules from the captain. Follow every one:")
+        rules.append(f"Standing rules{from_owner}. Follow every one:")
         if origin:
             rules.append(source_note(standing_source, True).rstrip())
         rules.extend(f"- {text}" for text in matching)
@@ -249,7 +255,7 @@ class Boss:
         # Standing rules come from the steer store on every brief and move into the contract.
         standing = [rule for rule in map(standing_rule, steers) if rule]
         contract = footer(settings["kind"], settings["delivery"], origin=origin, test_host=settings.get("test_host"),
-                          standing=standing, standing_source=steers_path(self.store.home, name))
+                          standing=standing, standing_source=steers_path(self.store.home, name), owner_name=self.config.owner_name)
         return compose_brief(brief, self.store.home, name, contract, self.redact,
                              goal=self.store.goal(name) if goal is None else goal,
                              steers=[s for s in steers if not standing_rule(s)], origin=origin)
@@ -269,7 +275,7 @@ class Boss:
         steers = self.store.steers(project_name)
         context = steering_sections(goal, steers, self.redact)
         if context and (fits is None or not fits.strip()):
-            raise BossError("refused", "reconcile this task against the project goal and active captain steers",
+            raise BossError("refused", "reconcile this task against the project goal and active steers",
                             'retry boss spawn with --fits "<one line explaining how the task fits>"', 2,
                             context=[text.strip() for _, text in context])
         if fits is not None:
@@ -296,8 +302,8 @@ class Boss:
         violations = [text for text, _, _ in broken]
         if violations and override is None:
             retries = [retry for _, retry, _ in broken if retry]
-            raise BossError("refused", "spawn breaks the captain's worker rules",
-                            "retry with " + " / ".join(retries + ['--allow-model "<captain\'s exact words>"']), 2,
+            raise BossError("refused", "spawn breaks a worker rule",
+                            "retry with " + " / ".join(retries + ['--allow-model "<exact words>"']), 2,
                             context=violations + [f"to allow it from now on: {fix}" for _, _, fix in broken if fix])
         if override is not None and not violations:
             raise BossError("usage", "--allow-model applies only when a worker rule refuses the spawn",
@@ -372,8 +378,8 @@ class Boss:
         return meta
 
     def park(self, task_id, words):
-        """The captain holds this task: land refuses and no inbox line asks to land it until unpark."""
-        require_text(words, "captain's words", 2000)
+        """Held until unpark: land refuses and no inbox line asks to land it until unpark."""
+        require_text(words, "words", 2000)
         meta = self.active_task(task_id)
         meta["parked"] = {"words": words.strip(), "at": now()}
         self.store.save(meta, "parked")
@@ -597,12 +603,12 @@ class Boss:
                 self.config.effective(meta["project"])[0].get("fast_land_docs", False))
 
     def docs_only_pr(self, meta, prs):
-        """The task's one open PR when the rule applies, the captain holds nothing back (a fence,
-        or his no to merging it) and it touches only *.md files, else None."""
+        """The task's one open PR when the rule applies, nothing holds it back (a fence,
+        or a no to merging it) and it touches only *.md files, else None."""
         if (meta.get("parked") or not self.fast_land_docs(meta) or len(prs) != 1 or prs[0]["state"] != "OPEN" or
                 missing_evidence(meta, prs[0])):
             return None
-        answer = captain.approval(self.store, meta["id"], "merge")
+        answer = user.approval(self.store, meta["id"], "merge")
         if (answer is not None and answer.get("verdict") != "yes" or
                 any(s.get("fence") and s.get("task") in (None, meta["id"]) for s in self.store.steers(meta["project"]))):
             return None
@@ -612,19 +618,19 @@ class Boss:
     def land(self, task_id, approved):
         quoted = bool(approved and approved.strip())
         if not quoted:
-            # An approval he already gave, here or in a check-in, is never asked for again.
-            stored = captain.approval(self.store, task_id, "merge")
+            # An approval already given, here or in a check-in, is never asked for again.
+            stored = user.approval(self.store, task_id, "merge")
             if stored is not None and stored.get("verdict") == "yes":
                 approved, quoted = stored["resolution"], True
-            elif stored is not None:  # his "no" holds even for a docs-only PR
-                refuse(f"landing requires the captain's words; he answered: {captain.plain(stored['resolution'], 200)}",
+            elif stored is not None:  # a "no" holds even for a docs-only PR
+                refuse(f"landing needs {words(self.config.owner_name)}; the answer was: {user.plain(stored['resolution'], 200)}",
                        f'boss land {task_id} --approved "<quote>"')
         meta = self.active_task(task_id)
         if meta.get("parked"):
-            refuse("the captain parked this: " + captain.plain(meta["parked"]["words"], 200),
-                   f"boss unpark {task_id} only when he says so")
+            refuse(user.named(self.config.owner_name, "{name} parked this: ", "parked: ") + user.plain(meta["parked"]["words"], 200),
+                   f"boss unpark {task_id} only when " + user.named(self.config.owner_name, "{name} says so", "told to"))
         if not quoted and not self.fast_land_docs(meta):
-            refuse("landing requires the captain's words", f'boss land {task_id} --approved "<quote>"')
+            refuse(f"landing needs {words(self.config.owner_name)}", f'boss land {task_id} --approved "<quote>"')
         if meta.get("merge", "auto" if meta.get("auto_merge") else "approved") == "never":
             refuse("project merge policy is never", "arrange landing outside boss")
         snapshot = self.snapshot(meta)
@@ -646,14 +652,14 @@ class Boss:
             refuse("PR already merged outside this landing", f"boss settle {task_id}")
         fences = [s for s in self.store.steers(meta["project"]) if s.get("fence") and s.get("task") in (None, task_id)]
         if fences:
-            raise BossError("refused", "the captain fenced this until he lifts it",
-                            f"boss steer drop {meta['project']} <steer id> only when he lifts it", 2,
+            raise BossError("refused", "fenced: it stays fenced until the fence is lifted",
+                            f"boss steer drop {meta['project']} <steer id> only when " + user.named(self.config.owner_name, "{name} lifts it", "told to"), 2,
                             context=[f"{s['id']}: {s['text']}" for s in fences])
-        # A docs-only PR under fast_land_docs needs no captain words and does not wait for
+        # A docs-only PR under fast_land_docs needs no approving words and does not wait for
         # checks still running; a failed check or anything GitHub itself blocks still refuses.
         docs = self.docs_only_pr(meta, snapshot["prs"]) is not None
         if not quoted and not docs:
-            refuse("landing requires the captain's words; this PR changes more than *.md files",
+            refuse(f"landing needs {words(self.config.owner_name)}; this PR changes more than *.md files",
                    f'boss land {task_id} --approved "<quote>"')
         ready_ci = ("green", "pending", "none", "skipped") if docs else ("green",)
         ready_merge = ("CLEAN", "UNSTABLE", "HAS_HOOKS") if docs else ("CLEAN",)
@@ -770,7 +776,7 @@ class Boss:
             # A branch still on origin must not carry commits past the merged head.
             if all(self.github.branch_head(meta["repository"], b) in (None, pr["headRefOid"])
                    for b in {meta["branch"], pr["headRefName"]}):
-                # Keep the captain's approval when boss landed it.
+                # Keep the approval when boss landed it.
                 meta["landed"] = {"url": pr["url"], "head": pr["headRefOid"], "merge": pr["mergeCommit"],
                                   "verified": "worktree already gone; PR merged", **(meta.get("landed") or {})}
                 return
@@ -871,7 +877,7 @@ def normalize_options(options):
 
 
 def resolve_request(given, pending):
-    """Map what the captain typed to (request id, question id or None).
+    """Map what was typed to (request id, question id or None).
 
     status prints `<request id>/<question id>` and T3 question ids can be the
     question text itself, slashes and quotes included, so match against the

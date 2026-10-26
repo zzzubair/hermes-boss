@@ -65,7 +65,7 @@ class PanelTest(HermeticTestCase):
         self.assertEqual(code, 0, output)
         record = panel.load(self.store, output.split(":", 1)[0])
         self.ctx = wake.Context(self.home / "profile")
-        self.own("agent:captain", "Discord DM")
+        self.own("agent:owner", "Discord DM")
         self.listen(self.ctx)
         return record
 
@@ -211,7 +211,7 @@ class PanelTest(HermeticTestCase):
         self.assertEqual(self.wakes()[1], 'Matchmaking post: panel judged: done: best B (opus) 7/10. '
                                           'Stopped without an entry: A (sol). Judge: "Clear and useful."')
 
-    def test_writer_questions_reach_the_captain_and_do_not_advance(self):
+    def test_writer_questions_reach_you_and_do_not_advance(self):
         record = self.start()
         self.finish(self.seat(record, "A"), "Which season?\nBOSS: needs-decision: which season?")
         self.assertEqual(self.wakes(), ["Matchmaking post (sol): needs a decision: \"which season?\""])
@@ -253,7 +253,7 @@ class PanelGuardTest(HermeticTestCase):
                                                  '[projects.repo.rules]\nscout_models = ["claude:claude-opus-5-5"]\n', 1))
         code, output = self.panel()
         self.assertEqual(code, 2, output)
-        self.assertIn("panel seat sol breaks the captain's worker rules", output)
+        self.assertIn("panel seat sol breaks a worker rule", output)
         self.assertEqual(self.launched(), [])
         code, output = self.panel(workers="opus")
         self.assertEqual(code, 0, output)

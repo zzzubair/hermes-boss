@@ -1,7 +1,7 @@
 """Approve once, numbered answers, hard fences, the PR body gate and the worker cap."""
 import unittest
 
-from boss import captain
+from boss import user
 from boss.service import pr_body_problems
 from tests import test_boss as harness
 
@@ -75,7 +75,7 @@ class DecisionsTest(unittest.TestCase):
         self.ok("decide", "ask")
         self.ok("decide", "answer", "1 yes 2 no")
         self.assertEqual((self.decisions()[demo]["verdict"], self.decisions()[merge]["verdict"]), ("yes", "no"))
-        self.assertIn("he answered: no", self.refused("land", meta["id"]))
+        self.assertIn("the answer was: no", self.refused("land", meta["id"]))
         self.assertEqual(self.gh.merges, [])
         # He changes his mind in a check-in: his newer words win.
         self.ok("log", "ok fine merge it", "--task", meta["id"], "--approves", "merge")
@@ -131,17 +131,17 @@ class DecisionsTest(unittest.TestCase):
         self.assertEqual(next(iter(self.decisions().values()))["resolution"], "yes")
 
     def test_parse_answers_reads_increasing_numbers_in_the_round(self):
-        self.assertEqual(captain.parse_answers("1 yes 3 no 5 more info", 5), {1: "yes", 3: "no", 5: "more info"})
-        self.assertEqual(captain.parse_answers("1) yes, 2: no; 3.later", 3), {1: "yes", 2: "no", 3: "later"})
+        self.assertEqual(user.parse_answers("1 yes 3 no 5 more info", 5), {1: "yes", 3: "no", 5: "more info"})
+        self.assertEqual(user.parse_answers("1) yes, 2: no; 3.later", 3), {1: "yes", 2: "no", 3: "later"})
         # Numbers outside the round or going backwards stay part of the words.
-        self.assertEqual(captain.parse_answers("1 deploy at 9 tonight 2 no", 2), {1: "deploy at 9 tonight", 2: "no"})
-        self.assertEqual(captain.parse_answers("2 yes 1 no", 2), {2: "yes 1 no"})
-        self.assertEqual(captain.parse_answers("I like A", 3), {})
+        self.assertEqual(user.parse_answers("1 deploy at 9 tonight 2 no", 2), {1: "deploy at 9 tonight", 2: "no"})
+        self.assertEqual(user.parse_answers("2 yes 1 no", 2), {2: "yes 1 no"})
+        self.assertEqual(user.parse_answers("I like A", 3), {})
         for words, expected in (("yes", "yes"), ("dont deploy yet", "no"), ("I like A", None), ("go ahead", "yes")):
-            self.assertEqual(captain.verdict(words), expected, words)
+            self.assertEqual(user.verdict(words), expected, words)
         for words in ("more info", "5. More info needed here", "what is this?", "confused"):
-            self.assertTrue(captain.UNCLEAR.search(words), words)
-        self.assertFalse(captain.UNCLEAR.search("Wasnt this done already? if not, Yes."))
+            self.assertTrue(user.UNCLEAR.search(words), words)
+        self.assertFalse(user.UNCLEAR.search("Wasnt this done already? if not, Yes."))
 
     # Fences ----------------------------------------------------------------------
 
@@ -199,7 +199,7 @@ class DecisionsTest(unittest.TestCase):
         good, forbidden = harness.BODY, ["captain", "firstmate", "first mate", "chat"]
         self.assertEqual(pr_body_problems(good, forbidden), [])
         # File names and commands in code may use any word.
-        self.assertEqual(pr_body_problems(good.replace("`fix.py`", "`boss/captain.py`") + "\n```\nchat ok\n```\n", forbidden), [])
+        self.assertEqual(pr_body_problems(good.replace("`fix.py`", "`boss/user.py`") + "\n```\nchat ok\n```\n", forbidden), [])
         appendix = good.replace("## Risk Assessment", "<!-- no-mistakes-pr-appendix:v1 -->\n### Risk Assessment")
         self.assertEqual(pr_body_problems(appendix, forbidden), [])
         cases = {

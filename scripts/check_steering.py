@@ -67,7 +67,7 @@ def main():
         if log.read_bytes() != after_drop or (state / "projects/other.steers.jsonl").exists():
             raise RuntimeError("refused drop changed steer history")
         refused = command("spawn", "demo", "--title", "Improve navigation", expected=2)
-        if "Ship a mobile-first app" not in refused or "## Captain steers" in refused:
+        if "Ship a mobile-first app" not in refused or "## Steers" in refused:
             raise RuntimeError("goal gate included dropped steer context")
     print("result: durable goal, append-only supersession/drop history, active filtering and spawn refusal verified")
     return 0

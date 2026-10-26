@@ -255,7 +255,7 @@ delivery = "direct-PR"
             code = main(list(args))
         return code, output.getvalue()
 
-    def as_owner(self, key="agent:captain"):
+    def as_owner(self, key="agent:owner"):
         """From here on, boss commands run in the session that owns boss, like the supervisor's."""
         self.session = key
         code, output = self.cli("own")
@@ -300,7 +300,7 @@ delivery = "direct-PR"
                      "Never end your turn to wait for something your shell can watch",
                      "End EVERY turn with exactly one status line", "BOSS: needs-decision: <question>",
                      "BOSS: blocked: <why>", "BOSS: paused: <what you wait on> until <UTC time>", "end it with BOSS: done: <PR url>",
-                     "A message that starts with [boss] is from the boss supervisor, not the captain"):
+                     "A message that starts with [boss] is from the boss supervisor"):
             self.assertIn(text, brief)
         self.assertEqual(launch["message"], brief)
         for name in ("meta.json", "events.log", "brief.md"):
@@ -701,7 +701,7 @@ ssh = "far.example"
         self.completed(other)
         self.gh.origin_heads = {other["branch"]: "a" * 40}
         self.assertEqual(self.cli("settle", other["id"])[0], 0)
-        # A task boss landed keeps the captain's approval on record.
+        # A task boss landed keeps the approval on record.
         landed = self.spawn()
         self.completed(landed)
         self.gh.pr["state"] = "OPEN"

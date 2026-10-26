@@ -47,7 +47,7 @@ def steering_sections(goal, steers, redact):
                          for s in steers)
     sections = []
     for label, heading, text in (("project goal", "Project goal", goal),
-                                 ("captain steers", "Captain steers", rendered)):
+                                 ("steers", "Steers", rendered)):
         if redact(text) != text:
             refuse(f"{label} layer contains a token or secret", "remove credentials from the project context")
         if text:

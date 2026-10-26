@@ -1,7 +1,7 @@
 """boss watch: block until the owner's inbox has something, print it, ack it, exit.
 
 The owner session runs it as a Hermes tracked background command; its exit reaches
-the supervisor as a system notice, never as a message the captain seems to have sent.
+the supervisor as a system notice, never as a message the person seems to have sent.
 No polling: it blocks on $BOSS_HOME/watch.sock, which every inbox append pokes
 (inbox.notify). One watch runs at a time (watch.lock); a newer one replaces it,
 and the replaced one exits without taking anything.

@@ -167,7 +167,7 @@ if __name__ == "__main__":
 
 
 class PullRequestEventTests(unittest.TestCase):
-    """A PR merged or closed outside boss (the captain on GitHub) is one plain line, once per PR."""
+    """A PR merged or closed outside boss (by hand on GitHub) is one plain line, once per PR."""
 
     def test_merged_and_closed_prs_each_make_one_event_open_ones_none(self):
         v = view(prs=[PR, PR + "0", PR + "1"])
@@ -194,7 +194,7 @@ class StallTests(unittest.TestCase):
                 ("the nightly run, until 11:00", "2026-10-27 11:00")):  # a time already past today is tomorrow's
             with self.subTest(detail=detail):
                 self.assertEqual(paused_until(detail, self.NOON), self.at(expected))
-        for detail in ("the captain's answer", "until later", "until 25:00 UTC", "until 2026-13-40T10:00Z", ""):
+        for detail in ("the answer", "until later", "until 25:00 UTC", "until 2026-13-40T10:00Z", ""):
             with self.subTest(detail=detail):
                 self.assertIsNone(paused_until(detail, self.NOON))
 

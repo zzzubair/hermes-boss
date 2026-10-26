@@ -1,4 +1,4 @@
-"""Captain images reach the worker's thread through T3 attachments, checked before any upload."""
+"""Images reach the worker's thread through T3 attachments, checked before any upload."""
 import json
 
 from boss.attachments import MAX_BYTES

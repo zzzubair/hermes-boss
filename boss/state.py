@@ -9,9 +9,11 @@ import re
 import tempfile
 import uuid
 
-from .captain import presence
+from .user import presence
 from .common import BossError, refuse, require_text
 from .preferences import BRIEF_LIMIT, goal_path, layer_text, project_name, steers_path
+
+LEGACY_USER_JOURNAL = "captain.jsonl"  # this journal's name before boss dropped "captain"
 
 
 def atomic_write(path, text):
@@ -71,8 +73,9 @@ def unreviewed(meta):
 
 
 class Store:
-    def __init__(self, home, redact):
-        self.home, self.redact = Path(home), redact
+    def __init__(self, home, redact, name=None):
+        # name: config owner_name, for text boss writes about the person it works for.
+        self.home, self.redact, self.name = Path(home), redact, name
 
     @contextmanager
     def locked(self, wait=False):
@@ -171,7 +174,7 @@ class Store:
                             raise ValueError("cannot drop a superseded steer")
                         dropped.add(target)
                     else:
-                        require_text(record["text"], "captain steer", BRIEF_LIMIT)
+                        require_text(record["text"], "steer", BRIEF_LIMIT)
                         if record.get("task"):
                             identifier(record["task"])
                     if record.get("replaces"):
@@ -191,9 +194,9 @@ class Store:
 
     def add_steer(self, name, text, task=None, replaces=None, fence=False):
         project_name(name)
-        require_text(text, "captain steer", BRIEF_LIMIT)
+        require_text(text, "steer", BRIEF_LIMIT)
         if self.redact(text) != text:
-            refuse("captain steers layer contains a token or secret", "remove credentials from the steer")
+            refuse("steer contains a token or secret", "remove credentials from the steer")
         records = self.steers(name, all=True)
         if task is not None and self.load(task)["project"] != name:
             refuse("related task belongs to another project", "use a task from this project")
@@ -233,33 +236,36 @@ class Store:
         path = self.directory(task_id) / "events.log"
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
-    def captain_path(self):
-        return self.home / "captain.jsonl"
+    def user_path(self):
+        return self.home / "user.jsonl"
 
-    def captain_events(self):
-        """Append-only captain journal: away, back, check-in logs, ask rounds, unclear marks, ownership, notes."""
-        path = self.captain_path()
-        if not path.exists():
-            return []
+    def user_events(self):
+        """Append-only user journal: away, back, check-in logs, ask rounds, unclear marks, ownership, notes, deploys.
+
+        History written before the rename stays in captain.jsonl: read first, never written again.
+        """
         records = []
-        try:
-            with path.open(encoding="utf-8") as stream:
-                for line in stream:
-                    if not line.endswith("\n"):
-                        raise ValueError("incomplete append")
-                    record = json.loads(line)
-                    if record["event"] not in ("away", "back", "log", "ask", "unclear", "own", "note", "deploy"):
-                        raise ValueError("unknown event " + str(record["event"]))
-                    if not datetime.fromisoformat(record["at"]).tzinfo:
-                        raise ValueError("timestamp has no timezone")
-                    records.append(record)
-        except (ValueError, KeyError, TypeError) as exc:
-            raise BossError("ledger", f"invalid captain journal: {exc}",
-                            f"inspect {path}; preserve existing history") from None
+        for path in (self.home / LEGACY_USER_JOURNAL, self.user_path()):
+            if not path.exists():
+                continue
+            try:
+                with path.open(encoding="utf-8") as stream:
+                    for line in stream:
+                        if not line.endswith("\n"):
+                            raise ValueError("incomplete append")
+                        record = json.loads(line)
+                        if record["event"] not in ("away", "back", "log", "ask", "unclear", "own", "note", "deploy"):
+                            raise ValueError("unknown event " + str(record["event"]))
+                        if not datetime.fromisoformat(record["at"]).tzinfo:
+                            raise ValueError("timestamp has no timezone")
+                        records.append(record)
+            except (ValueError, KeyError, TypeError) as exc:
+                raise BossError("ledger", f"invalid user journal {path.name}: {exc}",
+                                f"inspect {path}; preserve existing history") from None
         return records
 
-    def captain(self, event, **fields):
-        return append_line(self.captain_path(), self.redact.data({"event": event, "at": now(), **fields}))
+    def user_event(self, event, **fields):
+        return append_line(self.user_path(), self.redact.data({"event": event, "at": now(), **fields}))
 
     def refresh_attention(self):
         """Materialize a tiny local hook view once per CLI command, under its lock.
@@ -284,18 +290,20 @@ class Store:
                 if meta.get("settled"):
                     continue
                 active += 1
+                if meta.get("parked"):
+                    continue  # held until unparked: nothing for the supervisor to review or answer until unparked
                 if meta.get("pending_inputs") or (meta.get("observed") or {}).get("requests"):
                     items.append({"id": meta["id"], "kind": "input"})
-                elif unreviewed(meta) and not meta.get("parked"):
+                elif unreviewed(meta):
                     items.append({"id": meta["id"], "kind": "finished"})
             except (OSError, ValueError, KeyError, TypeError, AttributeError, BossError):
                 continue
         # active lets the owner's turn check the wake listener without reading the ledger.
         attention = {"version": 1, "count": len(items), "items": items[:6], "active": active}
         try:
-            away = presence(self.captain_events())
+            away = presence(self.user_events())
             if away:
-                # The captain's own short note; one line, bounded for the hook.
+                # The away note as typed; one line, bounded for the hook.
                 attention["away"] = {"since": away["at"], "note": " ".join(str(away.get("note") or "").split())[:80]}
         except BossError:
             pass

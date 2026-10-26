@@ -1,4 +1,4 @@
-"""boss adopt tracks a PR opened outside boss; boss park holds a task for the captain."""
+"""boss adopt tracks a PR opened outside boss; boss park holds a task until unpark."""
 from boss.common import Redactor
 from boss.config import Config
 from boss.inbox import Inbox
@@ -20,7 +20,7 @@ class AdoptParkTest(HermeticTestCase):
     def setUp(self):
         self.setUp_cli()
         self.addCleanup(self.tearDown_cli)
-        self.gh.pr.update(headRefName="fm/old-work", title="Old Firstmate work")
+        self.gh.pr.update(headRefName="fm/old-work", title="Old outside work")
 
     def ok(self, *args):
         code, output = self.cli(*args)
@@ -51,9 +51,9 @@ class AdoptParkTest(HermeticTestCase):
     def test_an_adopted_pr_shows_in_the_fleet_and_status_with_no_worker(self):
         meta = self.adopt()
         self.assertEqual((meta["title"], meta["branch"], meta["base"], meta["thread_id"]),
-                         ("Old Firstmate work", "fm/old-work", "trunk", None))
+                         ("Old outside work", "fm/old-work", "trunk", None))
         self.assertEqual(self.t3_calls(), [])  # no thread launched, nothing asked of T3 but the project
-        row = self.row("Old Firstmate work")
+        row = self.row("Old outside work")
         self.assertIn("| PR opened outside boss |", row)
         self.assertIn(f"{URL} CI green", row)
         self.assertTrue(row.endswith("| review, then land |"), row)
@@ -61,9 +61,9 @@ class AdoptParkTest(HermeticTestCase):
         status = self.ok("status", meta["id"])
         self.assertIn("worker: none; PR opened outside boss", status)
         self.assertNotIn("thread:", status)
-        self.assertIn(f'next: boss land {meta["id"]} --approved "<captain quote>"', status)
+        self.assertIn(f'next: boss land {meta["id"]} --approved "<exact words>"', status)
         self.gh.pr["statusCheckRollup"] = [{"conclusion": "FAILURE"}]
-        self.assertTrue(self.row("Old Firstmate work").endswith("| fix its CI outside boss |"))
+        self.assertTrue(self.row("Old outside work").endswith("| fix its CI outside boss |"))
         self.assertIn("next: wait for its checks, or fix the PR outside boss", self.ok("status", meta["id"]))
 
     def test_adopt_takes_a_title_and_never_counts_against_the_worker_cap(self):
@@ -92,7 +92,7 @@ class AdoptParkTest(HermeticTestCase):
 
     def test_land_merges_an_adopted_pr_only_with_his_words_and_never_through_a_fence(self):
         meta = self.adopt()
-        self.assertIn("captain's words", self.refused("land", meta["id"]))
+        self.assertIn("landing needs approving words", self.refused("land", meta["id"]))
         fence = self.ok("steer", "repo", "hold the old PRs", "--task", meta["id"], "--fence").split(":", 1)[0]
         self.assertIn("fenced", self.refused("land", meta["id"], "--approved", "merge it"))
         self.ok("steer", "drop", "repo", fence)
@@ -122,7 +122,7 @@ class AdoptParkTest(HermeticTestCase):
         listener.clock = lambda: 10 ** 10 + 3600
         self.assertFalse(listener.sweep(github=True))  # the ledger says merged now: never re-asked
         held = Inbox(self.home).open_items()
-        self.assertEqual([(i["kind"], i["line"]) for i in held], [("pr-merged", f"Old Firstmate work: PR merged {URL}")])
+        self.assertEqual([(i["kind"], i["line"]) for i in held], [("pr-merged", f"Old outside work: PR merged {URL}")])
         self.assertNotIn(meta["id"], held[0]["line"])
 
     def test_status_outside_the_owner_session_only_looks_at_an_adopted_pr(self):
@@ -138,12 +138,12 @@ class AdoptParkTest(HermeticTestCase):
         for key in ("agent:someone-else", None):
             self.session = key
             self.assertIn(f"{URL}: merged", self.ok("status", meta["id"]))
-            self.assertIn(f"{URL} merged", self.row("Old Firstmate work"))
+            self.assertIn(f"{URL} merged", self.row("Old outside work"))
         self.assertEqual({p.name: p.read_bytes() for p in task.iterdir()}, before)
         listener.clock = lambda: 10 ** 10
         self.assertTrue(listener.sweep(github=True))
         self.assertEqual([(i["kind"], i["line"]) for i in Inbox(self.home).open_items()],
-                         [("pr-merged", f"Old Firstmate work: PR merged {URL}")])
+                         [("pr-merged", f"Old outside work: PR merged {URL}")])
 
     # park --------------------------------------------------------------------
 
@@ -154,16 +154,16 @@ class AdoptParkTest(HermeticTestCase):
         self.completed(meta, f"BOSS: done: {URL}")
         return meta
 
-    def test_a_parked_task_shows_parked_and_waits_on_the_captain(self):
+    def test_a_parked_task_shows_parked_and_waits_on_you(self):
         meta = self.finished_with_pr()
         self.assertTrue(self.row("Fix thing").endswith("| review, then land |"))
         self.assertIn("parked", self.ok("park", meta["id"], "wait until after the demo"))
         row = self.row("Fix thing")
         self.assertIn("| parked: wait until after the demo |", row)
-        self.assertTrue(row.endswith("| waiting on captain |"), row)
+        self.assertTrue(row.endswith("| waiting on you |"), row)
         status = self.ok("status", meta["id"])
-        self.assertIn("parked by captain: wait until after the demo", status)
-        self.assertIn(f"next: waiting on captain; boss unpark {meta['id']} only when he says so", status)
+        self.assertIn("parked: wait until after the demo", status)
+        self.assertIn(f"next: wait; boss unpark {meta['id']} only when told to", status)
         self.assertIn("unparked", self.ok("unpark", meta["id"]))
         self.assertTrue(self.row("Fix thing").endswith("| review, then land |"))
         self.assertIn("was not parked; nothing changed", self.ok("unpark", meta["id"]))
@@ -172,7 +172,7 @@ class AdoptParkTest(HermeticTestCase):
         meta = self.finished_with_pr()
         self.ok("park", meta["id"], "not yet, I want to try it first")
         output = self.refused("land", meta["id"], "--approved", "merge it")
-        self.assertIn("the captain parked this: not yet, I want to try it first", output)
+        self.assertIn("parked: not yet, I want to try it first", output)
         self.assertEqual(self.gh.merges, [])
         self.ok("unpark", meta["id"])
         self.ok("land", meta["id"], "--approved", "merge it")
@@ -199,7 +199,7 @@ class AdoptParkTest(HermeticTestCase):
         self.assertIsNone(inbox.take(self.store.load, "watch", "test"))  # the done line is dropped, never delivered
         dropped = [r for r in inbox.records() if r["event"] == "dropped"]
         self.assertEqual(len(dropped), 1)
-        self.assertIn("parked by the captain", dropped[0]["reason"])
+        self.assertIn("parked; never asked to land", dropped[0]["reason"])
         attention = (self.home / "attention.json").read_text()
         self.assertNotIn('"finished"', attention)
         self.gh.pr.update(state="MERGED", mergeCommit={"oid": "b" * 40})
@@ -219,8 +219,8 @@ class AdoptParkTest(HermeticTestCase):
         self.ok("park", meta["id"], "after the demo")
         self.ok("unpark", meta["id"])
         timeline = self.ok("back", "--full")
-        self.assertIn("adopted a PR opened outside boss: Old Firstmate work (repo)", timeline)
-        self.assertIn("parked: Old Firstmate work (repo); his words: after the demo", timeline)
-        self.assertIn("unparked: Old Firstmate work (repo)", timeline)
+        self.assertIn("adopted a PR opened outside boss: Old outside work (repo)", timeline)
+        self.assertIn("parked: Old outside work (repo); your words: after the demo", timeline)
+        self.assertIn("unparked: Old outside work (repo)", timeline)
         self.assertNotIn("opened PR", timeline)
         self.assertNotIn(meta["id"], timeline)
