@@ -2,6 +2,7 @@
 import json
 import socket
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from .common import BossError
@@ -53,6 +54,21 @@ class MCP:
         if not isinstance(result.get("result"), dict):
             raise BossError("protocol", f"missing or invalid MCP result for {method}")
         return result["result"]
+
+    def upload(self, relative_url, data, mime_type):
+        """POST exact bytes to an upload path on this MCP origin; the bearer never leaves that origin."""
+        if not relative_url.startswith("/") or relative_url.startswith("//"):
+            raise BossError("protocol", "T3 upload target is not a path on this host")
+        url = urllib.parse.urljoin(self.url, relative_url)
+        request = urllib.request.Request(url, data, {"Authorization": "Bearer " + self.token,
+                                                     "Content-Type": mime_type}, method="POST")
+        try:
+            with self.opener.open(request, timeout=self.timeout) as response:
+                response.read()
+        except urllib.error.HTTPError as exc:
+            raise BossError("transport", f"T3 image upload HTTP {exc.code}", "check the host, then retry") from None
+        except (OSError, socket.timeout, ValueError) as exc:
+            raise BossError("transport", f"T3 image upload: {self.redact(exc)}", "check the host, then retry") from None
 
     @staticmethod
     def _sse(response, request_id):

@@ -1,0 +1,34 @@
+Live proof: captain images reach a worker thread through T3 attachments
+Host: ser5ver T3 (MCP http://127.0.0.1:3773/mcp), 2026-10-26 16:33 UTC.
+Code: this branch copied to /tmp on ser5ver, a temporary BOSS_HOME, the live ledger untouched.
+Thread: a throwaway scratch thread on claudeAgent:claude-haiku-5-5, settled and archived afterwards.
+
+Two generated 16x16 PNGs, 79 bytes each: launch-test.png (solid red), send-test.png (solid blue).
+
+1. Spawn path: attachments.upload() then t3_thread_launch(..., attachments=[...]) with the red PNG.
+   launched mcp:a178d880-2744-4f84-a8eb-c70afe1302f4 preparing
+
+2. Send path, the real CLI:
+   $ BOSS_HOME=... python3 -m boss send 5c0b4ea10f91 "Throwaway test: say in five words what colour this second image is, then stop." --image .../send-test.png
+   5c0b4ea10f91: sent with 1 image
+   next: boss status 5c0b4ea10f91
+   exit=0
+   journal: ['launched', 'send_intent', 'sent']
+
+3. t3_thread_read (after t3_thread_wait: completed, timedOut false):
+   thread: {"threadId": "mcp:a178d880-2744-4f84-a8eb-c70afe1302f4", "title": "boss image test (throwaway)", "status": "completed"}
+   {"type": "user_message", "text": "[boss] Throwaway test of image attachments. Say in five words what colour the image is, then stop."}
+   {"type": "assistant_message", "text": "It's a solid bright red."}
+   {"type": "user_message", "text": "[boss] Throwaway test: say in five words what colour this second image is, then stop."}
+   {"type": "assistant_message", "text": "It's a solid bright blue."}
+   The worker could only know the colours from the images. T3's thread_read items do not list
+   attachment metadata (searched both the messages and activity views for "attachment", ".png", "image/"),
+   so the stored files are the second check:
+
+4. T3 attachment store on ser5ver, files written at 16:33, compared byte for byte with cmp:
+   ~/.t3/userdata/attachments/mcp-a178d880-2744-4f84-a8eb-c70afe1302f4-f80b402c-....png == launch-test.png (red)
+   ~/.t3/userdata/attachments/mcp-a178d880-2744-4f84-a8eb-c70afe1302f4-0ded2f95-....png == send-test.png (blue)
+   (plus the two pending-*.png upload copies, also identical)
+
+5. Cleanup: t3_thread_organize settle + archive -> {'status': 'completed', 'settled': True, 'archived': True};
+   the temporary BOSS_HOME and the copied code were deleted.

@@ -31,6 +31,8 @@ SCHEMAS = {
     "t3_pending_request_respond": ["requestId", "answers"],
     "list_thread_pull_requests": [], "unwatch_pull_request": [],
     "t3_thread_organize": ["action"],
+    "t3_attachment_prepare_upload": ["upload"], "t3_attachment_discard": ["attachmentId"],
+    "t3_thread_send_attachments": ["attachments"],
 }
 
 
@@ -43,6 +45,7 @@ class FakeT3:
                           "repositoryIdentity": {"owner": "example", "name": "repo"}}]
         self.failure, self.drop_launch, self.sse, self.missing_session = None, False, False, False
         self.launch_selection = None
+        self.uploads, self.upload_status = [], 200
         self.catalog = {"providers": [{"providerInstanceId": "codex", "models": [
             {"id": "gpt-test", "options": [{"id": "reasoningEffort", "values": ["low", "high", "max"]},
                                            {"id": "serviceTier", "values": ["default", "priority"]}]}]}]}
@@ -55,6 +58,14 @@ class FakeT3:
                 pass
 
             def do_POST(self):
+                if self.path.startswith("/api/attachments/upload/"):
+                    data = self.rfile.read(int(self.headers["Content-Length"]))
+                    fake.uploads.append((self.path, dict(self.headers), data))
+                    authorized = self.headers.get("Authorization") == "Bearer " + TOKEN
+                    self.send_response(fake.upload_status if authorized else 401)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 fake.headers.append(dict(self.headers))
                 if self.headers.get("Authorization") != "Bearer " + TOKEN:
@@ -141,7 +152,12 @@ class FakeT3:
         if name == "t3_thread_organize":
             self.threads[args["threadId"]]["settled"] = args["action"] == "settle"
             return {"settled": True}
-        if name in ("t3_thread_interrupt", "t3_thread_send", "unwatch_pull_request"):
+        if name == "t3_attachment_prepare_upload":
+            pending = f"pending-{sum(n == name for n, _ in self.calls)}"
+            return {"attachmentId": pending, "relativeUrl": "/api/attachments/upload/" + pending, "expiresAt": 0}
+        if name == "t3_attachment_discard":
+            return {}
+        if name in ("t3_thread_interrupt", "t3_thread_send", "t3_thread_send_attachments", "unwatch_pull_request"):
             return {"sequence": 2}
         raise AssertionError(name)
 
