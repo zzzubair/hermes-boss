@@ -9,6 +9,7 @@ import sys
 import tomllib
 from urllib.parse import urlsplit
 
+from . import deploy
 from .common import BossError, refuse
 from .preferences import project_name
 from .state import atomic_write
@@ -27,6 +28,9 @@ MAX_ACTIVE = 15
 # Unset means no restriction. ship_models/scout_models are the deprecated spelling of models.ship/scout.
 RULES = {"models": dict, "ship_models": list, "scout_models": list}
 ROLE = {**{k: SETTINGS[k] for k in ("host", "model", "effort", "kind")}, "kinds": list}
+# [projects.<name>.deploy]: how the supervisor deploys on the captain's word (boss deploy).
+DEPLOY = {"host": str, "command": str, "check": str, "rollback": str, "check_minutes": int, "no_touch": list,
+          "auto_rollback": bool}
 
 
 def rule_entry(entry):
@@ -256,8 +260,12 @@ class Config:
             fields(worker, ROLE, "workers." + name)
         for name, project in data.get("projects", {}).items():
             project_name(name)
-            fields(project, {**SETTINGS, "project_id": str, "repository": str, "workers": dict, "rules": dict}, "projects." + name)
+            fields(project, {**SETTINGS, "project_id": str, "repository": str, "workers": dict, "rules": dict, "deploy": dict},
+                   "projects." + name)
             rules(project.get("rules", {}), f"projects.{name}.rules")
+            if "deploy" in project:
+                fields(project["deploy"], DEPLOY, f"projects.{name}.deploy")
+                deploy.validate(project["deploy"], self.fail, f"projects.{name}.deploy")
         hosts, workers = data.get("hosts", {}), roles_table(data)
         for name, project in data.get("projects", {}).items():
             for role, settings in project.get("workers", {}).items():
@@ -344,7 +352,7 @@ class Config:
         overrides = {k: v for k, v in (overrides or {}).items() if v is not None}
         apply(DEFAULTS, "built-in")
         apply(self.normalized({k: v for k, v in self.data.items() if k not in ("hosts", "projects", "workers", "wake", "rules")}), str(self.path))
-        project = self.normalized({k: v for k, v in (self.project(name) if name else {}).items() if k not in ("workers", "rules")})
+        project = self.normalized({k: v for k, v in (self.project(name) if name else {}).items() if k not in ("workers", "rules", "deploy")})
         apply(project, f"{self.path} [projects.{name}]")
         roles = self.roles(name)
         role = overrides.get("worker")

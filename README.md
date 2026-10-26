@@ -381,6 +381,8 @@ boss back --full                # read-only: the latest away window's timeline
 boss steer <project> "don't merge this until I say" --task <id> --fence
 boss land <id> --approved 'The captain exact words'
 boss land <id>                  # when he already approved the merge
+boss deploy my-project --dry-run                     # the plan and any refusal; runs nothing
+boss deploy my-project --approved 'The captain exact words'
 boss settle <id>
 boss settle --prune-landed      # remove leftover worktrees of settled, landed tasks on all hosts
 boss own                        # also /boss: open boss in this Hermes session
@@ -515,6 +517,43 @@ Unknown, other-project, inactive and tombstone IDs are refused with a `next:` hi
 `list` and `drop` are reserved verbs in the first position. For a T3 project
 with either title, set `boss config set projects.alias.project_id '<T3 project ID>'`
 and use `alias` for all boss commands, including goals and steers.
+
+### Deploys
+
+Workers never deploy. The supervisor deploys a project with
+`boss deploy <project> --approved '<captain words>'`, from the session that
+owns boss, using that project's `deploy` table. boss never ships a deploy
+config; add one per project. An example (placeholders, not a real setup):
+
+```toml
+[projects."Clash Lens".deploy]
+host = "my-prod-ssh-alias"                       # ssh destination, as in ~/.ssh/config
+command = "cd /srv/app && git pull --ff-only && systemctl --user restart app"
+check = "curl -fsS https://app.example.ts.net/health"   # optional; exit 0 means healthy
+rollback = "cd /srv/app && git checkout HEAD@{1} && systemctl --user restart app"  # optional
+check_minutes = 10                               # default 10; 0 checks only once
+no_touch = ["04:00-07:00"]                       # UTC windows; may wrap past midnight
+auto_rollback = false                            # true runs rollback on a failed check
+```
+
+It refuses (exit 2, nothing runs) when the quote is missing or says no, when
+it is not run from the owner session, inside a `no_touch` window, under a
+project-wide fence (`boss steer <project> '...' --fence`; a `--task` fence
+holds only that task's landing), or while a deploy decision
+(`decide add --task <id> --action deploy`) for a task in that project is still
+open or was answered no. `boss log '<his words>' --task <id> --approves deploy`
+records a later yes. Then it saves his words in the captain journal, runs
+`command` over `ssh -oBatchMode=yes <host>`, runs `check` right away, and with
+`check_minutes > 0` waits inside the same command (a progress line each minute,
+no timer or background job) and checks again. A failed deploy skips the
+checks. On a failed deploy or check it says so plainly (exit 3) and prints the
+rollback command without running it, unless `auto_rollback = true`. The result
+goes to the captain journal, so the `/back` timeline shows the deploy. Remote
+output is cut to its last 20 lines; `NAME=value` environment lines are hidden
+and token-, secret- and password-looking values are redacted. The ledger is
+locked only while journaling, so other boss commands keep working during the
+wait. `--dry-run` works from any shell, needs no quote, and prints the plan and
+any refusal.
 
 `answer` accepts the request ID or the exact `request-id/question-id` printed
 by `status`, including `/0`. A suffix must identify a real question in that
