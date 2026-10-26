@@ -256,8 +256,10 @@ and open exactly one PR against the origin default branch. Local-only workers
 commit locally and report in their final message. Scouts investigate and
 return a report with a clean worktree; the final message above its
 `BOSS: done:` line is saved as `report.md` (`BOSS_REPORT:` from workers
-briefed earlier is still read). `test_host` and `no_mistakes` are supervisor
-preferences; include any relevant instructions in the task's brief.
+briefed earlier is still read). When `test_host` is set, the contract tells
+workers to run heavy tests there. Ship workers are told to put before and after
+screenshots in the PR when a change touches UI. `no_mistakes` is a supervisor
+preference; include any relevant instructions in the task's brief.
 
 Workers report the way Firstmate's crew does: every turn ends with exactly
 one status line, the last line of the final message:
@@ -266,11 +268,15 @@ one status line, the last line of the final message:
 BOSS: done: <PR url | one-line report>
 BOSS: needs-decision: <question>
 BOSS: blocked: <why>
-BOSS: paused: <what it waits on>
+BOSS: paused: <what it waits on> until <UTC time>
 ```
 
-After `needs-decision` or `blocked` the worker ends its turn at once and never
-polls. Questions still go through the harness's question tool, which T3 turns
+After `needs-decision` or `blocked` the worker ends its turn at once. Workers
+never end a turn to wait for something their shell can watch (tests, CI, a
+stack booting): they wait inside one blocking command with the shell's largest
+timeout and reissue it on timeout, never sleep-then-check or background-and-poll.
+`paused` is only for waits they cannot watch, and names a UTC deadline. The same
+obstacle twice is reported as `blocked`. Questions still go through the harness's question tool, which T3 turns
 into an input request (`AskUserQuestion` in Claude Code, `request_user_input`
 in Codex); the status line repeats the question. Messages from the supervisor
 (`boss send`) arrive marked `[boss] ...`, so the worker can tell boss from the
@@ -351,7 +357,12 @@ worker host. Explicit registry values take precedence over discovery.
 
 Record every captain steer before dispatching work. `send` alone does not
 record a project steer. `--replaces` supersedes an earlier steer without
-rewriting its history. `spawn` requires a nonblank, single-line `--fits` when
+rewriting its history. A steer that starts with `rule:` is a standing rule:
+boss moves it out of the steers section into the worker contract of every
+brief, read fresh from the steer log at each spawn. `rule ship:`, `rule scout:`,
+`rule direct-PR:` or `rule local-only:` limits it to briefs of that kind or
+delivery, for example `boss steer my-project 'rule direct-PR: PR body follows
+the pr-description shape'`. Drop it like any steer. `spawn` requires a nonblank, single-line `--fits` when
 a project has a goal or active steers. It saves the explanation with the task.
 Boss does not ask an LLM to judge it; the captain resolves unclear choices.
 Spawn also refuses tasks that break the [worker rules](#worker-rules) unless

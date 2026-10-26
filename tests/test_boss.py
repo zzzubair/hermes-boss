@@ -249,9 +249,9 @@ delivery = "direct-PR"
         for text in ("investigate this", "Never merge", "Never deploy", "configured Git user", "exactly ONE PR",
                      "Stay on the assigned branch. Never rename it or switch to another branch.", "raises a T3 input request",
                      "AskUserQuestion in Claude Code, request_user_input in Codex", "Never ask in plain text",
-                     "Never poll, sleep or wait in a loop",
+                     "Never end your turn to wait for something your shell can watch",
                      "End EVERY turn with exactly one status line", "BOSS: needs-decision: <question>",
-                     "BOSS: blocked: <why>", "BOSS: paused: <what you wait on>", "end it with BOSS: done: <PR url>",
+                     "BOSS: blocked: <why>", "BOSS: paused: <what you wait on> until <UTC time>", "end it with BOSS: done: <PR url>",
                      "A message that starts with [boss] is from the boss supervisor, not the captain"):
             self.assertIn(text, brief)
         self.assertEqual(launch["message"], brief)
