@@ -40,7 +40,7 @@ class CaptainTest(unittest.TestCase):
         meta = self.spawn("--fits", "unrelated")  # supervisor work while away
         decision = self.decision("Pick storage")
         for argv in [("log", "he said: back is fine, I'm still away though"), ("steer", "repo", "Prefer SQLite"),
-                     ("decide", "close", decision, "SQLite"), ("status", meta["id"]), ("poll",), ()]:
+                     ("decide", "close", decision, "SQLite"), ("status", meta["id"]), ()]:
             self.ok(*argv)
         for message in ("I'm back", "/back", "ok im here now"):
             on_pre_llm_call(user_message=message, conversation_history=[])
@@ -78,7 +78,8 @@ class CaptainTest(unittest.TestCase):
 
         context = Context()
         register(context)
-        self.assertEqual(sorted(context.commands), ["afk", "away", "back"])
+        self.assertEqual(sorted(context.commands), ["afk", "away", "back", "boss"])
+        self.assertEqual(context.commands["boss"][1], "[take|release|status]")
         self.assertIs(context.commands["afk"][0], context.commands["away"][0])
         self.assertEqual(context.commands["away"][1], "[note]")
 
@@ -164,7 +165,7 @@ class CaptainTest(unittest.TestCase):
         decision = self.decision("Pick storage")
         self.ok("steer", "repo", "Prefer SQLite everywhere")
         self.completed(meta)
-        self.ok("poll")
+        self.ok("status", meta["id"])
         self.ok("decide", "close", decision, "SQLite, decided from phone")
         self.ok("log", "Asked how the login fix went; said fine")
         output = self.ok("back")

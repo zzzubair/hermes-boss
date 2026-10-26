@@ -1,0 +1,38 @@
+Live push proof on oracle: T3 0.1.3-nightly.20261026.3717 (t3 serve, port 3773), 2026-10-26.
+Auth: a 45-minute 'orchestration:read' session token (t3 auth session issue --label boss-push-probe),
+exchanged for a one-use WebSocket ticket (POST /api/auth/websocket-ticket/rpc), then
+GET /ws?wsTicket=...&orchestrationProtocol=2 and orchestration.subscribeShell. Token revoked afterwards
+(t3 auth session revoke; a later ticket request returned HTTP 401). /mcp rejects that token (401): T3
+accepts only approved MCP client sessions there, and only non-MCP sessions on the WebSocket.
+
+1. Raw push capture (boss/websocket.py client, 15 minutes). One subscription, no requests after it.
+   Non-running thread.updated items, as received. bb3114147298 is the parallel boss worker (task aee7e1e16ee8):
+    13:12:05 seq 57350 thread ...bb3114147298 waiting pendingRuntimeRequest=None PRs=['open']
+    13:12:05 seq 57355 thread ...bb3114147298 completed pendingRuntimeRequest=None PRs=['open']
+    13:12:07 seq 57356 thread ...bb3114147298 completed pendingRuntimeRequest=None PRs=['open']
+    13:12:10 seq 57357 thread ...bb3114147298 completed pendingRuntimeRequest=None PRs=['open']
+   Totals: 187 thread.updated pushes, 6 snapshots; running pushes are progress only.
+
+2. Real boss Listener (boss/wake.py at this branch) on the same live stream, real events.classify (PR #16),
+   real gh for the PR, throwaway BOSS_HOME whose ledger maps two live threads, fake owner injector.
+   The three MCP status reads were answered with this worker's own live T3 MCP results for that thread
+   (t3_thread_read, t3_pending_request_list, list_thread_pull_requests), because oracle has no MCP
+   client token for boss.
+   run 1:
+     13:25:16 CLASSIFY finished_pr mcp:de6c3bdd-9751-49b0-a28b-bb3114147298:finished_pr:run:thread:mcp%3Ade6c3bdd-9751-49b0-a28b-bb3114147298:ordinal:1
+     13:25:16 INJECT {"role": "user", "session_key": "agent:probe-owner"} [boss wake] live0 (parallel worker (finished)): finished with a PR: https://github.com/zzzubair/hermes-boss/pull/16. Run boss status <id> to review.
+     heartbeat: 1877259 listening host=oracle
+     MCP reads triggered by pushes: ['t3_thread_read', 't3_pending_request_list', 'list_thread_pull_requests']
+     wakes.jsonl:
+        held mcp:de6c3bdd-9751-49b0-a28b-bb3114147298:finished_pr:run:thread:mcp%3Ade6c3bdd-9751-49b0-a28b-bb3114147298:ordinal:1 finished_pr
+        delivered ['mcp:de6c3bdd-9751-49b0-a28b-bb3114147298:finished_pr:run:thread:mcp%3Ade6c3bdd-9751-49b0-a28b-bb3114147298:ordinal:1'] Probe owner (fake injector)
+     errors: none
+     (snapshot pushed 26 threads; 25 are not boss tasks or are running, so no read and no wake)
+   run 2, restart with the same ledger (T3 re-snapshots; same dedupe_key, no second INJECT):
+     13:26:04 CLASSIFY finished_pr mcp:de6c3bdd-9751-49b0-a28b-bb3114147298:finished_pr:run:thread:mcp%3Ade6c3bdd-9751-49b0-a28b-bb3114147298:ordinal:1
+     heartbeat: 1877439 listening host=oracle
+     MCP reads triggered by pushes: ['t3_thread_read', 't3_pending_request_list', 'list_thread_pull_requests']
+     wakes.jsonl:
+        held mcp:de6c3bdd-9751-49b0-a28b-bb3114147298:finished_pr:run:thread:mcp%3Ade6c3bdd-9751-49b0-a28b-bb3114147298:ordinal:1 finished_pr
+        delivered ['mcp:de6c3bdd-9751-49b0-a28b-bb3114147298:finished_pr:run:thread:mcp%3Ade6c3bdd-9751-49b0-a28b-bb3114147298:ordinal:1'] Probe owner (fake injector)
+     errors: none

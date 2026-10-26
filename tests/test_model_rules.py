@@ -154,8 +154,7 @@ class ModelRulesTest(HermeticTestCase):
 
         def command(argv, **kwargs):
             return subprocess.CompletedProcess(argv, 0, '[{"name":"boss","status":"enabled"}]', "")
-        with patch("boss.setup.install_paths", return_value=paths), patch("boss.setup.subprocess.run", side_effect=command), \
-                patch("boss.setup.wake_cron", return_value=False):
+        with patch("boss.setup.install_paths", return_value=paths), patch("boss.setup.subprocess.run", side_effect=command):
             return self.cli("doctor")
 
     def test_doctor_lints_rules(self):

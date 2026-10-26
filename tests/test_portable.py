@@ -93,20 +93,6 @@ class ConfigTest(HermeticTestCase):
         self.assertEqual(config.credentials["LITERAL"], "$(echo unsafe)")
         self.assertEqual(redact("tiny env-value"), "[REDACTED] [REDACTED]")
 
-    def test_gate_suppresses_and_logs_config_and_lock_errors(self):
-        os.environ["BOSS_HOME"] = str(self.home)
-        self.assertEqual(self.cli("poll", "--hermes-gate")[:2], (0, '{"wakeAgent": false}\n'))
-        (self.home / "config.toml").write_text("no_mistakes = 1")
-        self.assertEqual(self.cli("poll", "--hermes-gate")[:2], (0, '{"wakeAgent": false}\n'))
-        log = self.home / "logs/poll.log"
-        self.assertIn("no_mistakes", log.read_text())
-        (self.home / "config.toml").write_text("")
-        from boss.state import Store
-        with Store(self.home, Redactor()).locked():
-            self.assertEqual(self.cli("poll", "--hermes-gate")[:2], (0, '{"wakeAgent": false}\n'))
-        self.assertIn("holds the ledger", log.read_text())
-
-
 class RoleTest(HermeticTestCase):
     setUp = harness.CLITest.setUp
     tearDown = harness.CLITest.tearDown
@@ -245,23 +231,6 @@ class RoleTest(HermeticTestCase):
         code, output = self.cli("init", "--force", "--url", self.fake.url, "--token-env", "MISSING")
         self.assertEqual(code, 3, output)
         self.assertEqual(path.read_bytes(), original)
-
-    def test_gate_only_wakes_on_actionable_change_and_redacts_errors(self):
-        meta = self.spawn()
-        self.completed(meta)
-        code, output = self.cli("poll", "--hermes-gate")
-        self.assertEqual(code, 0, output)
-        self.assertIn("finished", output)
-        self.assertEqual(self.cli("poll", "--hermes-gate"), (0, '{"wakeAgent": false}\n'))
-        self.fake.failure = "t3_thread_read"
-        self.assertEqual(self.cli("poll", "--hermes-gate"), (0, '{"wakeAgent": false}\n'))
-        log = (self.home / "logs/poll.log").read_text()
-        self.assertNotIn(harness.TOKEN, log)
-        self.assertIn("[REDACTED]", log)
-
-    def test_gate_does_not_wake_just_for_deprecation_warning(self):
-        self.configure('auto_merge=false\n')
-        self.assertEqual(self.cli("poll", "--hermes-gate"), (0, '{"wakeAgent": false}\n'))
 
     def test_doctor_checks_ssh_resolution_and_required_auth(self):
         import socket

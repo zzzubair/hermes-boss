@@ -223,7 +223,8 @@ delivery = "direct-PR"
         self.assertEqual(code, 0)
         self.assertIn("0 active tasks", output)
         self.assertIn("0 open decisions", output)
-        self.assertEqual(self.cli("poll"), (0, ""))
+        # Wakes are pushed by T3; there is no poll command to run on a timer.
+        self.assertEqual(self.cli("poll")[0], 1)
         self.assertEqual(self.cli("bogus")[0], 1)
         self.assertEqual(self.cli("spawn", "repo", "--title", "T", "--typo")[0], 1)
         self.assertEqual(self.cli("status", "--fu")[0], 1)
@@ -304,46 +305,10 @@ serviceTier = "priority"
         self.assertEqual(len(self.fake.threads), 1)
         self.assertEqual(len([n for n, _ in self.fake.calls if n == "t3_thread_launch"]), 1)
 
-    def test_poll_running_and_unchanged_terminal_are_silent(self):
-        meta = self.spawn()
-        self.assertEqual(self.cli("poll"), (0, ""))
-        self.completed(meta, "done")
-        expected = (0, meta["id"] + ": finished\n")
-        self.assertEqual(self.cli("poll"), expected)
-        revision = self.store.load(meta["id"])["revision"]
-        self.assertEqual(self.cli("poll"), (0, ""))
-        self.assertEqual(self.store.load(meta["id"])["revision"], revision)
-        self.cli("status", meta["id"])
-        self.assertEqual(self.cli("poll"), (0, ""))
-
-    def test_poll_ci_aggregates_changes_and_unlinked_pr_retained(self):
-        meta = self.spawn()
-        self.fake.prs = [URL]
-        first = self.cli("poll")
-        self.assertIn("PR opened " + URL, first[1])
-        self.assertIn("1 passed,0 failed,0 pending,0 skipped", first[1])
-        self.assertEqual(self.cli("poll"), (0, ""))
-        self.gh.pr["statusCheckRollup"] = [{"conclusion": "FAILURE"}]
-        second = self.cli("poll")
-        self.assertNotEqual(first, second)
-        self.assertEqual(self.cli("poll"), (0, ""))
-        self.fake.prs = []
-        self.assertEqual(self.cli("poll"), (0, ""))
-        self.assertEqual(self.store.load(meta["id"])["pr_urls"], [URL])
-
-    def test_poll_failed_interrupted_and_waiting(self):
-        meta = self.spawn()
-        for status, label in [("failed", "failed"), ("interrupted", "interrupted"), ("waiting", "waiting for input")]:
-            self.fake.threads[meta["thread_id"]]["status"] = status
-            first = self.cli("poll")
-            self.assertIn(label, first[1])
-            self.assertEqual(self.cli("poll"), (0, ""))
-
     def test_pending_input_and_answer(self):
         meta = self.spawn()
         self.fake.pending = {"request-1": [{"id": "q1", "question": "Which path?", "options": []}]}
         self.assertIn("Which path?", self.cli("status", meta["id"])[1])
-        self.assertIn("waiting for input requests=request-1", self.cli("poll")[1])
         self.assertEqual(self.cli("answer", meta["id"], "wrong", "A")[0], 2)
         self.assertEqual(self.cli("answer", meta["id"], "request-1", "A")[0], 0)
         respond = next(a for n, a in self.fake.calls if n == "t3_pending_request_respond")
@@ -422,7 +387,6 @@ serviceTier = "priority"
         self.assertEqual(self.cli("settle", meta["id"], "--discard-approved", "discard scratch")[0], 0)
         self.assertEqual(self.store.load(meta["id"])["discard_approved"], "discard scratch")
         self.assertTrue(any(n == "unwatch_pull_request" for n, _ in self.fake.calls))
-        self.assertEqual(self.cli("poll"), (0, ""))
         self.assertEqual(self.cli("settle", meta["id"])[0], 0)
 
     def test_scout_report_saved_and_settled(self):
@@ -435,7 +399,7 @@ serviceTier = "priority"
     def test_report_from_old_run_does_not_allow_settlement(self):
         meta = self.spawn("--kind", "scout")
         self.completed(meta, "BOSS_REPORT: old report")
-        self.cli("poll")
+        self.cli("status", meta["id"])
         self.fake.threads[meta["thread_id"]]["latestRunId"] = "run-2"
         self.assertIn("no report for latest run", self.cli("settle", meta["id"])[1])
 
@@ -555,18 +519,6 @@ serviceTier = "priority"
         self.assertIn("error: auth", output)
         self.assertNotIn(TOKEN, output)
 
-    def test_poll_continues_after_one_task_fails(self):
-        first, second = self.spawn(), self.spawn()
-        self.completed(first)
-        self.completed(second)
-        meta = self.store.load(first["id"])
-        meta["host"] = "missing-host"
-        self.store.save(meta, "host_test")
-        code, output = self.cli("poll")
-        self.assertEqual(code, 1)
-        self.assertIn(first["id"] + ": failed", output)
-        self.assertIn(second["id"] + ": finished", output)
-
     def test_ledger_writer_lock_refuses_without_waiting(self):
         with self.store.locked():
             code, output = self.cli("decide", "add", "blocked write")
@@ -662,7 +614,7 @@ class GitEvidenceTest(HermeticTestCase):
             self.assertEqual(version.stdout, "boss 0.1.0\n")
             for args in ([], ["--help"], ["spawn", "--help"], ["status", "--help"], ["send", "--help"],
                          ["answer", "--help"], ["stop", "--help"], ["land", "--help"], ["settle", "--help"],
-                         ["poll", "--help"], ["decide", "--help"], ["decide", "add", "--help"],
+                         ["own", "--help"], ["release", "--help"], ["decide", "--help"], ["decide", "add", "--help"],
                          ["decide", "list", "--help"], ["decide", "close", "--help"],
                          ["project", "--help"], ["project", "list", "--help"],
                          ["project", "add", "--help"], ["project", "show", "--help"],

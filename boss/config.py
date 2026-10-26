@@ -157,17 +157,17 @@ class Config:
 
         # Register explicit token names even when unrelated validation fails.
         for host in data.get("hosts", {}).values() if isinstance(data.get("hosts", {}), dict) else ():
-            if isinstance(host, dict) and isinstance(host.get("token_env", "T3_MCP_TOKEN"), str):
-                key = host.get("token_env", "T3_MCP_TOKEN")
-                self.redact.add(self.file_credentials.get(key))
-                self.redact.add(self.credentials.get(key))
+            for name, default in (("token_env", "T3_MCP_TOKEN"), ("events_token_env", "T3_EVENTS_TOKEN")):
+                if isinstance(host, dict) and isinstance(host.get(name, default), str):
+                    key = host.get(name, default)
+                    self.redact.add(self.file_credentials.get(key))
+                    self.redact.add(self.credentials.get(key))
         fields(data, {"default_host": str, "default_worker": str, "hosts": dict, "projects": dict, "workers": dict, "wake": dict,
                       "rules": dict, **{k: v for k, v in SETTINGS.items() if k != "worker"}})
         fields(data.get("rules", {}), RULES, "rules")
         wake = data.get("wake", {})
+        # interval_seconds is a leftover from timed polling; tolerated so old configs load, never read.
         fields(wake, {"enabled": bool, "interval_seconds": int, "origin": dict, "session_key": str}, "wake")
-        if wake.get("interval_seconds", 300) <= 0:
-            self.fail("wake.interval_seconds", "must be a positive integer")
         if "origin" in wake and "session_key" in wake:
             self.fail("wake", "use origin or session_key, not both")
         if "origin" in wake:
@@ -180,7 +180,7 @@ class Config:
                     self.fail("wake.origin." + key, "required")
         for name, host in data.get("hosts", {}).items():
             prefix = "hosts." + name
-            fields(host, {"url": str, "token_env": str, "ssh": str}, prefix)
+            fields(host, {"url": str, "token_env": str, "events_token_env": str, "ssh": str}, prefix)
             if "url" not in host:
                 self.fail(prefix + ".url", "required")
             try:
@@ -194,8 +194,9 @@ class Config:
                     self.fail(prefix + ".url", "use HTTPS or a loopback SSH tunnel")
             except ValueError:
                 self.fail(prefix + ".url", "invalid MCP URL")
-            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", host.get("token_env", "T3_MCP_TOKEN")):
-                self.fail(prefix + ".token_env", "invalid environment variable")
+            for key, default in (("token_env", "T3_MCP_TOKEN"), ("events_token_env", "T3_EVENTS_TOKEN")):
+                if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", host.get(key, default)):
+                    self.fail(prefix + "." + key, "invalid environment variable")
             ssh = host.get("ssh", "")
             if ssh and (not re.fullmatch(r"[A-Za-z0-9_@.:-]+", ssh) or ssh.startswith("-")):
                 self.fail(prefix + ".ssh", "invalid ssh destination")
@@ -250,6 +251,18 @@ class Config:
         if any(c.isspace() for c in token):
             raise BossError("auth", f"invalid whitespace in {key}", "replace it with a valid MCP token")
         return host, token
+
+    def events_token(self, name):
+        """Read-only T3 session token for the push stream; T3 keeps it apart from MCP client tokens."""
+        host = self.hosts[name]
+        key = host.get("events_token_env", "T3_EVENTS_TOKEN")
+        token = self.credentials.get(key)
+        if not token or any(c.isspace() for c in token):
+            raise BossError("auth", f"missing or invalid {key}",
+                            f"t3 auth session issue --scope orchestration:read --label boss-events --token-only; "
+                            f"put it in {key} in env or {self.hermes / '.env'}")
+        self.redact.add(token)
+        return token
 
     def project(self, name):
         project_name(name)

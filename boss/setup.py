@@ -1,23 +1,23 @@
 """Portable first-run setup and read-only environment checks."""
 import copy
-from datetime import datetime, timezone
+import fcntl
 import json
 import os
 from pathlib import Path
 import shlex
-import shutil
 import socket
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 
-from .common import BossError, Redactor
-from .config import Config, boss_home, hermes_home, literal
-from .state import atomic_write
-from .wake import CONSENT_KEY, CONSENT_LINE, target_configured
+from .common import BossError
+from .config import hermes_home, literal
+from . import owner
+from .wake import CONSENT_KEY, CONSENT_LINE, HEARTBEAT, LAST, LOCK, endpoints, legacy_target
 
 
 DEFAULT_URL = "http://127.0.0.1:3773/mcp"
-CRON_PROMPT = "Run boss status, review changed workers and pending decisions, and report actionable items to the captain. Never invent merge approval."
 
 
 def install_paths():
@@ -29,75 +29,20 @@ def install_paths():
     }
 
 
-def wake_cron():
-    path = hermes_home() / "cron/jobs.json"
-    if not path.exists():
-        return False
-    data = json.loads(path.read_text())
-    return any((job.get("name") in ("boss-poll", "boss-wake") or
-                job.get("script") in ("boss-poll-gate.sh", str(hermes_home() / "scripts/boss-poll-gate.sh")))
-               and job.get("enabled", True) and job.get("state") not in ("paused", "completed") and not job.get("paused_at")
-               and not job.get("no_agent", False)
-               for job in data["jobs"])
-
-
-def add_wake_arguments(parser):
-    modes = parser.add_mutually_exclusive_group()
-    modes.add_argument("--with-wake", action="store_true", help="configure plugin wake; never edit Hermes config")
-    modes.add_argument("--with-cron", action="store_true", help="install the legacy Hermes wake cron")
-    target = parser.add_mutually_exclusive_group()
-    target.add_argument("--wake-origin", help="SessionSource JSON object for the captain's chat")
-    target.add_argument("--wake-session-key", help="existing durable gateway routing key")
-    parser.add_argument("--wake-interval", type=int, help="poll interval in seconds; default 300")
-
-
-def wake_settings(config, args):
-    data = copy.deepcopy(config.data)
-    supplied = args.wake_origin is not None or args.wake_session_key is not None or args.wake_interval is not None
-    if supplied and not args.with_wake:
-        raise BossError("usage", "--wake-* options require --with-wake", exit_code=1)
-    if args.with_wake:
-        wake = data.setdefault("wake", {})
-        wake["enabled"] = True
-        wake["interval_seconds"] = args.wake_interval if args.wake_interval is not None else wake.get("interval_seconds", 300)
-        if args.wake_origin is not None:
-            try:
-                wake["origin"] = json.loads(args.wake_origin)
-            except ValueError:
-                raise BossError("usage", "--wake-origin must be a JSON object", exit_code=1) from None
-            wake.pop("session_key", None)
-        elif args.wake_session_key is not None:
-            wake["session_key"] = args.wake_session_key
-            wake.pop("origin", None)
-    config.validate(data)
-    if args.with_cron and data.get("wake", {}).get("enabled", True) and target_configured(data.get("wake", {})):
-        raise BossError("config", "plugin wake is configured; cron would compete for poll changes",
-                        "boss config set wake.enabled false; then retry --with-cron", 1)
-    return data
-
-
-def wake_instructions(data):
-    lines = [f"add to {hermes_home() / 'config.yaml'} under plugins > entries > boss:",
-             "  allow_gateway_injection: true", "exact setting: " + CONSENT_LINE,
-             "Hermes config unchanged; enable boss and restart the gateway after configuring wake."]
-    if not target_configured(data.get("wake", {})):
-        lines.append("wake target not configured: no thread; set wake.origin or wake.session_key, then run boss doctor")
-    return lines
+WAKE_SETUP = ["wakes: the Hermes gateway (or app) listens to T3's push stream; nothing polls",
+              "wake consent: add allow_gateway_injection: true under plugins > entries > boss in"
+              " $HERMES_HOME/config.yaml (exact setting: " + CONSENT_LINE + ")",
+              "events token: t3 auth session issue --scope orchestration:read --label boss-events --token-only"
+              " -> T3_EVENTS_TOKEN in env or $HERMES_HOME/.env",
+              "next: run /boss in the Hermes chat that should own boss and get its wakes"]
 
 
 def initialize(boss, args):
     config = boss.config
-    data = wake_settings(config, args)
+    data = copy.deepcopy(config.data)
     if config.path.exists() and config.hosts and not args.force:
-        if args.with_wake:
-            config.write(data)
-        lines = [f"config exists: {config.path} (host unchanged; --force permits updating the host)",
-                 "next: boss host list; boss doctor"]
-        if args.with_wake:
-            lines.extend(wake_instructions(data))
-        if args.with_cron:
-            lines.extend(install_cron())
-        return lines, 0
+        return [f"config exists: {config.path} (host unchanged; --force permits updating the host)",
+                "next: boss host list; boss doctor"], 0
     data.setdefault("hosts", {})[args.name] = {"url": args.url or DEFAULT_URL, "token_env": args.token_env}
     data["default_host"] = args.name
     config.validate(data)
@@ -111,14 +56,8 @@ def initialize(boss, args):
         config.data = prior
         config._load()
     config.write(data)
-    lines = [f"configured: {config.path}", f"host: {args.name} ({len(projects)} projects)",
-             "next: hermes plugins enable boss", "next: boss doctor; boss project list",
-             "optional wake-up: boss init --with-wake --wake-session-key <key>"]
-    if args.with_wake:
-        lines.extend(wake_instructions(data))
-    if args.with_cron:
-        lines.extend(install_cron())
-    return lines, 0
+    return [f"configured: {config.path}", f"host: {args.name} ({len(projects)} projects)",
+            "next: hermes plugins enable boss", "next: boss doctor; boss project list", *WAKE_SETUP], 0
 
 
 def doctor(boss):
@@ -173,33 +112,78 @@ def doctor(boss):
         return any(p.get("name") == "boss" and p.get("status") == "enabled" for p in plugins)
     check("plugin enabled", enabled, "hermes plugins enable boss")
     check("skill installed", lambda: (paths["skills"] / "boss/SKILL.md").is_file(), "./install.sh")
+    lines.extend(owner_lines(boss))
     wake = boss.config.data.get("wake", {})
-    requested = "wake" in boss.config.data and wake.get("enabled", True)
-
-    def wake_target():
-        if not target_configured(wake):
-            raise ValueError("no target configured; no wake thread starts")
-        return True
-
-    lines.append("plugin wake: " + ("requested" if requested else "disabled"))
-    check("wake target", wake_target,
-          "boss init --with-wake --wake-session-key <gateway key> or --wake-origin '<JSON>'", required=requested)
+    if "interval_seconds" in wake:
+        lines.append("info: wake.interval_seconds is unused now that wakes are pushed; boss config unset wake.interval_seconds")
+    try:
+        routed = wake.get("enabled", True) and (owner.read(boss.store.home) is not None or legacy_target(wake) is not None)
+    except BossError:
+        routed = False  # owner_lines already failed on the unreadable record
     check("wake gateway consent", lambda: json.loads(command(["hermes", "config", "get", CONSENT_KEY, "--json"])) is True,
-          "add " + CONSENT_LINE + " in the profile's config.yaml", required=requested)
-    check("single wake source", lambda: not (requested and target_configured(wake) and wake_cron()),
-          "pause/remove the boss-wake or boss-poll cron manually, or set wake.enabled false")
-    def wake_alive():
-        from .wake import HEARTBEAT
-        text = (boss.config.home / HEARTBEAT).read_text().split()
-        age = (datetime.now(timezone.utc) - datetime.fromisoformat(text[0])).total_seconds()
-        limit = 2 * wake.get("interval_seconds", 300) + 60
-        if age > limit:
-            raise ValueError(f"last armed poll {int(age)}s ago (limit {limit}s)")
-        return True
-    check("wake loop alive", wake_alive, "restart the Hermes gateway; then rerun boss doctor",
-          required=requested and target_configured(wake))
-    check("wake cron", wake_cron, "./install.sh --with-cron; keep the Hermes gateway running", required=False)
+          "add " + CONSENT_LINE + " in the profile's config.yaml", required=routed)
+    for name, host in boss.config.hosts.items():
+        def stream(n=name, h=host):
+            # Ticket exchange only: proves the token opens the push stream without subscribing.
+            token = boss.config.events_token(n)
+            request = urllib.request.Request(endpoints(h["url"])[1], data=b"", method="POST",
+                                             headers={"Authorization": "Bearer " + token})
+            try:
+                with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=15) as response:
+                    json.load(response)["ticket"]
+            except urllib.error.HTTPError as exc:
+                raise ValueError(f"T3 refused the events token (HTTP {exc.code})") from None
+            except (OSError, KeyError) as exc:
+                raise ValueError(f"no T3 push endpoint: {type(exc).__name__}") from None
+            return True
+        check(f"host {name} push stream", stream,
+              "t3 auth session issue --scope orchestration:read --label boss-events --token-only; set "
+              + host.get("events_token_env", "T3_EVENTS_TOKEN"), required=routed)
+
+    def listener():
+        # Whoever holds wake.lock is the listener; if doctor can take it, nobody is listening.
+        descriptor = os.open(boss.store.home / LOCK, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            raise ValueError("no Hermes process holds wake.lock")
+        except BlockingIOError:
+            pass
+        finally:
+            os.close(descriptor)
+        stamp, pid, state = (boss.store.home / HEARTBEAT).read_text().split(maxsplit=2)
+        return f"pid {pid} since {owner.stamp(stamp)} ({state.strip()})"
+    check("wake listener", listener, "start or restart the Hermes gateway (or app); then rerun boss doctor",
+          required=routed)
     return lines, 1 if failures else 0
+
+
+def owner_lines(boss):
+    """Who owns boss, whether the last wake reached them, and what to do when nobody does."""
+    wake = boss.config.data.get("wake", {})
+    enabled = wake.get("enabled", True)
+    lines = ["plugin wake: " + ("on" if enabled else "off (wake.enabled = false)")]
+    try:
+        record = owner.read(boss.store.home)
+    except BossError as exc:
+        return lines + [f"fail: owner: {exc.message}; fix: {exc.hint}"]
+    if record is None:
+        if legacy_target(wake):
+            return lines + ["warn: no owner; wakes use the legacy [wake] target as a migration fallback; "
+                            "fix: run /boss in the session that should get wakes, then boss config unset the target"]
+        return lines + ["warn: no owner: run /boss in the session that should get wakes; until then wakes are held on disk"]
+    lines.append(f"ok: owner {record['label']} since {owner.stamp(record['claimed_at'])}"
+                 f" surface={record['surface'] or 'unknown'}")
+    try:
+        last = json.loads((boss.store.home / LAST).read_text())
+        if last.get("owner") != record["label"]:
+            raise ValueError
+    except (OSError, ValueError, AttributeError):
+        return lines + ["info: owner reachable: unknown until the first wake"]
+    when = owner.stamp(last["at"])
+    if last.get("result") == "delivered":
+        return lines + [f"ok: owner reachable: last wake delivered at {when}"]
+    return lines + [f"warn: owner unreachable: last wake refused at {when}; changes are held on disk;"
+                    " fix: reopen that session, or run /boss take where you are"]
 
 
 def rule_findings(boss):
@@ -258,27 +242,9 @@ def rule_findings(boss):
     return findings
 
 
-def install_cron():
-    if not shutil.which("hermes"):
-        raise BossError("config", "--with-cron needs hermes on PATH", exit_code=1)
-    root = Path(__file__).resolve().parent.parent
-    script = hermes_home() / "scripts/boss-poll-gate.sh"
-    assignments = {k: v for k, v in os.environ.items() if k in ("BOSS_HOME", "XDG_CONFIG_HOME", "HERMES_HOME")}
-    assignments.setdefault("HERMES_HOME", str(hermes_home()))
-    invocation = ["env", *(f"{k}={v}" for k, v in assignments.items()), sys.executable,
-                  str(root / "bin/boss"), "poll", "--hermes-gate"]
-    atomic_write(script, "#!/bin/sh\nexec " + shlex.join(invocation) + "\n")
-    if wake_cron():
-        return ["wake cron exists (unchanged)"]
-    subprocess.run(["hermes", "cron", "create", "*/5 * * * *", CRON_PROMPT,
-                    "--name", "boss-poll", "--script", script.name, "--deliver", "local"], check=True)
-    return ["installed legacy boss-poll cron"]
-
-
 def install(argv=None):
     import argparse
-    parser = argparse.ArgumentParser(description="Install boss links and optional wake settings. Hermes config.yaml is never edited.")
-    add_wake_arguments(parser)
+    parser = argparse.ArgumentParser(description="Install boss links. Hermes config.yaml is never edited.")
     parser.add_argument("--hermes-home")
     for name in ("bin", "skills", "agent-skills", "plugins"):
         parser.add_argument("--" + name + "-dir")
@@ -299,13 +265,6 @@ def install(argv=None):
     for target, source in targets:
         if target.exists() and not target.is_symlink():
             parser.error(f"{target} exists and is not a symlink")
-    config = None
-    if args.with_wake or args.with_cron or any(v is not None for v in (args.wake_origin, args.wake_session_key, args.wake_interval)):
-        try:
-            config = Config(boss_home(), Redactor())
-            data = wake_settings(config, args)
-        except BossError as exc:
-            parser.error(config.redact(exc.message) if config else exc.code + ": invalid boss config")
     for target, source in targets:
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.is_symlink():
@@ -314,12 +273,6 @@ def install(argv=None):
         print(f"installed: {target}")
     print("enable plugin (opt-in): hermes plugins enable boss")
     print("next: boss init")
-    if args.with_wake:
-        config.write(data)
-        print("configured wake: " + str(config.path))
-        print("\n".join(wake_instructions(data)))
-    if args.with_cron:
-        print("\n".join(install_cron()))
     return 0
 
 

@@ -20,7 +20,7 @@ class AmbientTest(unittest.TestCase):
     completed = harness.CLITest.completed
 
     def test_clean_ledger_injects_nothing_and_prints_nothing(self):
-        self.cli("poll")
+        self.cli("status")
         output = io.StringIO()
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
             result = on_pre_llm_call(session_id="s1", user_message="hello", conversation_history=[])
@@ -31,7 +31,7 @@ class AmbientTest(unittest.TestCase):
         decision = self.cli("decide", "add", "Choose an API")[1].split(":", 1)[0]
         meta = self.spawn()
         self.fake.pending = {"request-1": [{"id": "q1", "question": "Which API?", "options": []}]}
-        self.cli("poll")
+        self.cli("status", meta["id"])
         before = len(self.fake.calls)
         with patch("socket.socket.connect", side_effect=AssertionError("network forbidden")), \
                 patch("subprocess.run", side_effect=AssertionError("subprocess forbidden")):
@@ -42,65 +42,40 @@ class AmbientTest(unittest.TestCase):
         self.assertNotIn("Choose an API", result["context"])
         self.assertNotIn("Which API?", result["context"])
 
-    def test_completion_needs_poll_and_status_acknowledges_only_that_run(self):
+    def test_held_wake_is_a_reminder_until_delivered(self):
         meta = self.spawn()
         self.completed(meta, "finished report")
         self.assertIsNone(on_pre_llm_call())
-        self.cli("poll")
-        self.assertIn(meta["id"] + " finished", on_pre_llm_call()["context"])
-        self.cli()  # Fleet overview does not acknowledge individual work.
-        self.assertIsNotNone(on_pre_llm_call())
-        self.cli("status", meta["id"])
-        self.assertIsNone(on_pre_llm_call())
-        self.assertEqual(self.cli("poll"), (0, ""))
-        self.fake.threads[meta["thread_id"]]["latestRunId"] = "run-2"
-        self.assertIn("finished", self.cli("poll")[1])
-        self.assertIn("finished", on_pre_llm_call()["context"])
-
-    def test_status_before_poll_does_not_leave_a_false_review_reminder(self):
-        meta = self.spawn()
-        self.completed(meta)
-        self.cli("status", meta["id"])
-        self.assertEqual(self.cli("poll"), (0, ""))
+        # A pushed event the owner has not received yet shows up locally, once per task.
+        self.store.hold_wake("k1", meta["id"], "finished_report", "finished")
+        self.store.hold_wake("k2", meta["id"], "error", "failed")
+        self.store.refresh_attention()
+        self.assertEqual(on_pre_llm_call()["context"], f"boss: 1 need you ({meta['id']} finished) - run boss status")
+        self.store.wakes_delivered(["k1", "k2"], "Discord DM")
+        self.store.refresh_attention()
         self.assertIsNone(on_pre_llm_call())
 
-    def test_poll_only_uses_read_tools_and_suppresses_repeats_after_restart(self):
-        meta = self.spawn()
-        self.completed(meta)
-        start = len(self.fake.calls)
-        self.assertIn("finished", self.cli("poll")[1])
-        self.assertEqual(self.cli("poll"), (0, ""))
-        allowed = {"t3_thread_read", "t3_pending_request_list", "list_thread_pull_requests"}
-        self.assertTrue({name for name, _ in self.fake.calls[start:]}.issubset(allowed))
-        # Each self.cli invocation constructs a new Boss and MCP session.
-        self.assertEqual(self.cli("poll"), (0, ""))
-
-    def test_status_does_not_consume_an_input_poll_change(self):
+    def test_status_records_a_pending_input(self):
         meta = self.spawn()
         self.fake.pending = {"r": [{"id": "q", "question": "Choice?", "options": []}]}
         self.cli("status", meta["id"])
-        self.assertIn("waiting for input", self.cli("poll")[1])
-        self.assertIn("input", on_pre_llm_call()["context"])
-        self.assertEqual(self.cli("poll"), (0, ""))
+        self.assertIn(meta["id"] + " input", on_pre_llm_call()["context"])
 
     def test_answers_and_closed_decisions_clear_the_context(self):
         decision = self.cli("decide", "add", "Pick A or B")[1].split(":", 1)[0]
         meta = self.spawn()
         self.fake.pending = {"r": [{"id": "q", "question": "Choice?", "options": []}]}
-        self.cli("poll")
+        self.cli("status", meta["id"])
         self.cli("answer", meta["id"], "r", "A")
         self.assertNotIn("input", on_pre_llm_call()["context"])
         self.cli("decide", "close", decision, "A")
         self.assertIsNone(on_pre_llm_call())
 
-    def test_send_and_settle_remove_old_completion(self):
+    def test_settle_removes_a_held_completion(self):
         meta = self.spawn()
         self.completed(meta)
-        self.cli("poll")
-        self.cli("send", meta["id"], "One more thing")
-        self.assertIsNone(on_pre_llm_call())
-        self.fake.threads[meta["thread_id"]]["latestRunId"] = "run-2"
-        self.cli("poll")
+        self.store.hold_wake("k1", meta["id"], "finished_report", "finished")
+        self.store.refresh_attention()
         self.assertIsNotNone(on_pre_llm_call())
         self.assertEqual(self.cli("settle", meta["id"])[0], 0)
         self.assertIsNone(on_pre_llm_call())
@@ -151,10 +126,16 @@ class AmbientTest(unittest.TestCase):
         register(context)
         self.assertEqual([name for name, _ in context.hooks], ["pre_llm_call"])
         self.cli("decide", "add", "Review")
-        result = context.hooks[0][1](session_id="s", task_id="t", turn_id="turn", user_message="hello",
-                                     conversation_history=[], is_first_turn=True, model="test", platform="cli",
-                                     parent_session_id="", sender_id="")
-        self.assertTrue(result["context"].startswith("boss: 1 need you"))
+        hook = context.hooks[0][1]
+
+        def turn(session):
+            return hook(session_id=session, task_id="t", turn_id="turn", user_message="hello", conversation_history=[],
+                        is_first_turn=True, model="test", platform="cli", parent_session_id="", sender_id="")
+        self.assertTrue(turn("s")["context"].startswith("boss: not open in any session"))
+        with patch.dict(os.environ, {"HERMES_SESSION_KEY": "s"}):
+            self.assertEqual(self.cli("own", "--label", "Hermes CLI")[0], 0)
+        self.assertTrue(turn("s")["context"].startswith("boss: 1 need you"))
+        self.assertRegex(turn("other")["context"], r"^boss: owned by Hermes CLI since \d\d:\d\d; /boss take to move it here$")
 
     def test_installer_is_repeatable_and_preserves_config(self):
         root = Path(__file__).resolve().parent.parent
