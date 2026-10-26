@@ -1,9 +1,10 @@
 """Bounded local context hook, /boss ownership, /away and /back, the owner's inbox, plus the wake listener.
 
-The owner's inbox (boss/inbox.py) reaches its model three ways: appended to a tool
-result mid-turn (transform_tool_result), as context at turn start (pre_llm_call),
-and, only while no owner turn runs, injected by the listener. Turn start and end
-hooks keep the on-disk busy mark the listener checks.
+The owner's inbox (boss/inbox.py) reaches its model through `boss watch`, a tracked
+background command whose exit Hermes shows as a system notice, and appended to a
+tool result mid-turn (transform_tool_result). Nothing goes into turn-start context
+or an injected message by default: Hermes shows both as if the captain sent them.
+Turn start and end hooks keep the on-disk busy mark the listener checks.
 """
 from datetime import datetime
 import fcntl
@@ -96,20 +97,6 @@ def owner_line(owner, kwargs):
     return f"boss: owned by {label} since {when(owner['claimed_at'])}; /boss take to move it here"
 
 
-def away_line(away):
-    """One line while the captain is away; None when the record is malformed."""
-    if not isinstance(away, dict) or not isinstance(away.get("since"), str) or not isinstance(away.get("note", ""), str):
-        return None
-    try:
-        since = when(away["since"])
-    except ValueError:
-        return None
-    note = " ".join(away.get("note", "").split())[:80]
-    return (f"boss: captain away since {since}" + (f" ({note})" if note else "") +
-            "; don't ask him anything, act on your own judgement and queue decisions for /back;"
-            " anything he says or decides in a check-in counts in full, record it with boss log.")
-
-
 def boss_home_path():
     return Path(os.environ.get("BOSS_HOME", "~/.boss")).expanduser()
 
@@ -125,22 +112,18 @@ def owner_turn(owner, kwargs):
     return owner["session_key"] if owner["session_key"] in sessions else None
 
 
-def turn_start_inbox(kwargs):
-    """Mark the owner's turn busy and hand it the inbox as context; None for any other session."""
+def turn_start(kwargs):
+    """Mark the owner's top-level turn busy, so its tool results carry the inbox; nothing else."""
     home = boss_home_path()
-    owner = read_small(home / "owner.json")
-    key = owner_turn(owner, kwargs)
+    key = owner_turn(read_small(home / "owner.json"), kwargs)
     if key is None:
-        return None
+        return
     boss_package()
     from boss import inbox
-    from boss.state import Store
     from boss.wake import poke
     inbox.turn_started(home, key, str(kwargs.get("session_id") or ""))
-    block = inbox.Inbox(home).take(Store(home, None).load, "turn", owner.get("label", ""))
     # The owner's turn is busy now, so this sweep (stalls, merged PRs) reaches it mid-turn, never by injection.
     poke(home)
-    return block
 
 
 def on_tool_result(**kwargs):
@@ -191,7 +174,12 @@ def turn_end_hook(**kwargs):
 
 
 def on_pre_llm_call(**kwargs):
-    """Hermes passes turn metadata as kwargs and accepts {context: text} or None."""
+    """Hermes passes turn metadata as kwargs and accepts {context: text} or None.
+
+    The app shows this context inside the captain's own message, so the owner gets
+    at most the one-line dead-listener warning; inbox items, away state and the
+    open count reach the supervisor through boss watch instead.
+    """
     try:
         home = boss_home_path()
         data = read_small(home / "attention.json")
@@ -205,30 +193,10 @@ def on_pre_llm_call(**kwargs):
             message = kwargs.get("user_message")
             mentioned = isinstance(message, str) and BOSS_WORD.search(message)
             return {"context": foreign} if mentioned or (type(data.get("count")) is int and data["count"] > 0) else None
-        lines = []
-        if "away" in data:
-            line = away_line(data["away"])
-            if line is None:
-                return None
-            lines.append(line)
         active = data.get("active")
         if owner_turn(owner, kwargs) and type(active) is int and active > 0 and not listening(home):
-            lines.append(DEAF)
-        count, items = data.get("count"), data.get("items")
-        if count == 0 and items == []:
-            return {"context": " ".join(lines)} if lines else None
-        if type(count) is not int or count <= 0 or not isinstance(items, list) or not 0 < len(items) <= 6 or count < len(items):
-            return None
-        details = []
-        for item in items:
-            if (not isinstance(item, dict) or item.get("kind") not in ("decision", "input", "finished") or
-                    not isinstance(item.get("id"), str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", item["id"])):
-                return None
-            details.append(f"{item['id']} {item['kind']}")
-        if count > len(items):
-            details.append(f"+{count - len(items)} more")
-        lines.append(f"boss: {count} need you ({', '.join(details)}) - run boss status")
-        return {"context": " ".join(lines)}
+            return {"context": DEAF}
+        return None
     except (OSError, ValueError, TypeError, KeyError, OverflowError, RuntimeError):
         # A missing/corrupt local cache must never break an unrelated Hermes turn.
         return None
@@ -335,10 +303,7 @@ def turn_hook(ctx):
         except Exception:
             pass
         try:
-            block = turn_start_inbox(kwargs)
-            if block:
-                context = (result or {}).get("context")
-                result = {"context": f"{context}\n\n{block}" if context else block}
+            turn_start(kwargs)
         except Exception:
             pass
         return result

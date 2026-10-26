@@ -204,6 +204,8 @@ class WakeTest(HermeticTestCase):
         self.task = self.spawn()
         self.thread = self.fake.threads[self.task["thread_id"]]
         self.listeners, self.listener = [], None
+        # Most tests here drive the opt-in idle injection; test_idle_injection_is_off_by_default covers the default.
+        self.inject = True
         self.addCleanup(self.stop_all)
 
     def stop_all(self):
@@ -212,7 +214,10 @@ class WakeTest(HermeticTestCase):
         _listeners.clear()
 
     def config(self):
-        return Config(self.home, Redactor(), hermes=self.home / "profile")
+        config = Config(self.home, Redactor(), hermes=self.home / "profile")
+        if getattr(self, "inject", False):
+            config.data.setdefault("wake", {})["inject_when_idle"] = True  # as if set in config.toml
+        return config
 
     def reads(self):
         return sum(1 for name, _ in self.fake.calls if name == "t3_thread_read")
@@ -337,8 +342,8 @@ class WakeTest(HermeticTestCase):
         last = json.loads((self.home / "wake-last.json").read_text())
         self.assertEqual((last["owner"], last["result"]), ("Telegram DM", "delivered"))
 
-    def test_owner_turn_start_delivers_held_items_as_context(self):
-        # Owner offline when the event arrives; the owner's next turn gets it as context, once.
+    def test_owner_turn_start_adds_nothing_to_the_captains_message(self):
+        # Hermes shows turn-start context inside the captain's own bubble: the inbox waits for boss watch.
         self.own("agent:captain", "Hermes CLI")
         ctx = Context(self.home / "profile", accepted=False)
         listener = self.listen(ctx)
@@ -346,22 +351,34 @@ class WakeTest(HermeticTestCase):
         self.assertEqual(len(ctx.messages), 1)
         hook = plugin.turn_hook(Context(self.home / "profile"))
         with patch("boss.wake.start_wake", return_value=listener):
-            result = hook(session_id="agent:captain", user_message="hi")
-            self.assertTrue(listener.reached("pokes", self.poked + 1, WAIT))  # turn start sweeps
-            # The finished run stays on the attention line until reviewed; the listener holds wake.lock.
-            finished = f"boss: 1 need you ({self.task['id']} finished) - run boss status"
-            self.assertEqual(result["context"],
-                             f"{finished}\n\n[boss inbox]\nFix thing: ended its turn without a status line or any message\n{NOTE}")
-            self.assertEqual(hook(session_id="agent:captain", user_message="again"), {"context": finished})
+            self.assertIsNone(hook(session_id="agent:captain", user_message="hi"))
+            self.assertTrue(listener.reached("pokes", self.poked + 1, WAIT))  # turn start still sweeps
+            self.assertIsNone(hook(session_id="agent:captain", user_message="again"))
             self.assertTrue(listener.reached("pokes", self.poked + 2, WAIT))
-            # A subagent inherits the owner's session key but is never the owner's turn: no inbox for it.
-            self.send(updated(self.state("failed", run="run-2"), 2))
+            self.assertTrue(plugin_busy(self.home))  # the owner-turn bookkeeping still runs
             with patch.dict(os.environ, {"HERMES_SESSION_KEY": "agent:captain"}):
-                self.assertEqual(hook(session_id="child", parent_session_id="agent:captain", user_message="sub"),
-                                 {"context": finished})
+                self.assertIsNone(hook(session_id="child", parent_session_id="agent:captain", user_message="sub"))
         self.assertEqual(len(ctx.messages), 1)  # the owner's turn is running: the listener never injects into it
-        self.assertEqual([r["via"] for r in self.inbox_log("acked")], ["turn"])
+        self.assertEqual(self.inbox_log("acked"), [])
         self.assertEqual(len(self.held()), 1)
+
+    def test_idle_injection_is_off_by_default(self):
+        # An injected message shows as if the captain sent it, so only boss watch delivers by default.
+        self.inject = False
+        self.own("agent:captain", "Hermes app")
+        ctx = Context(self.home / "profile")
+        self.listen(ctx)
+        self.completed(self.task, "BOSS: done: shipped")
+        self.send(updated(self.state("completed")))
+        with patch.dict(os.environ, {"HERMES_SESSION_KEY": "agent:captain"}):
+            self.cli("away", "lunch")  # pokes the listener too
+        self.assertEqual(ctx.messages, [])
+        self.assertEqual(self.inbox_log("acked"), [])
+        with patch.dict(os.environ, {"HERMES_SESSION_KEY": "agent:captain"}):
+            code, output = self.cli("watch")
+        self.assertEqual(code, 0, output)
+        self.assertIn("Fix thing: finished: shipped\nCaptain went away at ", output)
+        self.assertEqual([r["via"] for r in self.inbox_log("acked")], ["watch"])
 
     def owner_turn(self, listener, session="sess-1"):
         """Start the owner's top-level turn through the real pre_llm_call hook; returns its context result."""
@@ -770,7 +787,7 @@ class NoPollingTest(HermeticTestCase):
         # backoff after a dropped T3 stream. A healthy listener blocks on its socket.
         self.assertEqual(found, [
             'boss/config.py: # interval_seconds is a leftover from timed polling; tolerated so old configs load, never read.',
-            'boss/config.py: fields(wake, {"enabled": bool, "interval_seconds": int, "origin": dict, "session_key": str, "stall_minutes": int}, "wake")',
+            'boss/config.py: fields(wake, {"enabled": bool, "inject_when_idle": bool, "interval_seconds": int, "origin": dict, "session_key": str, "stall_minutes": int}, "wake")',
             'boss/setup.py: if "interval_seconds" in wake:',
             'boss/setup.py: lines.append("info: wake.interval_seconds is unused now that wakes are pushed; boss config unset wake.interval_seconds")',
             'boss/wake.py: self.stop_event.wait(backoff(failures))',

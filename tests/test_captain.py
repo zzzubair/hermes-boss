@@ -4,6 +4,7 @@ import re
 import unittest
 
 from boss import captain
+from boss.inbox import Inbox, NOTE
 import plugin
 from plugin import on_pre_llm_call, register
 from tests import test_boss as harness
@@ -54,7 +55,7 @@ class CaptainTest(unittest.TestCase):
         first = self.ok("away", "going to bed")
         self.assertIn("(going to bed)", first)
         second = plugin.on_away("different note")  # the real /away handler, via a subprocess
-        self.assertIn("Already away", second)
+        self.assertIn("Got it. Away mode is already on", second)
         self.assertIn("(going to bed)", second)
         self.assertNotIn("next:", second)
         away = [e for e in self.events() if e["event"] == "away"]
@@ -62,7 +63,7 @@ class CaptainTest(unittest.TestCase):
         self.assertEqual(away[0]["note"], "going to bed")
         self.assertIn("Welcome back", plugin.on_back(""))
         output = self.ok("back")
-        self.assertIn("weren't marked away", output)
+        self.assertIn("Welcome back. You weren't marked away", output)
         self.assertEqual([e["event"] for e in self.events() if e["event"] in ("away", "back")], ["away", "back"])
 
     def test_slash_commands_registered_from_plugin(self):
@@ -213,21 +214,27 @@ class CaptainTest(unittest.TestCase):
         self.assertEqual(self.events()[-1]["items"], [rename])
         self.assertTrue(next(d for d in self.store.decisions() if d["id"] == storage)["closed"])
 
-    def test_hook_line_while_away_says_do_not_ask_and_decisions_count(self):
+    def test_away_and_back_reach_the_supervisor_through_the_inbox_not_his_message(self):
         self.assertIsNone(on_pre_llm_call())
-        self.ok("away", "going to bed")
-        context = on_pre_llm_call()["context"]
-        self.assertTrue(context.startswith("boss: captain away since "), context)
-        for text in ("(going to bed)", "don't ask him anything", "queue decisions for /back",
-                     "anything he says or decides in a check-in counts in full"):
-            self.assertIn(text, context)
-        self.assertNotIn("\n", context)
+        self.assertTrue(self.ok("away", "going to bed").startswith("Got it. Away mode on since "))
+        self.assertIsNone(on_pre_llm_call())  # nothing rides on the captain's own message
         self.decision("Pick storage")
-        context = on_pre_llm_call()["context"]
-        self.assertIn("captain away", context)
-        self.assertIn("1 need you", context)
+        self.assertIsNone(on_pre_llm_call())
+        self.ok("away", "again")  # nothing changed: nothing new to tell
+        self.assertTrue(self.ok("back").startswith("Welcome back. You were away"))
         self.ok("back")
-        self.assertNotIn("away", on_pre_llm_call()["context"])
+        box = Inbox(self.home)
+        items = box.open_items()
+        self.assertEqual([(i["task"], i["kind"]) for i in items], [(None, "captain"), (None, "captain")])
+        away, back = (i["line"] for i in items)
+        self.assertRegex(away, r"^Captain went away at \d\d:\d\d \(going to bed\)\. Don't ask him anything until /back")
+        for text in ("queue decisions for /back", "Anything he says or decides in a check-in counts in full"):
+            self.assertIn(text, away)
+        self.assertRegex(back, r"^Captain is back at \d\d:\d\d\. Away mode is off; you can ask him again\.$")
+        # Both survive delivery: captain events are never stale and never merged into one line.
+        text = box.take(self.store.load, "watch", "Hermes app")
+        self.assertEqual(text, f"[boss inbox]\n{away}\n{back}\n{NOTE}")
+        self.assertEqual(box.open_items(), [])
         attention = (self.home / "attention.json").read_text()
         self.assertLess(len(attention), 4096)
 

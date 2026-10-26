@@ -144,7 +144,7 @@ class OwnerTest(HermeticTestCase):
         handler = plugin.boss_command(Context(self.home / "profile"))
         handler("", session_key="agent:discord", platform="discord")
         self.assertIn("boss is owned by Discord chat", plugin.on_away("bed", session_key="agent:tui", platform="tui"))
-        self.assertIn("Away since", plugin.on_away("bed", session_key="agent:discord", platform="discord"))
+        self.assertIn("Got it. Away mode on since", plugin.on_away("bed", session_key="agent:discord", platform="discord"))
 
     def test_hook_tells_other_sessions_only_when_boss_comes_up(self):
         self.cli("own", "--label", "Discord DM", key="agent:discord")
@@ -156,7 +156,8 @@ class OwnerTest(HermeticTestCase):
         with patch("plugin.current_session_key", return_value="agent:tui"):
             self.assertIn("owned by Discord DM", plugin.on_pre_llm_call(session_id="x", user_message="lunch?")["context"])
         with patch("plugin.current_session_key", return_value="agent:discord"):
-            self.assertIn("1 need you", plugin.on_pre_llm_call(session_id="x", user_message="lunch?")["context"])
+            # The owner's own message stays clean; boss watch carries what is open.
+            self.assertIsNone(plugin.on_pre_llm_call(session_id="x", user_message="lunch?"))
 
     def doctor(self, push=None):
         paths = {key: self.home / key for key in ("plugins", "skills")}
@@ -183,8 +184,15 @@ class OwnerTest(HermeticTestCase):
         code, output = self.doctor(push)
         self.assertEqual(code, 1)
         self.assertRegex(output, r"ok: owner Discord DM since \d\d:\d\d surface=unknown")
-        self.assertIn("info: owner reachable: unknown until the first wake", output)
+        self.assertIn("warn: no boss watch waiting", output)
         self.assertIn("fail: wake listener: no Hermes process holds wake.lock", output)
+        watching = os.open(self.home / "watch.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(watching, fcntl.LOCK_EX)
+        self.assertIn("ok: boss watch waiting in the owner session", self.doctor(push)[1])
+        os.close(watching)
+        # Opt-in idle injection reports whether the last injected wake reached the owner instead.
+        self.assertEqual(self.cli("config", "set", "wake.inject_when_idle", "true")[0], 0)
+        self.assertIn("info: owner reachable: unknown until the first wake", self.doctor(push)[1])
         descriptor = os.open(self.home / LOCK, os.O_RDWR | os.O_CREAT, 0o600)
         self.addCleanup(os.close, descriptor)
         fcntl.flock(descriptor, fcntl.LOCK_EX)

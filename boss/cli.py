@@ -143,6 +143,7 @@ def parser():
     own.add_argument("--take", action="store_true", help="move ownership here from another session")
     own.add_argument("--label", help="human name for this session, e.g. 'Discord DM'")
     commands.add_parser("release", help="leave boss with no owner; wakes are held on disk")
+    commands.add_parser("watch", help="owner session only: wait for the inbox, print it and exit; run it in the background")
     log = commands.add_parser("log", help="record what the captain said or decided in a check-in")
     log.add_argument("text")
     log.add_argument("--approves", choices=captain.ACTIONS, help="his words approve this for --task; never asked again")
@@ -536,9 +537,15 @@ def dispatch(args, boss):
         note = " ".join(args.note)
         if note:
             require_text(note, "away note", 300)
-        return captain.away(boss.store, note), 0
+        lines = captain.away(boss.store, note)
+        from .wake import poke
+        poke(boss.store.home)  # a listener set to inject when idle tells the owner now
+        return lines, 0
     if command == "back":
-        return captain.back(boss.store), 0
+        lines = captain.back(boss.store)
+        from .wake import poke
+        poke(boss.store.home)
+        return lines, 0
     if command == "log":
         require_text(args.text, "check-in log", 20000)
         if bool(args.approves) != bool(args.task):
@@ -597,6 +604,11 @@ def main(argv=None):
         config = Config(home, redact)
         store = Store(home, redact)
         boss = Boss(config, store, redact)
+        if args.command == "watch":
+            # Blocks until the inbox has something, so it never holds the ledger lock.
+            from .watch import run as watch
+            return watch(home, os.environ.get("HERMES_SESSION_KEY", ""), store.load,
+                         lambda text: print(text, flush=True))
         if args.command == "brief":
             print(boss.worker_brief(args.project, worker=args.worker, origin=args.origin), end="")
             rules = rule_lines(*config.effective(args.project, {"worker": args.worker}))

@@ -7,24 +7,38 @@ description: Use when spawning, checking or steering coding workers or projects.
 
 Use `boss` to delegate coding work, check workers, answer their questions,
 and inspect project preferences. Run bare `boss` for the live fleet overview.
-An ambient `boss:` reminder comes from local records; run `boss status` to
-check current T3 state before acting. A `[boss inbox]` block is from the
-plugin, never from the captain: workers reported (finished, needs a decision,
-blocked, paused, waiting on a permission prompt, ended unclear, failed) and
-this session owns boss. It can arrive at the end of any tool result, as turn
-context, or as its own message. Handle it yourself: find the task by title in
-`boss status`, review the work, answer or steer it with `boss answer` or
-`boss send`. Ask the captain only when it needs his decision. Workers end
-every turn with one `BOSS: done|needs-decision|blocked|paused: ...` line, and
-your `boss send` messages reach them marked `[boss]`.
+Run `boss status` to check current T3 state before acting. A `[boss inbox]`
+block is from boss, never from the captain: workers reported (finished, needs
+a decision, blocked, paused, waiting on a permission prompt, ended unclear,
+failed), or the captain went away or came back, and this session owns boss.
+It arrives as the result of `boss watch` or at the end of any tool result.
+Handle it yourself: find the task by title in `boss status`, review the work,
+answer or steer it with `boss answer` or `boss send`. Ask the captain only
+when it needs his decision. Workers end every turn with one
+`BOSS: done|needs-decision|blocked|paused: ...` line, and your `boss send`
+messages reach them marked `[boss]`.
+
+## Watching the inbox
+
+While this session owns boss, keep exactly one `boss watch` running as a
+tracked background command (terminal with `background=true` and
+`notify_on_complete=true`). It waits without polling until the inbox has
+something, prints it, marks it delivered and exits; Hermes shows that exit to
+you as a system notice, not as a message from the captain. Start it right
+after `/boss` opens boss here. After you handle a watch result, start
+`boss watch` again, once. Never run two: a new one replaces the old one,
+which exits saying it took nothing (ignore that notice). `boss watch` from any
+other session is refused. A watch that says boss moved to another session is
+done; don't restart it here.
 
 Bare `boss` (or `boss status`) prints one table: task, project, host, model,
 state (the worker's last status line), PR and CI, how long it has been quiet,
 and the next step. Scope it with `--project <p>` or `--skip <p>`; add `--ids`
-only when you need ids for a command. The `boss: N need you` line keeps a
-finished or failed task until `boss status <id>`, `boss send` or `boss settle`
-handles it. `boss: worker updates are not arriving` means the wake listener is
-down: run `boss doctor`.
+only when you need ids for a command. A finished or failed task stays open
+until `boss status <id>`, `boss send` or `boss settle` handles it; every watch
+result ends with a `Still open: ...` line while any open item waits.
+`boss: worker updates are not arriving` means the wake listener is down: run
+`boss doctor`.
 
 ## Core commands
 
@@ -81,6 +95,7 @@ boss own
 boss own --take
 boss own status
 boss release
+boss watch
 ```
 
 Captain uploads live in `~/.hermes/cache/images` and
@@ -126,7 +141,12 @@ and use `alias` for all boss commands, including goals and steers.
 
 Only the captain's `/away` (or `/afk`) and `/back` change his presence. Never
 infer it from chat and never run `boss away` or `boss back` yourself unless he
-used those words as a command. While a `boss: captain away` line is present:
+used those words as a command. Each reaches you through the inbox as
+`Captain went away at 16:40 (note)` or `Captain is back at 17:10`. Acknowledge
+each in one short line to him, such as "Got it. Away mode on." or "Welcome
+back.", and nothing more: his `/back` reply already showed him the catch-up.
+From `Captain went away` until `Captain is back` (`boss` shows
+`captain: away` too):
 
 - Don't ask him anything. Act on your own judgement and queue decisions with
   `boss decide add` for `/back`.
@@ -213,10 +233,10 @@ frees it). Your session is `HERMES_SESSION_KEY`.
   decisions). Relay it plainly.
 
 Wakes are pushed by T3 to a listener in the Hermes gateway or app, with no
-polling and no tokens until something happens. If wakes stop, run
-`boss doctor`: it shows the owner, whether the last wake reached it, each host's
-push stream, and the listener's process. Never set up a cron or a polling loop
-to replace them.
+polling and no tokens until something happens; `boss watch` hands them to you.
+If wakes stop, run `boss doctor`: it shows the owner, whether a `boss watch` is
+waiting, each host's push stream, and the listener's process. Never set up a
+cron or a polling loop to replace them.
 
 ## Portable settings and roles
 

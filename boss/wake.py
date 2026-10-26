@@ -12,10 +12,12 @@ owner's inbox on disk (see inbox.py). Every push and every poke (a claim, the
 owner's turn starting or ending) also sweeps for running tasks quiet longer
 than wake.stall_minutes and paused tasks past their "until" time, and a poke
 re-reads open PRs on GitHub, since T3's copy of a PR's state goes stale when it
-merges outside T3. There is no timer: a silent fleet and owner sweep nothing. The listener injects the inbox only while the owner is idle; a
-running owner turn picks it up from its next tool result or its next turn.
-With no owner, or an owner that is offline, items stay in the inbox and go out
-on the next push, when a session claims boss, or on the owner's next turn.
+merges outside T3. There is no timer: a silent fleet and owner sweep nothing.
+The owner's `boss watch` (a tracked background command) or its running turn's
+next tool result picks the inbox up. Only with wake.inject_when_idle does the listener
+inject it, while the owner is idle; an injected message shows as if the captain
+sent it, so it is off by default. With no owner, or an owner that is offline,
+items stay in the inbox until the owner's next watch or turn.
 Exactly one listener runs per machine: it holds $BOSS_HOME/wake.lock.
 """
 from datetime import datetime, timezone
@@ -455,10 +457,12 @@ class Listener:
     def deliver(self):
         """Inject the inbox into an idle owner; ack only what the owner's host accepted.
 
-        Never while the owner's turn runs: that turn sees the inbox on its next tool
-        result or its next turn, and its end pokes this listener for the rest.
+        Only with wake.inject_when_idle, and never while the owner's turn runs: that
+        turn sees the inbox on its next tool result, and its end pokes this listener.
         """
         with self.deliver_lock:
+            if not self.wake.get("inject_when_idle", False):
+                return False
             target = self.target()
             if target is None or not self.armed() or self.stop_event.is_set():
                 return False

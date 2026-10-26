@@ -77,10 +77,20 @@ def since_text(away):
 def away(store, note):
     current = presence(store.captain_events())
     if current:
-        return [f"Already away {since_text(current)}; nothing changed.", "next: boss back"]
+        return [f"Got it. Away mode is already on {since_text(current)}; nothing changed.", "next: boss back"]
     record = store.captain("away", note=" ".join(note.split()) or None)
-    return [f"Away {since_text(record)}. I won't ask you anything; anything you decide in a check-in counts.",
-            "next: boss back"]
+    note = " ".join(str(record.get("note") or "").split())
+    tell(store, record, f"Captain went away at {clock(record['at'])}" + (f" ({plain(note, 80)})" if note else "") +
+         ". Don't ask him anything until /back: act on your own judgement and queue decisions for /back."
+         " Anything he says or decides in a check-in counts in full; record it with boss log.")
+    return [f"Got it. Away mode on {since_text(record)}. I won't ask you anything; anything you decide in a"
+            " check-in counts.", "next: boss back"]
+
+
+def tell(store, record, line):
+    """The supervisor hears of /away and /back through the owner's inbox, like any worker event."""
+    from .inbox import Inbox  # inbox -> state -> captain: import late
+    Inbox(store.home, store.redact).hold(f"captain:{record['event']}:{record['at']}", None, "captain", line)
 
 
 # Decisions -------------------------------------------------------------------
@@ -439,9 +449,10 @@ def back(store):
     current = presence(events)
     lines = []
     if current is None:
-        lines.append("You weren't marked away; nothing changed.")
+        lines.append("Welcome back. You weren't marked away; nothing changed.")
     else:
         record = store.captain("back")
+        tell(store, record, f"Captain is back at {clock(record['at'])}. Away mode is off; you can ask him again.")
         start, end = parse(current["at"]), parse(record["at"])
         lines.append(f"Welcome back. You were away {duration(start, end)}, {since_text(current)}.")
         rows = timeline(store, start, end, events)
