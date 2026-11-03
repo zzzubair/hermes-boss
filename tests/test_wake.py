@@ -313,6 +313,68 @@ class WakeTest(HermeticTestCase):
         self.assertEqual(len(ctx.messages), 1)
         self.assertIn("Fix thing: stopped, the thread failed", ctx.messages[0][0])
 
+    def test_new_pending_tool_completion_queues_finished_inbox_and_status(self):
+        self.fake.schemas = {n: s for n, s in self.fake.schemas.items() if not n.startswith("t3_pending_request_")}
+        self.fake.schemas["t3_pending_request"] = ["action"]
+        self.listen(Context(self.home / "profile"))
+        self.fake.prs = [harness.URL]
+        self.completed(self.task, "Fixed it.\nBOSS: done: " + harness.URL)
+        self.send(updated(self.state("completed")))
+        self.assertEqual(len(self.held()), 1)
+        self.assertEqual(self.held()[0]["kind"], "done")
+        self.assertIn("finished", self.held()[0]["line"])
+        self.assertIn(harness.URL, self.held()[0]["line"])
+        code, output = self.cli("status", self.task["id"])
+        self.assertEqual(code, 0, output)
+        self.assertIn(f"{self.task['id']}: repo finished", output)
+        self.assertIn(harness.URL, output)
+        self.assertFalse((self.home / "wake-errors.log").exists())
+        self.fake.pending = {"request-1": [{"id": "q1", "question": "Which path?", "options": []}]}
+        self.send(updated(self.state("waiting", request={"id": "request-1", "kind": "user-input", "blocking": True}), 2))
+        self.assertEqual(self.held()[-1]["kind"], "needs-decision")
+        self.assertIn("Which path?", self.held()[-1]["line"])
+
+    def test_missing_optional_tools_preserve_done_and_decision_and_log_once(self):
+        self.fake.schemas = {n: s for n, s in self.fake.schemas.items()
+                             if not n.startswith("t3_pending_request_") and n != "list_thread_pull_requests"}
+        self.listen(Context(self.home / "profile"))
+        # An unknown pending count must not mislabel the explicit decision as a permission.
+        self.thread["pendingRequestCount"] = 1
+        self.completed(self.task, "BOSS: needs-decision: Which path?")
+        self.send(updated(self.state("completed")))
+        self.assertEqual(self.held()[0]["kind"], "needs-decision")
+        self.assertIn("Which path?", self.held()[0]["line"])
+        self.completed(self.task, "BOSS: done: fixed it")
+        self.thread["items"][-1]["runId"] = "run-2"
+        self.send(updated(self.state("completed", "run-2"), 2))
+        self.assertEqual(self.held()[-1]["kind"], "done")
+        for _ in range(2):  # CLI and listener create fresh clients; warnings still occur once per host/feature.
+            code, output = self.cli("status", self.task["id"])
+            self.assertEqual(code, 0, output)
+            self.assertIn("finished", output)
+        log = (self.home / "wake-errors.log").read_text()
+        self.assertEqual(log.count("optional pending questions unavailable"), 1)
+        self.assertEqual(log.count("optional PR links unavailable"), 1)
+        self.assertNotIn("read " + self.task["id"] + " failed", log)
+
+    def test_missing_question_read_still_queues_decision(self):
+        self.fake.schemas.pop("t3_pending_request_read")
+        self.fake.pending = {"request-1": [{"id": "q1", "question": "Which path?"}]}
+        self.listen(Context(self.home / "profile"))
+        self.send(updated(self.state("waiting", request={"id": "request-1", "kind": "user-input", "blocking": True})))
+        self.assertEqual(self.held()[0]["kind"], "needs-decision")
+        code, output = self.cli("status", self.task["id"])
+        self.assertEqual(code, 0, output)
+        self.assertIn("1 pending input requests", output)
+
+    def test_missing_question_list_still_surfaces_pending_input(self):
+        self.fake.schemas = {n: s for n, s in self.fake.schemas.items() if not n.startswith("t3_pending_request_")}
+        self.thread["pendingRequestCount"] = 1
+        self.listen(Context(self.home / "profile"))
+        self.send(updated(self.state("waiting", request={"id": "request-1", "kind": "user-input", "blocking": True})))
+        self.assertEqual(self.held()[0]["kind"], "needs-decision")
+        self.assertIn("open T3", self.held()[0]["line"])
+
     def test_no_owner_holds_on_disk_then_claim_delivers(self):
         ctx = Context(self.home / "profile")
         self.listen(ctx)

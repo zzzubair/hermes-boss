@@ -788,6 +788,16 @@ without polling, taking over if the holder exits. A dropped stream reconnects
 with backoff, and T3's fresh snapshot covers the gap. Errors go to
 `$BOSS_HOME/wake-errors.log`, redacted.
 
+Pending questions use the host's advertised `t3_pending_request` tool with
+`action = list|read|respond`, or the older separate tools when present. Missing
+optional question or PR-link reads leave status and worker status-line wakes
+working. Each missing feature is logged once per host, including across
+listener restarts, with deduplication markers in `$BOSS_HOME/capability-warnings/`.
+Transport, authentication and tool execution errors still surface as failures;
+answering a question requires the host's actual question tools.
+Run `python3 scripts/check_pending_request.py` to check both APIs, missing
+features and completion/decision wakes against fake T3 servers.
+
 A host whose stream stays down longer than `wake.host_down_minutes` (default
 10; 0 turns it off) holds one line,
 `lost touch with oracle since 14:02; workers there may be unheard`, because

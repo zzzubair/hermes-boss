@@ -452,11 +452,16 @@ class Boss:
         if thread["projectId"] != meta["project_id"]:
             refuse("thread project differs from the task ledger", f"inspect task {meta['id']}")
         status = thread["status"]
-        requests = sorted(client.call("t3_pending_request_list", threadId=meta["thread_id"])["requestIds"])
+        pending = self.pending_request(meta, "list")
+        requests = sorted(pending["requestIds"]) if pending is not None else []
         # T3 lists only question requests, but pendingRequestCount counts every pending
         # runtime request; the rest are permission prompts (approvals).
-        approvals = max(0, (thread.get("pendingRequestCount") or 0) - len(requests))
-        linked = client.call("list_thread_pull_requests", threadId=meta["thread_id"])["pullRequests"]
+        # Without the question capability the count cannot distinguish questions from
+        # permissions. Do not override an explicit done/needs-decision with that guess.
+        approvals = max(0, (thread.get("pendingRequestCount") or 0) - len(requests)) if pending is not None else 0
+        linked = self.optional(meta, "PR links", lambda: client.call(
+            "list_thread_pull_requests", threadId=meta["thread_id"]))
+        linked = linked["pullRequests"] if linked is not None else thread.get("pullRequests") or []
         # Retain prior links so unlinking cannot make an open PR disappear from guards.
         urls = sorted(set(p["url"] for p in linked) | set(meta.get("pr_urls", [])))
         prs = [self.github.view(url) for url in urls]
@@ -509,14 +514,34 @@ class Boss:
             meta.update(observed=observed, status=status, pr_urls=urls)
             self.store.save(meta, "observed")
         return {"thread": thread, "status": status, "requests": requests, "approvals": approvals, "prs": prs,
-                "assistant": text, "assistant_run": last.get("runId") if last else None, "alerts": alerts}
+                "assistant": text, "assistant_run": last.get("runId") if last else None, "alerts": alerts,
+                "questions_unavailable": pending is None}
+
+    def optional(self, meta, feature, action):
+        """A missing read capability degrades only that feature; real host errors still fail."""
+        try:
+            return action()
+        except BossError as exc:
+            if exc.code != "capability":
+                raise
+            from .wake import log_error
+            log_error(self.store.home, self.redact,
+                      f"boss host {meta['host']}: optional {feature} unavailable: {exc.message}",
+                      once=f"{meta['host']}:{feature}")
+            return None
+
+    def pending_request(self, meta, action, **arguments):
+        return self.optional(meta, "pending questions", lambda: self.client(meta["host"]).pending_request(
+            action, threadId=meta["thread_id"], **arguments))
+
+    def request_questions(self, meta, request_id):
+        request = self.pending_request(meta, "read", requestId=request_id)
+        return request["questions"] if request is not None else []
 
     def questions(self, meta, request_ids):
         """The question bodies (question text and options) of pending T3 input requests."""
-        client = self.client(meta["host"])
         return [question for request_id in request_ids
-                for question in client.call("t3_pending_request_read", threadId=meta["thread_id"],
-                                            requestId=request_id)["questions"]]
+                for question in self.request_questions(meta, request_id)]
 
     def reviewed(self, meta, view):
         """The owner reading one task acknowledges its finished or failed run, never merge authority."""
@@ -564,11 +589,11 @@ class Boss:
         meta = self.active_task(task_id)
         self.recover(meta)
         client = self.client(meta["host"])
-        pending = client.call("t3_pending_request_list", threadId=meta["thread_id"])["requestIds"]
+        pending = client.pending_request("list", threadId=meta["thread_id"])["requestIds"]
         request_id, question_id = resolve_request(request_id, pending)
         if request_id is None:
             refuse("request is not pending on this task", f"boss status {task_id}")
-        request = client.call("t3_pending_request_read", threadId=meta["thread_id"], requestId=request_id)
+        request = client.pending_request("read", threadId=meta["thread_id"], requestId=request_id)
         questions = request["questions"]
         if question_id is not None and question_id not in {q["id"] for q in questions}:
             refuse("question is not part of this pending request", f"boss status {task_id}")
@@ -582,7 +607,7 @@ class Boss:
             if not isinstance(answers, dict) or set(answers) != {q["id"] for q in questions}:
                 raise BossError("usage", "answer keys must match all question ids", exit_code=1)
         self.store.save(meta, "answer_intent", request_id=request_id, answers=answers)
-        result = client.call("t3_pending_request_respond", threadId=meta["thread_id"], requestId=request_id, answers=answers)
+        result = client.pending_request("respond", threadId=meta["thread_id"], requestId=request_id, answers=answers)
         meta["pending_inputs"] = [r for r in meta.get("pending_inputs", []) if r != request_id]
         if meta.get("observed"):
             meta["observed"]["requests"] = [r for r in meta["observed"].get("requests", []) if r != request_id]
@@ -636,7 +661,7 @@ class Boss:
         snapshot = self.snapshot(meta)
         if meta["kind"] != "ship" or meta["delivery"] not in PR_DELIVERIES:
             refuse("only direct-PR and no-mistakes ship tasks can land with boss", "arrange an explicitly approved local landing separately")
-        if snapshot["status"] not in TERMINAL or snapshot["requests"]:
+        if snapshot["status"] not in TERMINAL or snapshot["requests"] or snapshot["thread"].get("pendingRequestCount"):
             refuse("worker must stop before landing", f"boss stop {task_id}")
         if len(snapshot["prs"]) != 1:
             refuse("landing requires exactly one linked PR", f"boss status {task_id}")
@@ -702,7 +727,7 @@ class Boss:
         if meta.get("settled"):
             return meta.get("worktree")
         snapshot = self.snapshot(meta)
-        if snapshot["status"] not in TERMINAL or snapshot["requests"]:
+        if snapshot["status"] not in TERMINAL or snapshot["requests"] or snapshot["thread"].get("pendingRequestCount"):
             refuse("worker must stop and resolve inputs before settlement", f"boss stop {task_id}")
         blockers = []
         if any(p["state"] == "OPEN" for p in snapshot["prs"]):
