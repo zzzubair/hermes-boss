@@ -8,7 +8,7 @@ import subprocess
 from unittest.mock import patch
 
 from boss.inbox import Inbox, triage
-from boss.wake import HEARTBEAT, LOCK
+from boss.wake import HEARTBEAT, LOCK, STATUS, SOURCE, code_fingerprint
 import plugin
 from tests import test_boss as harness
 from tests.support import HermeticTestCase
@@ -257,14 +257,39 @@ class OwnerTest(HermeticTestCase):
         self.addCleanup(os.close, descriptor)
         fcntl.flock(descriptor, fcntl.LOCK_EX)
         (self.home / HEARTBEAT).write_text(f"2026-10-26T13:00:00+00:00 {os.getpid()} listening host=test\n")
+        # A legacy holder must be flagged even though its process and token work.
+        code, output = self.doctor(push)
+        self.assertEqual(code, 1, output)
+        self.assertIn("listener code unknown (legacy listener", output)
+        self.assertIn("restart every Hermes host process", output)
+        health = {"pid": os.getpid(), "code": code_fingerprint(), "source": str(SOURCE),
+                  "hosts": {"test": {"state": "listening", "frames": 3, "threads": 4, "matched": 1,
+                                     "last_frame_at": "2026-10-26T13:01:00+00:00"}}}
+        (self.home / STATUS).write_text(json.dumps(health))
         (self.home / "wake-last.json").write_text(json.dumps(
             {"at": "2026-10-26T13:01:00+00:00", "owner": "Discord DM", "result": "refused"}))
         code, output = self.doctor(push)
         self.assertEqual(code, 0, output)
         self.assertIn(f"ok: wake listener pid {os.getpid()}", output)
         self.assertIn("warn: owner unreachable: last wake refused", output)
+        self.assertIn("ok: host test listener stream state=listening, frames=3, thread shells=4, boss matches=1", output)
+        health["code"] = "older loaded code"
+        (self.home / STATUS).write_text(json.dumps(health))
+        code, output = self.doctor(push)
+        self.assertEqual(code, 1, output)
+        self.assertIn("fail: wake listener code: stale listener code", output)
+        health["code"] = code_fingerprint()
+        health["hosts"]["test"]["state"] = "disconnected"
+        (self.home / STATUS).write_text(json.dumps(health))
+        code, output = self.doctor(push)
+        self.assertEqual(code, 1, output)
+        self.assertIn("ok: host test push stream token", output)
+        self.assertIn("fail: host test listener stream: state=disconnected", output)
+        health["pid"] = os.getpid() + 1
+        (self.home / STATUS).write_text(json.dumps(health))
+        self.assertIn("listener health belongs to a previous process", self.doctor(push)[1])
         os.environ["T3_EVENTS_TOKEN"] = "wrong-but-long-token-value"
         code, output = self.doctor(push)
         self.assertEqual(code, 1)
-        self.assertIn("fail: host test push stream: T3 refused the events token (HTTP 401)", output)
+        self.assertIn("fail: host test push stream token: T3 refused the events token (HTTP 401)", output)
         self.assertNotIn("wrong-but-long-token-value", output)

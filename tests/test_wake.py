@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import queue
 import re
+import shutil
 import socket
 import struct
 import subprocess
@@ -333,6 +334,95 @@ class WakeTest(HermeticTestCase):
         self.send(updated(self.state("waiting", request={"id": "request-1", "kind": "user-input", "blocking": True}), 2))
         self.assertEqual(self.held()[-1]["kind"], "needs-decision")
         self.assertIn("Which path?", self.held()[-1]["line"])
+
+    def test_finish_after_launch_binds_thread_without_new_task_directory(self):
+        # launch_intent creates the directory before T3 returns the thread id.
+        meta = self.store.load(self.task["id"])
+        thread_id = meta["thread_id"]
+        meta["thread_id"] = None
+        self.store.save(meta, "launch_intent")
+        self.inject = False
+        self.own("agent:owner", "Hermes app")
+        listener = self.listen(Context(self.home / "profile"))
+        self.send(snapshot(shell("unrelated", "completed")))  # warms the old tasks cache
+        directory_stamp = (self.home / "tasks").stat().st_mtime_ns
+        meta["thread_id"] = thread_id
+        self.store.save(meta, "launched")
+        self.assertEqual((self.home / "tasks").stat().st_mtime_ns, directory_stamp)
+        self.completed(self.task, "BOSS: done: OK")
+        reads = self.reads()
+        self.send(updated(self.state("completed"), 2))
+        self.assertEqual([(item["task"], item["kind"]) for item in self.held()],
+                         [(self.task["id"], "done")])
+        self.assertEqual(self.reads(), reads + 1)
+        self.send(updated(self.state("completed"), 3))
+        self.assertEqual(len(self.held()), 1)
+        self.assertEqual(self.reads(), reads + 1)
+        self.assertEqual(listener.counts["streams"], 1)  # no restart or reconnect
+        with patch.dict(os.environ, {"HERMES_SESSION_KEY": "agent:owner"}):
+            code, output = self.cli("watch")
+        self.assertEqual(code, 0, output)
+        self.assertIn("Fix thing: finished: OK", output)
+        self.assertEqual([r["via"] for r in self.inbox_log("acked")], ["watch"])
+
+    def test_health_keeps_each_hosts_subscription_pushes_and_disconnect(self):
+        other = FakePush()
+        self.addCleanup(other.close)
+        config = self.config()
+        config.hosts["other"] = {"url": other.url}
+        with patch.object(self, "config", return_value=config), patch("boss.wake.endpoints", side_effect=lambda url:
+                endpoints(self.push.url if url == self.fake.url else url)):
+            listener = self.listen(Context(self.home / "profile"))
+            self.assertTrue(listener.reached("streams", 2, WAIT))
+            self.assertTrue(other.connected(1))
+            status = json.loads((self.home / "wake-status.json").read_text())
+            self.assertEqual({n: h["state"] for n, h in status["hosts"].items()},
+                             {"test": "subscribing", "other": "subscribing"})
+            self.completed(self.task, "BOSS: done: OK")
+            self.send(updated(self.state("completed")))
+            other.send(snapshot(shell("unrelated", "running")))
+            self.assertTrue(listener.reached("frames", 2, WAIT))
+            status = json.loads((self.home / "wake-status.json").read_text())
+            self.assertEqual({n: h["state"] for n, h in status["hosts"].items()},
+                             {"test": "listening", "other": "listening"})
+            self.assertEqual(status["hosts"]["test"]["matched"], 1)
+            self.assertEqual(status["hosts"]["other"]["matched"], 0)
+            self.assertEqual(status["hosts"]["test"]["frames"], 1)
+            self.assertIn("last_frame_at", status["hosts"]["other"])
+            self.assertIn("last_task_at", status["hosts"]["test"])
+            self.push.drop()
+            self.assertTrue(listener.reached("drops", 1, WAIT))
+            status = json.loads((self.home / "wake-status.json").read_text())
+            self.assertEqual(status["hosts"]["test"]["state"], "disconnected")
+            self.assertEqual(status["hosts"]["other"]["state"], "listening")
+            self.assertEqual(status["hosts"]["test"]["error"], "Closed")
+
+    def test_health_records_loaded_code_even_after_files_change_before_lock_takeover(self):
+        root = Path(__file__).resolve().parent.parent
+        checkout = self.home / "checkout"
+        for package in ("boss", "plugin"):
+            (checkout / package).mkdir(parents=True)
+            for path in (root / package).glob("*.py"):
+                shutil.copyfile(path, checkout / package / path.name)
+        script = """
+import json
+from pathlib import Path
+from types import SimpleNamespace
+from boss.common import Redactor
+from boss.wake import Listener, code_fingerprint
+before = code_fingerprint()
+path = Path('boss/wake.py')
+path.write_text(path.read_text() + '\\n# code updated while this host waited for wake.lock\\n')
+listener = Listener(None, SimpleNamespace(data={}, redact=Redactor(), owner_name=None, hosts={}), Path('.'))
+listener.stream_health()
+print(json.dumps({'before': before, 'disk': code_fingerprint(),
+                  'reported': json.loads(Path('wake-status.json').read_text())['code']}))
+"""
+        result = subprocess.run([sys.executable, "-c", script], cwd=checkout, capture_output=True, text=True, timeout=WAIT)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        versions = json.loads(result.stdout)
+        self.assertNotEqual(versions["before"], versions["disk"])
+        self.assertEqual(versions["reported"], versions["before"])
 
     def test_missing_optional_tools_preserve_done_and_decision_and_log_once(self):
         self.fake.schemas = {n: s for n, s in self.fake.schemas.items()
@@ -881,6 +971,9 @@ class WakeTest(HermeticTestCase):
         self.push.down = False
         self.assertTrue(listener.reached("streams", 2, WAIT))
         self.assertTrue(self.push.connected(2))
+        frames = listener.counts["frames"]
+        self.send(snapshot(self.state("running")))
+        self.assertTrue(listener.reached("frames", frames + 1, WAIT))
 
     def test_a_host_out_of_touch_for_ten_minutes_says_so_once_and_once_more_when_back(self):
         self.own("agent:owner", "Hermes app")

@@ -788,6 +788,31 @@ without polling, taking over if the holder exits. A dropped stream reconnects
 with backoff, and T3's fresh snapshot covers the gap. Errors go to
 `$BOSS_HOME/wake-errors.log`, redacted.
 
+Task lookup caches known thread IDs, but re-reads committed task metadata on a
+miss. Creating a task directory and saving the launched thread ID are separate
+steps, so the directory's modification time cannot prove the mapping is current.
+An unrelated push during launch must not hide the later finish.
+
+`boss doctor` separates each host's events-token check from its listener stream
+health. `$BOSS_HOME/wake-status.json` records every host's subscription state,
+received frame and thread-shell counts, boss task matches, and last frame and
+match times. A successful ticket exchange alone does not mean the listener is
+following that host. An idle stream has no heartbeat deadline; these records
+change on stream events, with no timer. `subscribing` means the socket opened
+but no subscription chunk has arrived yet.
+
+The listener also records a content fingerprint captured when its code was
+loaded. Doctor flags old loaded code after a checkout update, a different
+installed checkout, and legacy listeners without this information. After a code
+update, restart **every Hermes host process for that profile**, including the
+gateway and dashboard plus any running TUI/app. Restarting only the gateway
+can leave an older dashboard holding `wake.lock`, or an older process waiting
+to take it over. On ser5ver the two persistent user units are
+`hermes-gateway.service` and `hermes-dashboard.service`; after deployment, run
+`systemctl --user restart hermes-gateway.service hermes-dashboard.service`,
+then `boss doctor`. Restart any TUI/app for that profile too. Service restarts
+interrupt those sessions.
+
 Pending questions use the host's advertised `t3_pending_request` tool with
 `action = list|read|respond`, or the older separate tools when present. Missing
 optional question or PR-link reads leave status and worker status-line wakes

@@ -27,6 +27,7 @@ import fcntl
 import hashlib
 import json
 import os
+from pathlib import Path
 import socket
 import sys
 import threading
@@ -39,7 +40,7 @@ from .config import Config, boss_home
 from .events import FINISHED_PRS, Event, classify, describe, paused_until, pr_events, stall_text
 from .inbox import Inbox, owner_busy
 from .service import Boss
-from .state import Store
+from .state import Store, atomic_write
 from .websocket import WebSocket
 from . import owner, panel
 
@@ -48,6 +49,7 @@ CONSENT_LINE = CONSENT_KEY + ": true"
 LOCK = "wake.lock"
 SOCKET = "wake.sock"
 HEARTBEAT = "wake-heartbeat"
+STATUS = "wake-status.json"
 LAST = "wake-last.json"
 TICKET = "/api/auth/websocket-ticket/rpc"
 BUSY = {"preparing", "queued", "starting", "running"}
@@ -56,6 +58,20 @@ HOST_DOWN_MINUTES = 10
 PR_RECHECK = 300  # seconds: a poke re-reads one task's open PRs on GitHub at most this often
 _lock = threading.Lock()
 _listeners = {}
+
+SOURCE = Path(__file__).resolve().parent.parent
+
+
+def code_fingerprint(root=SOURCE):
+    """Content identity, including dirty edits; a git SHA alone cannot identify loaded code."""
+    digest = hashlib.sha256()
+    for path in sorted([*(root / "boss").glob("*.py"), *(root / "plugin").glob("*.py")]):
+        digest.update(str(path.relative_to(root)).encode() + b"\0" + path.read_bytes() + b"\0")
+    return digest.hexdigest()
+
+
+# Capture once on import. Recomputing when writing health would disguise stale loaded code.
+LOADED_CODE = code_fingerprint()
 
 
 def legacy_target(wake):
@@ -173,7 +189,12 @@ class Listener:
         self.stop_event = threading.Event()
         self.deliver_lock = threading.Lock()
         self.descriptor = self.server = None
-        self.sockets, self.refused, self.tasks, self.tasks_stamp, self.seen = {}, None, {}, None, {}
+        self.sockets, self.refused, self.tasks, self.seen = {}, None, {}, {}
+        self.health_lock = threading.Lock()
+        self.health = {"pid": os.getpid(), "source": str(SOURCE), "code": LOADED_CODE,
+                       "started_at": datetime.now(timezone.utc).isoformat(),
+                       "hosts": {name: {"state": "connecting", "frames": 0, "threads": 0, "matched": 0}
+                                 for name in config.hosts}}
         # In memory only. activity: thread id -> when it last changed; paused: thread id -> its "until".
         self.activity, self.paused, self.checked, self.rechecked = {}, {}, set(), {}
         # host -> {"since": when its stream dropped, "told": its lost-touch line was held}; memory only.
@@ -182,7 +203,7 @@ class Listener:
         self.sweep_lock = threading.Lock()
         # Completion counters, bumped only after everything a step writes is on disk.
         self.progress = threading.Condition()
-        self.counts = {"streams": 0, "drops": 0, "pushes": 0, "pokes": 0}
+        self.counts = {"streams": 0, "drops": 0, "pushes": 0, "pokes": 0, "frames": 0}
         self.thread = threading.Thread(target=self.run, name="boss-wake", daemon=True)
 
     def done(self, step):
@@ -208,6 +229,24 @@ class Listener:
         except OSError:
             pass
 
+    def stream_health(self, name=None, *, threads=None, matched=False, **changes):
+        """One atomic, per-host view. A quiet stream stays healthy without a heartbeat timer."""
+        with self.health_lock:
+            if name is not None:
+                host = self.health["hosts"][name]
+                host.update(changes)
+                if threads is not None:
+                    host["frames"] += 1
+                    host["threads"] += len(threads)
+                    host["last_frame_at"] = datetime.now(timezone.utc).isoformat()
+                if matched:
+                    host["matched"] += 1
+                    host["last_task_at"] = datetime.now(timezone.utc).isoformat()
+            try:
+                atomic_write(self.home / STATUS, json.dumps(self.health, sort_keys=True) + "\n")
+            except OSError:
+                pass
+
     def run(self):
         self.home.mkdir(parents=True, exist_ok=True, mode=0o700)
         descriptor = os.open(self.home / LOCK, os.O_RDWR | os.O_CREAT, 0o600)
@@ -217,6 +256,7 @@ class Listener:
         if self.stop_event.is_set():
             return self.release()
         self.beat("listening")
+        self.stream_health()
         self.serve()
         for name in self.config.hosts:
             threading.Thread(target=self.follow, args=(name,), name=f"boss-wake-{name}", daemon=True).start()
@@ -263,16 +303,22 @@ class Listener:
                 stream = open_stream(self.config.hosts[name]["url"], token)
                 self.sockets[name] = stream
                 self.beat(f"listening host={name}")
-                self.reconnected(name)
+                self.stream_health(name, state="subscribing", connected_at=datetime.now(timezone.utc).isoformat())
                 self.done("streams")
                 failures = 0
                 while not self.stop_event.is_set():
                     message = json.loads(stream.receive())
-                    for thread in shell_threads(message):
+                    threads = shell_threads(message)
+                    if message.get("_tag") == "Chunk":
+                        self.reconnected(name)
+                    for thread in threads:
                         self.pushed(name, thread)
                     if message.get("_tag") == "Chunk":
                         stream.send(json.dumps({"_tag": "Ack", "requestId": message["requestId"]}))
+                        self.stream_health(name, threads=threads, state="listening", error=None)
+                        self.done("frames")
             except BossError as exc:
+                self.stream_health(name, state="error", error=exc.code)
                 log_error(self.home, self.config.redact, f"boss wake {name}: {exc.message}")
                 self.done("drops")
                 return  # no token for this host: doctor says how to add one
@@ -282,6 +328,8 @@ class Listener:
                 failures += 1
                 with self.down_lock:
                     self.down.setdefault(name, {"since": self.clock(), "told": False})
+                self.stream_health(name, state="disconnected", error=type(exc).__name__,
+                                   disconnected_at=datetime.now(timezone.utc).isoformat())
                 log_error(self.home, self.config.redact, f"boss wake {name} stream dropped: {type(exc).__name__}")
                 self.done("drops")
             finally:
@@ -291,15 +339,17 @@ class Listener:
             self.stop_event.wait(backoff(failures))
 
     def task_for(self, host, thread_id):
-        """Active boss task for a pushed thread; the map reloads only when a task is added."""
-        try:
-            stamp = (self.home / "tasks").stat().st_mtime_ns
-        except FileNotFoundError:
-            return None
-        if stamp != self.tasks_stamp:
-            self.tasks = {(m["host"], m["thread_id"]): m["id"] for m in self.store.tasks() if m.get("thread_id")}
-            self.tasks_stamp = stamp
-        return self.tasks.get((host, thread_id))
+        """Cache hits only. A launch binds its thread *after* creating the task directory.
+
+        A miss must re-read committed metadata, even if the directory mtime is unchanged.
+        The ledger lock also keeps us from reading a launch's half-created task directory.
+        """
+        key = (host, thread_id)
+        if key not in self.tasks:
+            with self.store.locked(wait=True):
+                tasks = {(m["host"], m["thread_id"]): m["id"] for m in self.store.tasks() if m.get("thread_id")}
+            self.tasks = tasks
+        return self.tasks.get(key)
 
     def pushed(self, host, thread):
         """Handle one pushed thread shell, including any delivery it triggers."""
@@ -321,6 +371,7 @@ class Listener:
         signature = (thread.get("status"), thread.get("latestRunId"), request.get("id"), shell_prs(thread))
         if task is None or self.seen.get(thread["id"]) == signature:
             return False  # T3 re-pushes the same state (and re-snapshots); read each state once
+        self.stream_health(host, matched=True)
         return self.read(task, thread["id"], signature)
 
     def note(self, host, thread, busy):
