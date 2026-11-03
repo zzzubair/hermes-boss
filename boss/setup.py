@@ -15,7 +15,7 @@ from .common import BossError
 from .config import allows, hermes_home, literal, model_rules, rule_entry
 from .integrations import command_path
 from . import owner
-from .wake import CONSENT_KEY, CONSENT_LINE, HEARTBEAT, LAST, LOCK, endpoints, legacy_target
+from .wake import CONSENT_KEY, CONSENT_LINE, HEARTBEAT, LAST, LOCK, STATUS, code_fingerprint, endpoints, legacy_target
 
 
 DEFAULT_URL = "http://127.0.0.1:3773/mcp"
@@ -153,11 +153,15 @@ def doctor(boss):
             except (OSError, KeyError) as exc:
                 raise ValueError(f"no T3 push endpoint: {type(exc).__name__}") from None
             return True
-        check(f"host {name} push stream", stream,
+        check(f"host {name} push stream token", stream,
               "t3 auth session issue --scope orchestration:read --label boss-events --token-only; set "
               + host.get("events_token_env", "T3_EVENTS_TOKEN"), required=routed)
 
+    health = {}
+    listening = False
+
     def listener():
+        nonlocal listening
         # Whoever holds wake.lock is the listener; if doctor can take it, nobody is listening.
         descriptor = os.open(boss.store.home / LOCK, os.O_RDWR | os.O_CREAT, 0o600)
         try:
@@ -168,9 +172,42 @@ def doctor(boss):
         finally:
             os.close(descriptor)
         stamp, pid, state = (boss.store.home / HEARTBEAT).read_text().split(maxsplit=2)
-        return f"pid {pid} since {owner.stamp(stamp)} ({state.strip()})"
-    check("wake listener", listener, "start or restart the Hermes gateway (or app); then rerun boss doctor",
+        os.kill(int(pid), 0)
+        listening = True
+        return f"pid {pid} ({state.strip()}); last connection change {owner.stamp(stamp)}"
+    restart = "restart every Hermes host process for this profile (gateway, dashboard, TUI/app), then rerun boss doctor"
+    check("wake listener", listener, restart,
           required=routed)
+
+    def loaded_code():
+        if not listening:
+            raise ValueError("no active listener health")
+        try:
+            health.update(json.loads((boss.store.home / STATUS).read_text()))
+        except FileNotFoundError:
+            raise ValueError("listener code unknown (legacy listener has no per-host health)") from None
+        pid = (boss.store.home / HEARTBEAT).read_text().split()[1]
+        if str(health.get("pid")) != pid:
+            health.clear()
+            raise ValueError("listener health belongs to a previous process")
+        if (health.get("code") != code_fingerprint() or
+                health.get("code") != code_fingerprint(Path(health["source"]))):
+            raise ValueError(f"stale listener code in pid {pid}, loaded from {health['source']}")
+        return f"pid {pid}, content {health['code'][:12]}, source {health['source']}"
+    check("wake listener code", loaded_code, restart, required=routed)
+    for name in boss.config.hosts:
+        def following(n=name):
+            host = health.get("hosts", {}).get(n)
+            if host is None:
+                raise ValueError("no listener stream health")
+            detail = (f"state={host['state']}, frames={host['frames']}, thread shells={host['threads']}, "
+                      f"boss matches={host['matched']}, last frame={host.get('last_frame_at', 'none')}, "
+                      f"last boss match={host.get('last_task_at', 'none')}")
+            if host["state"] != "listening":
+                raise ValueError(detail + f", error={host.get('error') or 'none'}")
+            return detail
+        check(f"host {name} listener stream", following,
+              f"check wake-errors.log and host {name}; {restart}", required=routed)
     return lines, 1 if failures else 0
 
 
