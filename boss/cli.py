@@ -538,7 +538,8 @@ def dispatch(args, boss):
         meta = boss.store.load(args.id)
         view = boss.snapshot(meta)
         adopted, ended = meta.get("adopted"), view["status"] == "completed" or meta.get("adopted")
-        lines = [f"{meta['id']}: {meta['project']} {view['status']}" + (" settled" if meta.get("settled") else ""),
+        state = "finished" if classify(view).kind == "done" else view["status"]
+        lines = [f"{meta['id']}: {meta['project']} {state}" + (" settled" if meta.get("settled") else ""),
                  "worker: none; PR opened outside boss" if adopted else f"thread: {meta['thread_id']}",
                  f"host: {meta['host']}", *([] if adopted else [f"model: {model_text(meta, view['thread'])}"]),
                  f"auto_merge: {str(meta.get('auto_merge', False)).lower()}",
@@ -551,10 +552,8 @@ def dispatch(args, boss):
             lines.append(f"allowed{by(boss.store.name)}: {compact(meta['override']['approved'])}")
             lines.extend(f"  despite: {' '.join(text.split())}" for text in meta["override"]["violations"])
         lines.append(f"{len(view['requests'])} pending input requests")
-        client = boss.client(meta["host"])
         for request_id in view["requests"]:
-            request = client.call("t3_pending_request_read", threadId=meta["thread_id"], requestId=request_id)
-            for q in request["questions"]:
+            for q in boss.request_questions(meta, request_id):
                 lines.append(f"{request_id}/{q['id']}: {compact(q['question'], None if full else 240)}")
                 if q.get("options"):
                     lines.append("options: " + compact(" | ".join(o["label"] for o in q["options"]), None if full else 240))

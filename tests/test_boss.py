@@ -57,6 +57,7 @@ SCHEMAS = {
 class FakeT3:
     def __init__(self):
         self.calls, self.headers = [], []
+        self.schemas = copy.deepcopy(SCHEMAS)
         self.threads, self.pending, self.prs = {}, {}, []
         self.projects = [{"id": "p1", "title": "repo", "workspaceRoot": "/fake/repo",
                           "defaultModelSelection": None,
@@ -102,7 +103,7 @@ class FakeT3:
                     return
                 elif method == "tools/list":
                     result = {"tools": [{"name": n, "inputSchema": {"type": "object", "required": required, "additionalProperties": True}}
-                                        for n, required in SCHEMAS.items()]}
+                                        for n, required in fake.schemas.items()]}
                 elif method == "tools/call":
                     name, arguments = body["params"]["name"], body["params"]["arguments"]
                     fake.calls.append((name, arguments))
@@ -158,6 +159,8 @@ class FakeT3:
             if args.get("itemId"):
                 items = [{**items[-1], "text": "complete report", "nextTextOffset": None, "textTruncated": False}]
             return {"thread": thread, "items": items, "hasMore": False, "nextPosition": None, "recentRuns": []}
+        if name == "t3_pending_request":
+            return self.tool("t3_pending_request_" + args["action"], args)
         if name == "t3_pending_request_list":
             return {"requestIds": list(self.pending)}
         if name == "t3_pending_request_read":
@@ -375,6 +378,53 @@ serviceTier = "priority"
         self.assertEqual(self.cli("answer", meta["id"], "request-1", "A")[0], 0)
         respond = next(a for n, a in self.fake.calls if n == "t3_pending_request_respond")
         self.assertEqual(respond["answers"], {"q1": "A"})
+
+    def test_new_pending_tool_lists_reads_and_answers_without_legacy_names(self):
+        self.fake.schemas = {n: s for n, s in self.fake.schemas.items() if not n.startswith("t3_pending_request_")}
+        self.fake.schemas["t3_pending_request"] = ["action"]
+        meta = self.spawn()
+        self.fake.pending = {"request-1": [{"id": "q1", "question": "Which path?", "options": []}]}
+        code, output = self.cli("status", meta["id"])
+        self.assertEqual(code, 0, output)
+        self.assertIn("request-1/q1: Which path?", output)
+        code, output = self.cli("answer", meta["id"], "request-1/q1", "A")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.fake.pending, {})
+        actions = [a["action"] for n, a in self.fake.calls if n == "t3_pending_request"]
+        self.assertEqual(actions, ["list", "read", "list", "read", "respond"])
+        self.assertFalse(any(n.startswith("t3_pending_request_") for n, _ in self.fake.calls))
+
+    def test_new_pending_tool_is_preferred_when_both_are_advertised(self):
+        self.fake.schemas["t3_pending_request"] = ["action"]
+        meta = self.spawn()
+        self.assertEqual(self.cli("status", meta["id"])[0], 0)
+        self.assertIn(("t3_pending_request", {"action": "list", "threadId": meta["thread_id"]}), self.fake.calls)
+        self.assertFalse(any(n.startswith("t3_pending_request_") for n, _ in self.fake.calls))
+
+    def test_pending_tool_errors_are_not_treated_as_missing_capabilities(self):
+        self.fake.schemas["t3_pending_request"] = ["action"]
+        meta = self.spawn()
+        self.fake.failure = "t3_pending_request"
+        code, output = self.cli("status", meta["id"])
+        self.assertEqual(code, 3, output)
+        self.assertIn("error: t3", output)
+        self.assertNotIn(TOKEN, output)
+        self.assertFalse((self.home / "capability-warnings").exists())
+
+    def test_missing_questions_cannot_allow_landing_or_settlement_with_pending_inputs(self):
+        meta = self.spawn()
+        self.completed(meta, "BOSS: done: fixed it")
+        self.fake.schemas = {n: s for n, s in self.fake.schemas.items() if not n.startswith("t3_pending_request_")}
+        self.fake.threads[meta["thread_id"]]["pendingRequestCount"] = 1
+        self.fake.prs = [URL]
+        code, output = self.cli("land", meta["id"], "--approved", "land it")
+        self.assertEqual(code, 2, output)
+        self.assertIn("worker must stop", output)
+        code, output = self.cli("settle", meta["id"])
+        self.assertEqual(code, 2, output)
+        self.assertIn("resolve inputs", output)
+        self.assertEqual(self.gh.merges, [])
+        self.assertEqual(self.removals, [])
 
     def test_multi_question_answers_need_all_keys(self):
         meta = self.spawn()

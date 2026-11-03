@@ -104,6 +104,14 @@ class MCP:
                 raise BossError("protocol", "tools/list repeated its cursor")
             cursor = next_cursor
 
+    def pending_request(self, action, **arguments):
+        """Choose the question API from this host's advertised tools, never its version."""
+        if self.tools is None:
+            self.connect()
+        if "t3_pending_request" in self.tools:
+            return self.call("t3_pending_request", action=action, **arguments)
+        return self.call("t3_pending_request_" + action, **arguments)
+
     def call(self, name, **arguments):
         if self.tools is None:
             self.connect()

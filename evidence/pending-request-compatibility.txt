@@ -1,0 +1,65 @@
+T3 pending-request compatibility verification, 2026-11-03 UTC
+
+Assigned worktree only. No primary checkout edits, merge, settlement or deployment.
+
+Live tool discovery through each configured MCP host:
+  ser5ver: t3_pending_request; action enum list/read/respond; required action
+  oracle:  t3_pending_request; action enum list/read/respond; required action
+  wsl:     t3_pending_request; action enum list/read/respond; required action
+All three advertised threadId, requestId and answers properties. None advertised
+separate t3_pending_request_list/read/respond tools. Credentials were loaded by
+boss.config.Config and never printed or stored in this evidence.
+
+Regression proof against unmodified HEAD 7bfb01b in a disposable directory:
+  New fake-host completion test fails at len(self.held()):
+  AssertionError: 0 != 1
+  The old source queued zero inbox items instead of one.
+
+Fixed source:
+  python3 scripts/check_pending_request.py
+  Ran 9 tests. OK.
+  Covers new-only and legacy question APIs, new API preference, list/read/respond,
+  real tool failures, done/decision wakes without optional capabilities, one
+  warning across fresh clients, and refusal to land/settle with pending inputs.
+
+  python3 -m unittest discover -v
+  Ran 438 tests in 73.547s. OK.
+
+  python3 scripts/check_fresh_install.py
+  PASS: fresh install, idempotent init, doctor, role spawn, no poll command,
+  ownership gate and claim. The transcript's deliberate missing-config doctor
+  failures occur inside a disposable home and are expected by this check.
+
+Live ser5ver check using this worktree's ./bin/boss:
+  ./bin/boss status 300a231182bf
+  300a231182bf: forge finished
+  host: ser5ver
+  0 pending input requests
+  1 linked PRs
+  https://github.com/zzzubair/forge/pull/8: open ci=none
+
+Recovery using this worktree's Listener.read against the real ser5ver ledger:
+  worktree listener re-read: True
+  held kind: done
+  held line: wterm named terminals + agent access: finished, PR
+    "Add named wterm terminals and guarded agent access on ser5ver"
+    https://github.com/zzzubair/forge/pull/8
+  Subsequent inbox journal read: event=acked, via=watch.
+  No boss settle or boss land was run. Forge PR #8 remains open.
+
+  ./bin/boss doctor
+  Exit 0, no failed or optional checks.
+  Hosts ser5ver, oracle and wsl: MCP + projects and push streams all ok.
+  Worker rules, plugin installation/enabled, skill, gateway consent all ok.
+  Owner Local chat; boss watch waiting in owner session.
+  Wake listener: pid 3337551, listening host=ser5ver.
+
+Runtime activation limitation:
+  No process or service restarted. The existing listener is embedded in
+  hermes-gateway.service PID 3337551, not a standalone boss unit. Its installed
+  source still points to the untouched primary checkout. Worktree verification
+  and the one-time recovery above do not activate this PR for subsequent pushes.
+  The available gateway reload reloads all plugins and does not offer a scoped
+  boss-module replacement. Installing this PR and restarting a wider Hermes
+  runtime requires an explicit exception to the worker's no-deployment contract
+  and the listener-only restart constraint. No such action was taken.

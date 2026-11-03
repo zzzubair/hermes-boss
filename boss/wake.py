@@ -24,6 +24,7 @@ Exactly one listener runs per machine: it holds $BOSS_HOME/wake.lock.
 """
 from datetime import datetime, timezone
 import fcntl
+import hashlib
 import json
 import os
 import socket
@@ -63,10 +64,19 @@ def legacy_target(wake):
     return {**target, "label": "legacy [wake] target"} if target else None
 
 
-def log_error(home, redact, message):
+def log_error(home, redact, message, *, once=None):
     """Redact before shortening; never let an unwritable log break Hermes."""
     try:
         home.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if once is not None:
+            warnings = home / "capability-warnings"
+            warnings.mkdir(exist_ok=True, mode=0o700)
+            marker = warnings / hashlib.sha256(once.encode()).hexdigest()
+            try:
+                descriptor = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                return
+            os.close(descriptor)
         text = " ".join(redact(message).split())[:2000]
         descriptor = os.open(home / "wake-errors.log", os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         with os.fdopen(descriptor, "a") as stream:

@@ -101,6 +101,8 @@ def classify(view):
         return event("approval", f"{view['approvals']} pending permission requests in T3")
     if status in ERROR_STATUSES:
         return event("error", f"the thread {status.replace('_', ' ')}")
+    if status not in ENDED_STATUSES and view.get("questions_unavailable") and thread.get("pendingRequestCount"):
+        return event("needs-decision", "open T3 to review the pending input; question details unavailable")
     if status not in ENDED_STATUSES or turn_id is None:  # includes a bare "waiting"
         return Event("working", thread_id, turn_id, None)
     if line:
